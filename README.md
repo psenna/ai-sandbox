@@ -182,6 +182,32 @@ claude plugin install code-simplifier@claude-plugins-official
 
 ---
 
+## Troubleshooting
+
+- **Bash tool fails with `EACCES: permission denied, mkdir '/home/node/.claude-sandbox/session-env'`** —
+  the `claude-config` named volume was created root-owned (it predates the
+  `mkdir` in the `Dockerfile` that seeds it node-owned). Recreate it once so it
+  picks up the node-owned seed from the rebuilt image:
+  ```sh
+  docker compose down
+  docker volume rm ai-sandbox_claude-config   # project-prefixed name; check `docker volume ls`
+  docker compose up -d --build
+  ```
+  (This touches only `claude-config`; `workspace` and `docker-cache` are
+  preserved. If you used `docker compose down -v`, all named volumes are
+  recreated — fine, they're caches/state, not the repo.)
+- **Subagents (Task/Explore) fail with `model may not exist or you may not have access`** (`claude-opus-5`/`claude-sonnet-5`) —
+  the sonnet/opus model tiers weren't mapped to the Ollama model. This is fixed
+  by `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` in
+  `docker-compose.yaml`; rebuild/recreate the `claude` container to pick it up:
+  `docker compose up -d --build claude`.
+- **Ollama `401` on `:cloud` models** — the local daemon authenticates the
+  *device* with the SSH keypair in `./.ollama` (set up by `ollama signin`), not
+  an API key. See prerequisites #4: bind-mount a registered `.ollama/` folder or
+  run `docker compose exec ollama ollama signin` once.
+
+---
+
 ## Verification (end-to-end, on the Ubuntu host)
 
 1. `curl http://127.0.0.1:8090/healthz` → `{"status":"ok"}`.

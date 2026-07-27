@@ -133,7 +133,13 @@ services:
       ANTHROPIC_AUTH_TOKEN: "ollama"                 # fixed token for local Ollama (not a real secret)
       ANTHROPIC_API_KEY: ""                          # empty: no Anthropic cloud fallback
       ANTHROPIC_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
+      # Map EVERY model tier Claude Code can pick to the Ollama model. Without
+      # the sonnet/opus tiers, the Task/Explore subagents fall back to real
+      # Claude model ids (claude-sonnet-5 / claude-opus-5) that don't exist on
+      # the Ollama backend → "model may not exist or you may not have access".
       ANTHROPIC_DEFAULT_HAIKU_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
       CLAUDE_CODE_ATTRIBUTION_HEADER: "0"            # keeps prompt caching valid on non-Anthropic backends
       CLAUDE_CONFIG_DIR: "/home/node/.claude-sandbox"  # isolate config from any host claude.ai auth
       # --- git-proxy legs (consumed by the entrypoint + the use-git-proxy skill) ---

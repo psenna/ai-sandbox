@@ -36,6 +36,14 @@ COPY claude-code/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER node
+# Create CLAUDE_CONFIG_DIR as the node user. The claude-config named volume is
+# mounted here at runtime; when a fresh empty volume is mounted at a path that
+# already exists in the image, Docker seeds the volume with the image dir's
+# ownership. Without this the volume is root-owned and Claude Code can't write
+# its session dir (the Bash tool fails with EACCES on .../session-env). The
+# existing root-owned volume must be recreated once after this change — see
+# the recovery note in the README / commit message.
+RUN mkdir -p /home/node/.claude-sandbox
 WORKDIR /workspace
 ENTRYPOINT ["/entrypoint.sh"]
 # Default: idle bash so the operator can `docker compose exec claude claude`.
