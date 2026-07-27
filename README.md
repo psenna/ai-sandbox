@@ -62,8 +62,16 @@ launches.
    - Read and write access to **code**, **issues**, **pull requests**, and **workflows**
    - (Discussions only if you use them.)
 
-4. **An Ollama Cloud API key** (only if you use `:cloud` models):
-   https://ollama.com/settings/keys
+4. **Ollama Cloud device auth** (only if you use `:cloud` models). The local
+   daemon authenticates to ollama.com with the SSH keypair in `./.ollama`
+   (`id_ed25519` + `config.json`) — **not** an API key. Either:
+   - copy your existing `.ollama/` folder (with the registered key) onto the host
+     next to `docker-compose.yaml` (the `ollama` service bind-mounts it), **or**
+   - start fresh: `docker compose up -d ollama` then
+     `docker compose exec ollama ollama signin` once and approve the URL it
+     prints. The key persists in `./.ollama`.
+   (`OLLAMA_API_KEY` is only for *direct* ollama.com API calls, which this stack
+   does not make — leave it unset.)
 
 ---
 
@@ -72,7 +80,9 @@ launches.
 ```sh
 # 1. Configure secrets (gitignored).
 cp .env.example .env
-#   edit .env: OLLAMA_API_KEY, OLLAMA_MODEL, GITHUB_REPO, (AGENT_TOKEN if you rotate it)
+#   edit .env: OLLAMA_MODEL, GITHUB_REPO, (AGENT_TOKEN if you rotate it)
+#   For :cloud models, also put your registered .ollama/ folder here (see
+#   prerequisites #4) — the ollama service bind-mounts ./.ollama.
 
 # 2. Give git-proxy the GitHub PAT. Two options:
 #    a) edit credentials.yaml: put the PAT in `password` AND `token`, and set the
@@ -113,12 +123,13 @@ proxy with no extra flags, and PRs/CI/issues go through the broker via the
 
 ### Ollama: local vs cloud
 
-- **Cloud (default):** `OLLAMA_MODEL=glm-5.2:cloud` + `OLLAMA_API_KEY` set. The
-  daemon proxies to ollama.com.
+- **Cloud (default):** `OLLAMA_MODEL=glm-5.2:cloud` with the `./.ollama`
+  device key registered (prerequisites #4). The daemon proxies to ollama.com and
+  authenticates with that key — no `OLLAMA_API_KEY` needed.
 - **Local:** pull a model into the daemon, then switch the model:
   ```sh
   docker compose exec ollama ollama pull qwen3:8b
-  # in .env: OLLAMA_MODEL=qwen3:8b   (and OLLAMA_API_KEY can be empty)
+  # in .env: OLLAMA_MODEL=qwen3:8b
   docker compose up -d   # restart claude to pick up the new model
   ```
   Local models run on CPU (no GPU on the target host).
@@ -205,6 +216,9 @@ claude plugin install code-simplifier@claude-plugins-official
 ## Teardown
 
 ```sh
-docker compose down -v        # removes containers + named volumes (ollama models, workspace, caches)
+docker compose down -v        # removes containers + named volumes (workspace, docker-cache, claude-config)
+sudo rm -rf data              # mirror cache + audit log
+# ./.ollama (the registered device key + models) is a bind mount, NOT a named
+# volume — `down -v` leaves it on the host. Remove it only if you want to.
 sudo rm -rf data              # mirror cache + audit log
 ```

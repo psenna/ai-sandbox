@@ -6,8 +6,8 @@
 #   dinernet:  docker (DinD), claude
 #
 #   ollama (daemon) serves Anthropic-compatible /v1/messages on :11434
-#     └── :cloud models proxied to ollama.com via OLLAMA_API_KEY; local models
-#         run on-device (CPU) from the ollama-data volume.
+#     └── :cloud models proxied to ollama.com (device auth via the ./.ollama
+#         SSH keypair set up by `ollama signin`); local models run on-device.
 #   claude (agent) → http://ollama:11434 (Anthropic-compatible API)
 #   claude (agent) --8080(git)/8090(broker)--> git-proxy --https--> github.com
 #     git insteadOf rewrites https://github.com/<x> -> http://git-proxy:8080/<x>
@@ -31,17 +31,21 @@ services:
     image: ollama/ollama:latest
     container_name: ai-sandbox-ollama
     # Serves the Anthropic-compatible /v1/messages endpoint on :11434.
-    #   - :cloud models (e.g. glm-5.1:cloud) are proxied to ollama.com using
-    #     OLLAMA_API_KEY.
+    #   - :cloud models (e.g. glm-5.2:cloud) are proxied to ollama.com. The local
+    #     daemon authenticates the DEVICE with the SSH keypair in ~/.ollama
+    #     (id_ed25519 + config.json), set up by `ollama signin` — NOT by
+    #     OLLAMA_API_KEY (that's only for direct ollama.com API calls). So we
+    #     bind-mount the host ./.ollama directory, which holds your registered
+    #     key. To start fresh instead, leave ./.ollama empty and run
+    #     `docker compose exec ollama ollama signin` once (the key persists in the
+    #     bind mount).
     #   - local models are pulled (`docker compose exec ollama ollama pull
-    #     <model>`) and run on-device (CPU — no GPU on this host) from the
-    #     ollama-data volume.
+    #     <model>`) and run on-device (CPU — no GPU on this host).
     # No host port mapping — claude reaches it at http://ollama:11434 on proxynet.
     environment:
-      OLLAMA_API_KEY: "${OLLAMA_API_KEY}"
       OLLAMA_NUM_CTX: "${OLLAMA_NUM_CTX:-131072}"
     volumes:
-      - ollama-data:/root/.ollama
+      - ./.ollama:/root/.ollama
     networks:
       - proxynet
     # The ollama image has no curl; use bash's /dev/tcp to check the daemon is up.
@@ -156,7 +160,6 @@ networks:
     driver: bridge
 
 volumes:
-  ollama-data: {}
   workspace: {}
   docker-cache: {}
   claude-config: {}

@@ -252,7 +252,7 @@ cat <<EOF
 \033[1;32m[setup] host is ready.\033[0m
 
 Next, from the ai-sandbox repo root on this host:
-  cp .env.example .env        # then edit .env: OLLAMA_API_KEY, OLLAMA_MODEL, GITHUB_REPO
+  cp .env.example .env        # then edit .env: OLLAMA_MODEL, GITHUB_REPO (+ AGENT_TOKEN)
   # put your GitHub PAT in credentials.yaml (password + token) or export GITHUB_TOKEN
   mkdir -p data/mirror data/audit
   docker compose build

@@ -3,7 +3,7 @@
 # Points at REAL github.com with upstream.kind: github (the GitHub SCM adapter),
 # which implements port.PRSupport — the broker type-asserts that at startup, so
 # the broker (PR + CI + issue ops) works. The only values you MUST fill in are in
-# credentials.yaml (GitHub PAT) and .env (OLLAMA_API_KEY, GITHUB_REPO, AGENT_TOKEN).
+# credentials.yaml (GitHub PAT) and .env (OLLAMA_MODEL, GITHUB_REPO, AGENT_TOKEN).
 #
 # The agent never sees the GitHub PAT: git-proxy holds it and attaches it on the
 # proxy→GitHub leg. The agent authenticates with the low-value AGENT_TOKEN bearer
