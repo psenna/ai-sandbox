@@ -1,0 +1,16 @@
+# Secrets — never commit.
+.env
+
+# git-proxy runtime state (mirror cache + audit log) from `docker compose up`.
+data/
+
+# Ollama + Claude Code runtime state (models, sessions, config) — may hold keys.
+.ollama/
+.claude/
+
+# Agent working directory (cloned repos) — bind-mount target, may hold secrets.
+code/
+
+# Node/OS cruft.
+.DS_Store
+node_modules/

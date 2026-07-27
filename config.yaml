@@ -1,0 +1,70 @@
+# git-proxy configuration for the ai-sandbox stack.
+#
+# Points at REAL github.com with upstream.kind: github (the GitHub SCM adapter),
+# which implements port.PRSupport — the broker type-asserts that at startup, so
+# the broker (PR + CI + issue ops) works. The only values you MUST fill in are in
+# credentials.yaml (GitHub PAT) and .env (OLLAMA_API_KEY, GITHUB_REPO, AGENT_TOKEN).
+#
+# The agent never sees the GitHub PAT: git-proxy holds it and attaches it on the
+# proxy→GitHub leg. The agent authenticates with the low-value AGENT_TOKEN bearer
+# mapped in auth.tokens below. See README.md for the full security model.
+
+listen: "0.0.0.0:8080"
+
+upstream:
+  # github = the GitHub SCM adapter: git smart-HTTP delegates to the plain
+  # transport (GitHub serves /info/refs, /git-upload-pack, /git-receive-pack), and
+  # PR/CI ops go through the GitHub REST API. The proxy reaches github.com
+  # directly (the agent never uses this URL; it talks to the proxy).
+  kind: github
+  url: "https://github.com"
+  # Per-repo creds the proxy attaches on the proxy->GitHub leg. For the git
+  # protocol it reads username/password (HTTP Basic); for the broker REST leg it
+  # reads token (Bearer). See credentials.yaml.
+  credentials_file: /credentials.yaml
+
+auth:
+  tokens:
+    # Bearer token -> agent id (auditable identity recorded in every audit event).
+    # The claude container sends this as its git extraHeader / broker Bearer.
+    # MUST match AGENT_TOKEN in .env. The proxy consumes it for auth only — it is
+    # never forwarded to GitHub.
+    "agent-token-1": "claude-code-agent"
+
+# Issue upstream: a separately-configured upstream that sources the broker's issue
+# routes (create/get/list/comment/close/reopen/edit/labels). v1 sets it to
+# kind: github too — one GitHub PAT fills both PRs and issues. Absent → issue
+# routes return 501 per-op while PR/CI routes keep working.
+issue_upstream:
+  kind: github
+  url: "https://github.com"
+  credentials_file: /credentials.yaml   # same PAT as the SCM upstream
+
+policy:
+  mode: first_deny            # stop at the first violation; use collect_all to report all
+  mirror:
+    dir: /tmp/git-proxy-mirror # bare inspection-mirror cache root (bind-mounted)
+  rules:
+    history_protect:
+      enabled: true
+      params:
+        refs: ["refs/heads/main"]   # block force-push / rewrite of main
+    branch_pattern:
+      enabled: true
+      params:
+        allow: ["refs/heads/main", "refs/heads/feat/*"]  # only these refs may be pushed
+    secret_scan:
+      enabled: true                 # redacted reasons; matched secret never reaches agent/audit/alert
+  read:
+    deny: ["secrets/**"]            # withhold secrets/ blobs from fetch (use --filter=blob:none to clone)
+
+broker:
+  # Agent-facing PR/CI/issue REST server on a separate port from the git frontend.
+  listen: "0.0.0.0:8090"
+  # allowed_agents / allowed_ops omitted -> allow all authenticated agents all ops.
+  # Tighten for a real deployment (e.g. allowed_ops: [pr.create, pr.get, pr.list,
+  # pr.merge, pr.comment, ci.status]) — example only.
+  merge_method: squash
+
+audit:
+  file: /tmp/git-proxy/audit.jsonl   # append-only JSONL; omit to disable

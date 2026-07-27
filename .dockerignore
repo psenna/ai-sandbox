@@ -1,0 +1,17 @@
+# Keep secrets and runtime state out of the claude image build context.
+# (The Dockerfile only COPYs claude-code/** — this is a backstop so a stray
+# .env or credentials file can never leak into an image layer.)
+.git
+.gitignore
+.env
+.env.example
+credentials.yaml
+config.yaml
+data/
+.ollama/
+.claude/
+code/
+setup-ubuntu-host.sh
+scripts/
+README.md
+readme.md

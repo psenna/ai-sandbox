@@ -1,0 +1,162 @@
+# ai-sandbox: Claude Code (via Ollama) → git-proxy → real GitHub, with a rootless
+# DinD daemon for dev workloads.
+#
+# Topology (two isolated bridge networks):
+#   proxynet:  ollama, git-proxy, claude
+#   dinernet:  docker (DinD), claude
+#
+#   ollama (daemon) serves Anthropic-compatible /v1/messages on :11434
+#     └── :cloud models proxied to ollama.com via OLLAMA_API_KEY; local models
+#         run on-device (CPU) from the ollama-data volume.
+#   claude (agent) → http://ollama:11434 (Anthropic-compatible API)
+#   claude (agent) --8080(git)/8090(broker)--> git-proxy --https--> github.com
+#     git insteadOf rewrites https://github.com/<x> -> http://git-proxy:8080/<x>
+#     http.extraHeader attaches the agent Bearer
+#   claude (agent) --DOCKER_HOST=tcp://docker:2375--> docker (rootless DinD)
+#     └── runs node/python/go/services in isolated containers on dinernet
+#
+# The agent NEVER sees the GitHub PAT: git-proxy holds it in credentials.yaml and
+# attaches it on the proxy→GitHub leg (HTTP Basic for the git protocol, Bearer for
+# the broker REST leg). The agent authenticates to the proxy with a low-value
+# Bearer (auth.tokens in config.yaml). The DinD daemon is on dinernet ONLY —
+# git-proxy is not — so a compromised daemon has no route to the proxy's creds.
+#
+# Prerequisites:
+#   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
+#   - ghcr.io/psenna/git-proxy:v0.0.0 published (or uncomment the build: block
+#     below to build from a sibling ../git-proxy checkout).
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-sandbox-ollama
+    # Serves the Anthropic-compatible /v1/messages endpoint on :11434.
+    #   - :cloud models (e.g. glm-5.1:cloud) are proxied to ollama.com using
+    #     OLLAMA_API_KEY.
+    #   - local models are pulled (`docker compose exec ollama ollama pull
+    #     <model>`) and run on-device (CPU — no GPU on this host) from the
+    #     ollama-data volume.
+    # No host port mapping — claude reaches it at http://ollama:11434 on proxynet.
+    environment:
+      OLLAMA_API_KEY: "${OLLAMA_API_KEY}"
+      OLLAMA_NUM_CTX: "${OLLAMA_NUM_CTX:-131072}"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - proxynet
+    # The ollama image has no curl; use bash's /dev/tcp to check the daemon is up.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/11434'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  git-proxy:
+    # Published image. If it is not available yet, comment out `image:` and
+    # uncomment the `build:` block to build from a sibling git-proxy checkout:
+    #   build:
+    #     context: ../git-proxy
+    #     dockerfile: Dockerfile
+    image: ghcr.io/psenna/git-proxy:v0.0.0
+    container_name: ai-sandbox-gitproxy
+    # Run as the image's non-root gitproxy user (uid 1000). The bind-mounted
+    # data/ dirs must be writable by uid 1000 — see README.md if your host uid
+    # differs (sudo chown -R 1000:1000 data).
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8080:8080"   # git-protocol leg (clone/fetch/push)
+      - "127.0.0.1:8090:8090"   # broker REST leg (PR + CI + issue ops)
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+      - ./credentials.yaml:/credentials.yaml:ro
+      - ./data/mirror:/tmp/git-proxy-mirror
+      - ./data/audit:/tmp/git-proxy
+    networks:
+      - proxynet
+
+  # Rootless Docker-in-Docker daemon. The agent (claude) uses it to run arbitrary
+  # images (node, python, golang, postgres, mysql, minio, …) via DOCKER_HOST — dev
+  # tasks NEVER run directly on the claude container. Runs under the sysbox
+  # runtime with NO --privileged: sysbox user-namespace mapping makes the inner
+  # dockerd unprivileged on the host, so it cannot access host devices or
+  # git-proxy's bind mounts (incl. credentials.yaml). It is on dinernet ONLY —
+  # git-proxy is not on dinernet, so a compromised daemon has no route to the
+  # proxy. Host prerequisite: sysbox must be installed (run setup-ubuntu-host.sh).
+  docker:
+    image: docker:27-dind
+    runtime: sysbox-runc
+    container_name: ai-sandbox-dind
+    # The docker:dind entrypoint (dockerd-entrypoint.sh) execs `dockerd "$@"`, so
+    # `command:` is the dockerd args. Listen on TCP for cross-container access on
+    # dinernet AND on the unix socket for the in-container healthcheck.
+    command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    volumes:
+      - docker-cache:/var/lib/docker   # image/layer cache survives restarts
+      - workspace:/workspace           # shared with claude (the exchange point)
+    networks:
+      - dinernet
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  claude:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: psenna/ai-sandbox:0.1.0
+    container_name: ai-sandbox-agent
+    depends_on:
+      ollama:
+        condition: service_healthy
+      git-proxy:
+        condition: service_started
+      docker:
+        condition: service_healthy
+    # Interactive: the container idles on bash (default CMD) so the operator can
+    #   docker compose exec claude claude            # interactive Claude Code
+    #   docker compose exec claude claude -p "..."   # headless one-shot
+    # Or override the command for a fresh run:
+    #   docker compose run --rm claude claude -p "your task"
+    stdin_open: true
+    tty: true
+    environment:
+      # --- Ollama daemon (Anthropic-compatible /v1/messages) ---
+      ANTHROPIC_BASE_URL: "http://ollama:11434"     # local Ollama daemon (Anthropic-compatible)
+      ANTHROPIC_AUTH_TOKEN: "ollama"                 # fixed token for local Ollama (not a real secret)
+      ANTHROPIC_API_KEY: ""                          # empty: no Anthropic cloud fallback
+      ANTHROPIC_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
+      CLAUDE_CODE_ATTRIBUTION_HEADER: "0"            # keeps prompt caching valid on non-Anthropic backends
+      CLAUDE_CONFIG_DIR: "/home/node/.claude-sandbox"  # isolate config from any host claude.ai auth
+      # --- git-proxy legs (consumed by the entrypoint + the use-git-proxy skill) ---
+      AGENT_TOKEN: "${AGENT_TOKEN}"                  # the agent's Bearer to the proxy (NOT the GitHub PAT)
+      GITHUB_REPO: "${GITHUB_REPO}"                  # owner/repo.git the agent clones
+      GIT_PROXY_URL: "http://git-proxy:8080"
+      GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
+      GIT_PROXY_TOKEN: "${AGENT_TOKEN}"
+      GIT_PROXY_HEADER: "http.extraheader=Authorization: Bearer ${AGENT_TOKEN}"
+      # Docker client -> the rootless DinD daemon on the isolated dinernet.
+      DOCKER_HOST: "tcp://docker:2375"
+      DOCKER_TLS_VERIFY: ""
+    volumes:
+      - workspace:/workspace
+      - claude-config:/home/node/.claude-sandbox   # persist plugins/sessions across restarts
+    networks:
+      - proxynet
+      - dinernet
+
+networks:
+  proxynet:
+    driver: bridge
+  dinernet:
+    driver: bridge
+
+volumes:
+  ollama-data: {}
+  workspace: {}
+  docker-cache: {}
+  claude-config: {}
