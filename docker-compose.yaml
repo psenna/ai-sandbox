@@ -95,6 +95,17 @@ services:
     # `command:` is the dockerd args. Listen on TCP for cross-container access on
     # dinernet AND on the unix socket for the in-container healthcheck.
     command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    # The docker:dind image defaults DOCKER_TLS_CERTDIR=/certs, which makes the
+    # entrypoint generate a CA + server cert and start dockerd with --tlsverify
+    # on the TCP host. The claude client connects plain HTTP
+    # (DOCKER_HOST=tcp://docker:2375, no cert bundle) -> "Client sent an HTTP
+    # request to an HTTPS server". The use-docker skill documents plain
+    # `docker run` over that TCP host, so disable TLS: serve plain HTTP on 2375.
+    # Safe because the daemon is on dinernet only (isolated bridge, no host
+    # port) shared solely with claude — TLS between agent and daemon is not the
+    # security boundary here (sysbox user-namespacing is).
+    environment:
+      DOCKER_TLS_CERTDIR: ""
     volumes:
       - docker-cache:/var/lib/docker   # image/layer cache survives restarts
       - workspace:/workspace           # shared with claude (the exchange point)

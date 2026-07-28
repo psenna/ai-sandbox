@@ -196,6 +196,12 @@ claude plugin install code-simplifier@claude-plugins-official
   (This touches only `claude-config`; `workspace` and `docker-cache` are
   preserved. If you used `docker compose down -v`, all named volumes are
   recreated — fine, they're caches/state, not the repo.)
+- **`docker` commands from the agent fail with `Client sent an HTTP request to an HTTPS server`** —
+  the `docker:27-dind` image defaults `DOCKER_TLS_CERTDIR=/certs`, which makes
+  the entrypoint start dockerd with `--tlsverify` on the TCP port while the agent
+  client connects plain HTTP. Fixed by `DOCKER_TLS_CERTDIR: ""` on the `docker`
+  service (plain HTTP on the isolated `dinernet`). If you removed that env line,
+  restore it, then `docker compose up -d --build docker` and retry.
 - **Subagents (Task/Explore) fail with `model may not exist or you may not have access`** (`claude-opus-5`/`claude-sonnet-5`) —
   the sonnet/opus model tiers weren't mapped to the Ollama model. This is fixed
   by `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` in
