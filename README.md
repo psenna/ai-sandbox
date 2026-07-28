@@ -28,7 +28,7 @@ Four services on two isolated bridge networks (see `docker-compose.yaml`):
 | Service | Image | Networks | Purpose |
 |---|---|---|---|
 | `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
-| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.1` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
+| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.2` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads. |
 | `claude` | built from `Dockerfile` | proxynet + dinernet | Slim agent: node + claude-code + git + docker-cli. No python/go. |
 
@@ -50,9 +50,9 @@ launches.
    This installs Docker Engine 28.x + containerd 1.7.x (pinned + held) and
    sysbox-ce 0.7.0, and verifies `docker run --runtime=sysbox-runc --rm alpine echo ok`.
 
-2. **`ghcr.io/psenna/git-proxy:v0.0.1`** published (the git-proxy repo's `release`
+2. **`ghcr.io/psenna/git-proxy:v0.0.2`** published (the git-proxy repo's `release`
    workflow builds and pushes the image to GHCR on every GitHub release). If a
-   newer tag than `v0.0.1` is out, bump the `git-proxy` `image:` line in
+   newer tag than `v0.0.2` is out, bump the `git-proxy` `image:` line in
    `docker-compose.yaml`. To run a local build instead, comment out the `image:`
    line and uncomment the `build:` block (`context: ../git-proxy`), then
    `docker compose build git-proxy`.

@@ -55,6 +55,9 @@ policy:
         allow: ["refs/heads/main", "refs/heads/feat/*"]  # only these refs may be pushed
     secret_scan:
       enabled: true                 # redacted reasons; matched secret never reaches agent/audit/alert
+      # Built-in ignores go.sum/go.mod + common lockfiles (their h1:/sha512-
+      # integrity hashes trip the entropy heuristic but are non-secret). Extend
+      # with params.ignore_paths (gitignore-style, fail-closed on malformed).
   read:
     deny: ["secrets/**"]            # withhold secrets/ blobs from fetch (use --filter=blob:none to clone)
 
