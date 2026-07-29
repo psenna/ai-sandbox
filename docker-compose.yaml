@@ -23,7 +23,7 @@
 #
 # Prerequisites:
 #   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
-#   - ghcr.io/psenna/git-proxy:v0.0.2 published (or uncomment the build: block
+#   - ghcr.io/psenna/git-proxy:v0.0.3 published (or uncomment the build: block
 #     below to build from a sibling ../git-proxy checkout).
 
 services:
@@ -62,7 +62,7 @@ services:
     #   build:
     #     context: ../git-proxy
     #     dockerfile: Dockerfile
-    image: ghcr.io/psenna/git-proxy:v0.0.2
+    image: ghcr.io/psenna/git-proxy:v0.0.3
     container_name: ai-sandbox-gitproxy
     # Run as the image's non-root gitproxy user (uid 1000). The bind-mounted
     # data/ dirs must be writable by uid 1000 — see README.md if your host uid
