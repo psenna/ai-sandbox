@@ -62,7 +62,7 @@ services:
     #   build:
     #     context: ../git-proxy
     #     dockerfile: Dockerfile
-    image: ghcr.io/psenna/git-proxy:v0.0.3
+    image: ghcr.io/psenna/git-proxy:v0.0.4
     container_name: ai-sandbox-gitproxy
     # Run as the image's non-root gitproxy user (uid 1000). The bind-mounted
     # data/ dirs must be writable by uid 1000 — see README.md if your host uid
