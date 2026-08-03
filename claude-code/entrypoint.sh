@@ -40,7 +40,8 @@ cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 #   - /home/node/.npmrc : the claude container's OWN npm (claude-code updates,
 #     plugin installs, any direct npm the agent runs).
 #   - /workspace/.npmrc: the shared-volume copy the use-docker skill tells the
-#     agent to mount into DinD workload containers (-v /workspace/.npmrc:/root/.npmrc:ro).
+#     agent to mount into DinD workload containers, run as the `node` user
+#     (-v /workspace/.npmrc:/home/node/.npmrc:ro -u node).
 # npm sends _authToken as `Authorization: Bearer <token>`, exactly DependaProxy's
 # auth scheme.
 : "${DEPENDAPROXY_URL:=http://dependaproxy:8080/npm}"

@@ -24,6 +24,10 @@ stack. You have TWO execution surfaces:
   Docker daemon is in a separate container and cannot see your filesystem outside
   the shared `/workspace` volume. It will silently mount an empty path.
 - Your working directory IS `/workspace`, so repo files are already shareable.
+- Run workload containers as **uid 1000** (`-u node` for node images, or
+  `-u "$(id -u):$(id -g)"`) so files they write under `/workspace` stay owned by
+  you. Root-run containers leave root-owned files you cannot delete — see the
+  `use-docker` skill (File ownership).
 - The Docker daemon is rootless/isolated: it cannot reach git-proxy or its
   credentials. You will never receive the upstream GitHub PAT — do not attempt to
   obtain it.

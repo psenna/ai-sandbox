@@ -157,11 +157,12 @@ Every npm fetch in the sandbox goes through DependaProxy at
 
 - **claude's own npm** (`/home/node/.npmrc`) already points at the proxy; `npm`
   on the agent container resolves `dependaproxy` on proxynet.
-- **Workload containers** mount the shared `/workspace/.npmrc` and add the host
-  entry for the static dinernet IP (the nested daemon can't resolve compose names):
+- **Workload containers** mount the shared `/workspace/.npmrc`, add the host
+  entry for the static dinernet IP (the nested daemon can't resolve compose
+  names), and run as the `node` user so installed files belong to the agent:
   ```sh
-  docker run --rm -v /workspace:/work -w /work \
-    -v /workspace/.npmrc:/root/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+  docker run --rm -u node -v /workspace:/work -w /work \
+    -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
     node:22-alpine sh -c 'npm install'
   ```
 - **Enforcement:** the DinD daemon (`scripts/dind-init.sh`) inserts iptables
@@ -281,12 +282,13 @@ claude plugin install code-simplifier@claude-plugins-official
    docker compose exec claude curl -s http://dependaproxy:8080/healthz          # {"status":"ok"}
    # claude's OWN npm goes through the proxy:
    docker compose exec claude npm view lodash version --registry http://dependaproxy:8080/npm
-   # a workload container installs through the proxy (mounts the shared .npmrc):
-   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
-     -v /workspace/.npmrc:/root/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+   # a workload container installs through the proxy (mounts the shared .npmrc,
+   # runs as uid 1000 so installed files belong to the agent):
+   docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
+     -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
      node:22-alpine sh -c 'npm install lodash && node -e "require(\"lodash\")"'
    # the public registry is BLOCKED from workloads — this must fail:
-   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
+   docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
      node:22-alpine sh -c 'npm install --registry=https://registry.npmjs.org lodash' || echo 'blocked as expected'
    ```
 5. DinD isolation:
