@@ -35,6 +35,24 @@ cp /opt/agent-context/CLAUDE.md /workspace/CLAUDE.md
 mkdir -p /workspace/.claude/skills/use-docker
 cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 
+# Route ALL npm through DependaProxy: write .npmrc from env (the token is never
+# baked into the image — it comes from the compose environment at runtime).
+#   - /home/node/.npmrc : the claude container's OWN npm (claude-code updates,
+#     plugin installs, any direct npm the agent runs).
+#   - /workspace/.npmrc: the shared-volume copy the use-docker skill tells the
+#     agent to mount into DinD workload containers (-v /workspace/.npmrc:/root/.npmrc:ro).
+# npm sends _authToken as `Authorization: Bearer <token>`, exactly DependaProxy's
+# auth scheme.
+: "${DEPENDAPROXY_URL:=http://dependaproxy:8080/npm}"
+printf 'registry=%s\n' "$DEPENDAPROXY_URL" > /home/node/.npmrc
+if [ -n "${DEPENDAPROXY_TOKEN:-}" ]; then
+  # The auth entry is keyed on the registry HOST (npm matches by prefix).
+  printf '//dependaproxy:8080/:_authToken=%s\n' "$DEPENDAPROXY_TOKEN" >> /home/node/.npmrc
+else
+  echo "entrypoint: WARNING DEPENDAPROXY_TOKEN is unset — npm installs against DependaProxy will get 401 (fill it in .env and set auth.token in dependaproxy.yaml)" >&2
+fi
+cp /home/node/.npmrc /workspace/.npmrc
+
 # The compose `command` / `docker compose exec` args become $@. With no args the
 # default CMD (`bash`) keeps the container alive for interactive `docker compose
 # exec claude claude`. Pass `claude -p "<prompt>"` for a headless run.

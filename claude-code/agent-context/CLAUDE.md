@@ -9,6 +9,11 @@ stack. You have TWO execution surfaces:
   use Docker, available via `DOCKER_HOST=tcp://docker:2375`. See the `use-docker`
   skill. Do NOT run node/python/go directly on this container — always run them
   inside disposable Docker containers launched against the DinD daemon.
+- **npm dependencies**: always through DependaProxy (`http://dependaproxy:8080/npm`),
+  never `registry.npmjs.org` — see the `use-docker` skill for the exact mount/flag
+  to use in workload containers. The public npm registries are network-blocked by
+  the sandbox; do not try to bypass the block. Never commit `/workspace/.npmrc` (it
+  contains the internal `DEPENDAPROXY_TOKEN`).
 
 ## Docker rules (read before you `docker run`)
 

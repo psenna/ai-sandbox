@@ -1,9 +1,10 @@
 # ai-sandbox: Claude Code (via Ollama) → git-proxy → real GitHub, with a rootless
-# DinD daemon for dev workloads.
+# DinD daemon for dev workloads and a DependaProxy for supply-chain-safe npm.
 #
-# Topology (two isolated bridge networks):
-#   proxynet:  ollama, git-proxy, claude
-#   dinernet:  docker (DinD), claude
+# Topology (three isolated bridge networks):
+#   proxynet:  ollama, git-proxy, dependaproxy, claude
+#   dinernet:  docker (DinD), dependaproxy, claude
+#   dbnet:     postgres, dependaproxy            (DependaProxy's trust storage)
 #
 #   ollama (daemon) serves Anthropic-compatible /v1/messages on :11434
 #     └── :cloud models proxied to ollama.com (device auth via the ./.ollama
@@ -14,6 +15,9 @@
 #     http.extraHeader attaches the agent Bearer
 #   claude (agent) --DOCKER_HOST=tcp://docker:2375--> docker (rootless DinD)
 #     └── runs node/python/go/services in isolated containers on dinernet
+#   npm (claude + workload containers) → http://dependaproxy:8080/npm
+#     └── DependaProxy validates + hashes every package (postgres trust anchor);
+#         the DinD daemon blocks direct egress to registry.npmjs.org (dind-init.sh)
 #
 # The agent NEVER sees the GitHub PAT: git-proxy holds it in credentials.yaml and
 # attaches it on the proxy→GitHub leg (HTTP Basic for the git protocol, Bearer for
@@ -25,6 +29,7 @@
 #   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
 #   - ghcr.io/psenna/git-proxy:v0.0.3 published (or uncomment the build: block
 #     below to build from a sibling ../git-proxy checkout).
+#   - ghcr.io/psenna/dependaproxy:v0.0.0 published.
 
 services:
   ollama:
@@ -79,18 +84,77 @@ services:
     networks:
       - proxynet
 
+  # DependaProxy's trust-anchor storage (PostgreSQL). Isolated on dbnet: only the
+  # dependaproxy service can reach it (neither claude nor the DinD daemon is on
+  # dbnet). DependaProxy auto-applies its schema at startup
+  # (CREATE TABLE IF NOT EXISTS) — no manual migration. The POSTGRES_PASSWORD
+  # MUST match storage.dsn in dependaproxy.yaml (change both in your local copy;
+  # the committed file keeps the dev default).
+  postgres:
+    image: postgres:18
+    container_name: ai-sandbox-postgres
+    environment:
+      POSTGRES_USER: dependaproxy
+      POSTGRES_PASSWORD: dependaproxy-secret
+      POSTGRES_DB: dependaproxy
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - dbnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dependaproxy -d dependaproxy"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  # The secure dependency proxy: validates + hashes every npm package and serves
+  # them under /npm. The agent's npm clients (claude itself + the workload
+  # containers it launches in DinD) point their registry here and never touch
+  # registry.npmjs.org. On proxynet so claude reaches it by name; on dinernet
+  # (STATIC IP 172.20.0.10) so workload containers inside the nested daemon can
+  # reach it — they cannot resolve sibling compose names, so the use-docker skill
+  # passes --add-host=dependaproxy:172.20.0.10. The cache dir is a host bind mount
+  # that must be writable by the image's uid 65532 — see README.md (sudo chown -R
+  # 65532:65532 data/dependaproxy-cache). No healthcheck: the image is FROM scratch
+  # and has no healthcheck binary; claude depends on it with service_started.
+  dependaproxy:
+    image: ghcr.io/psenna/dependaproxy:v0.0.0
+    container_name: ai-sandbox-dependaproxy
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./dependaproxy.yaml:/config.yaml:ro
+      - ./data/dependaproxy-cache:/var/lib/dependaproxy/cache
+    networks:
+      proxynet: {}
+      dbnet: {}
+      dinernet:
+        ipv4_address: 172.20.0.10
+
   # Rootless Docker-in-Docker daemon. The agent (claude) uses it to run arbitrary
-  # images (node, python, golang, postgres, mysql, minio, …) via DOCKER_HOST — dev
+  # images (node, python, go, postgres, mysql, minio, …) via DOCKER_HOST — dev
   # tasks NEVER run directly on the claude container. Runs under the sysbox
   # runtime with NO --privileged: sysbox user-namespace mapping makes the inner
   # dockerd unprivileged on the host, so it cannot access host devices or
   # git-proxy's bind mounts (incl. credentials.yaml). It is on dinernet ONLY —
   # git-proxy is not on dinernet, so a compromised daemon has no route to the
   # proxy. Host prerequisite: sysbox must be installed (run setup-ubuntu-host.sh).
+  #
+  # entrypoint is replaced by scripts/dind-init.sh (mounted below): it starts
+  # dockerd in the background, then inserts iptables DOCKER-USER REJECT rules for
+  # the public npm registries — so workload containers can fetch npm packages ONLY
+  # through DependaProxy, even if an agent points npm at registry.npmjs.org. With
+  # DOCKER_TLS_CERTDIR="" the image's own entrypoint would only exec dockerd, which
+  # the script replicates (update it if the base image's entrypoint semantics
+  # change). The iptables host list is resolved at container start; restart the
+  # docker service to refresh it.
   docker:
     image: docker:27-dind
     runtime: sysbox-runc
     container_name: ai-sandbox-dind
+    entrypoint: ["sh", "/dind-init.sh"]
     # The docker:dind entrypoint (dockerd-entrypoint.sh) execs `dockerd "$@"`, so
     # `command:` is the dockerd args. Listen on TCP for cross-container access on
     # dinernet AND on the unix socket for the in-container healthcheck.
@@ -109,6 +173,7 @@ services:
     volumes:
       - docker-cache:/var/lib/docker   # image/layer cache survives restarts
       - workspace:/workspace           # shared with claude (the exchange point)
+      - ./scripts/dind-init.sh:/dind-init.sh:ro   # npm-egress block (see above)
     networks:
       - dinernet
     healthcheck:
@@ -131,6 +196,8 @@ services:
         condition: service_started
       docker:
         condition: service_healthy
+      dependaproxy:
+        condition: service_started
     # Interactive: the container idles on bash (default CMD) so the operator can
     #   docker compose exec claude claude            # interactive Claude Code
     #   docker compose exec claude claude -p "..."   # headless one-shot
@@ -160,6 +227,12 @@ services:
       GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
       GIT_PROXY_TOKEN: "${AGENT_TOKEN}"
       GIT_PROXY_HEADER: "http.extraheader=Authorization: Bearer ${AGENT_TOKEN}"
+      # --- DependaProxy: npm MUST go through the secure proxy ---
+      # The entrypoint writes these into /home/node/.npmrc (claude's own npm) and
+      # /workspace/.npmrc (mounted into DinD workload containers by use-docker).
+      DEPENDAPROXY_URL: "http://dependaproxy:8080/npm"
+      DEPENDAPROXY_TOKEN: "${DEPENDAPROXY_TOKEN}"    # placeholder in dependaproxy.yaml; fill .env
+      NPM_CONFIG_REGISTRY: "http://dependaproxy:8080/npm"
       # Docker client -> the rootless DinD daemon on the isolated dinernet.
       DOCKER_HOST: "tcp://docker:2375"
       DOCKER_TLS_VERIFY: ""
@@ -171,12 +244,28 @@ services:
       - dinernet
 
 networks:
+  # Explicit subnets everywhere: dependaproxy needs a stable dinernet IP
+  # (172.20.0.10) so workload containers inside the DinD daemon can reach it by
+  # --add-host, and fixed ranges prevent accidental overlap with Docker's
+  # auto-assigned bridge subnets.
   proxynet:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
   dinernet:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  dbnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
 
 volumes:
   workspace: {}
   docker-cache: {}
   claude-config: {}
+  pgdata: {}

@@ -1,0 +1,42 @@
+# DependaProxy configuration for the ai-sandbox stack — npm registry only.
+#
+# The agent's npm clients (claude itself + DinD workload containers) point their
+# registry at http://dependaproxy:8080/npm. Every package is validated (minimum
+# publication age), hashed, and served only if the bytes match the stored hash.
+#
+# Secrets: this file is committed with PLACEHOLDERS ONLY, like credentials.yaml.
+#   - auth.token: replace REPLACE_WITH_DEPENDAPROXY_TOKEN with a real value in your
+#     LOCAL copy (and set DEPENDAPROXY_TOKEN in .env to the same value) — never
+#     commit the real token. npm clients send it as Authorization: Bearer via the
+#     `//dependaproxy:8080/:_authToken` entry in .npmrc.
+#   - storage.dsn password: internal-only dev default (postgres is on the isolated
+#     dbnet, unreachable from claude/DinD). If you change it, change POSTGRES_PASSWORD
+#     in docker-compose.yaml too.
+
+server:
+  addr: ":8080"
+
+auth:
+  token: "REPLACE_WITH_DEPENDAPROXY_TOKEN"
+
+storage:
+  type: postgres
+  dsn: "postgres://dependaproxy:dependaproxy-secret@postgres:5432/dependaproxy?sslmode=disable"
+
+log:
+  level: info
+  format: json
+
+registries:
+  - type: npm
+    prefix: /npm
+    upstream: https://registry.npmjs.org
+    validation:
+      - type: min-publication-age
+        params:
+          min_days: 7
+    retrieval:
+      - type: local-disk-cache
+        params:
+          path: /var/lib/dependaproxy/cache/npm
+      - type: upstream-registry

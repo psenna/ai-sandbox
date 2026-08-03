@@ -43,10 +43,20 @@ appear at `/work` inside the container and sets the working directory there.
 
 ## Per-language one-liners
 
+npm MUST go through DependaProxy (see *npm → DependaProxy* below). Other
+registries (pypi, Go module proxy) are not proxied in this stack yet — leave
+them on their defaults.
+
 ```sh
-# Node (use a fresh container for isolation, not the agent's node)
+# Node (use a fresh container for isolation, not the agent's node).
 docker run --rm -v /workspace:/work -w /work node:22-alpine node script.js
-docker run --rm -v /workspace:/work -w /work node:22-alpine sh -c 'npm install && npm test'
+# npm install/test: mount the entrypoint-generated .npmrc (registry + token) and
+# add the dependaproxy host entry (the nested daemon cannot resolve the compose
+# name — the static dinernet IP is 172.20.0.10). node:22-alpine runs as root, so
+# HOME=/root and npm reads /root/.npmrc.
+docker run --rm -v /workspace:/work -w /work \
+  -v /workspace/.npmrc:/root/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+  node:22-alpine sh -c 'npm install && npm test'
 
 # Python
 docker run --rm -v /workspace:/work -w /work python:3-alpine python script.py
@@ -64,6 +74,31 @@ persist only if they are written under `/workspace` (the shared volume) OR a nam
 volume you create. State written elsewhere inside the container is lost when `--rm`
 removes it. For Go, set `GOMODCACHE`/`GOCACHE` under `/work` if you want build
 caches to persist.
+
+## npm → DependaProxy (mandatory)
+
+Every `npm install` in a workload container goes through the DependaProxy service
+(`http://dependaproxy:8080/npm`) — supply-chain-safe: each package is validated and
+served only if it matches the stored hash. Two hard constraints:
+
+- **The public npm registries are blocked at the network layer** (the DinD daemon
+  rejects egress to `registry.npmjs.org`/`.com`, `registry.yarnpkg.com`,
+  `registry.npmmirror.com`). Even if you set `--registry=https://registry.npmjs.org`
+  or edit `.npmrc`, the install will fail with a connection error — do not try to
+  work around the block.
+- **Always mount the generated npm config + host entry** (see the node one-liners):
+  ```sh
+  docker run --rm -v /workspace:/work -w /work \
+    -v /workspace/.npmrc:/root/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+    node:22-alpine sh -c 'npm install && npm test'
+  ```
+  `/workspace/.npmrc` is written by the claude entrypoint (registry
+  `http://dependaproxy:8080/npm` + `_authToken`). If you run a node image as a
+  non-root user, mount it to that user's home instead of `/root/.npmrc`.
+
+A package blocked by DependaProxy's validation (default: published less than 7 days
+ago) returns a 403 — read the error and pick a different version; the block is
+intentional.
 
 ## Standing up a service dependency (postgres, mysql, minio, redis, …)
 
