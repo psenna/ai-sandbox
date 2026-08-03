@@ -35,6 +35,11 @@ cp /opt/agent-context/CLAUDE.md /workspace/CLAUDE.md
 mkdir -p /workspace/.claude/skills/use-docker
 cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 
+# implement-issue: drive a GitHub issue from spec to merged PR with a tiered
+# model pipeline (Opus plans, Sonnet implements, Opus validates & fixes).
+mkdir -p /workspace/.claude/skills/implement-issue
+cp /opt/skills/implement-issue/SKILL.md /workspace/.claude/skills/implement-issue/SKILL.md
+
 # Route ALL npm through DependaProxy: write .npmrc from env (the token is never
 # baked into the image — it comes from the compose environment at runtime).
 #   - /home/node/.npmrc : the claude container's OWN npm (claude-code updates,
