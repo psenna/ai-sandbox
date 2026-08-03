@@ -309,6 +309,7 @@ claude plugin install code-simplifier@claude-plugins-official
 - `claude-code/agent-context/CLAUDE.md` — always-loaded agent context (two execution surfaces, rules).
 - `claude-code/use-git-proxy/SKILL.md` — git-protocol + broker REST skill (sourced from the git-proxy repo).
 - `claude-code/use-docker/SKILL.md` — rootless DinD skill with mysql/minio/postgres recipes + mandatory npm → DependaProxy.
+- `claude-code/implement-issue/SKILL.md` — tiered-model issue pipeline (Opus plans, Sonnet implements, Opus validates & fixes → PR).
 - `config.yaml` — git-proxy config (github upstream, broker, policy, audit).
 - `credentials.yaml` — GitHub PAT profile (PLACEHOLDERS ONLY — never commit a real PAT).
 - `dependaproxy.yaml` — DependaProxy config (npm registry, bearer-token placeholder, postgres DSN).
