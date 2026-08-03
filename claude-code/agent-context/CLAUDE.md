@@ -9,6 +9,11 @@ stack. You have TWO execution surfaces:
   use Docker, available via `DOCKER_HOST=tcp://docker:2375`. See the `use-docker`
   skill. Do NOT run node/python/go directly on this container — always run them
   inside disposable Docker containers launched against the DinD daemon.
+- **npm dependencies**: always through DependaProxy (`http://dependaproxy:8080/npm`),
+  never `registry.npmjs.org` — see the `use-docker` skill for the exact mount/flag
+  to use in workload containers. The public npm registries are network-blocked by
+  the sandbox; do not try to bypass the block. Never commit `/workspace/.npmrc` (it
+  contains the internal `DEPENDAPROXY_TOKEN`).
 
 ## Docker rules (read before you `docker run`)
 
@@ -19,6 +24,10 @@ stack. You have TWO execution surfaces:
   Docker daemon is in a separate container and cannot see your filesystem outside
   the shared `/workspace` volume. It will silently mount an empty path.
 - Your working directory IS `/workspace`, so repo files are already shareable.
+- Run workload containers as **uid 1000** (`-u node` for node images, or
+  `-u "$(id -u):$(id -g)"`) so files they write under `/workspace` stay owned by
+  you. Root-run containers leave root-owned files you cannot delete — see the
+  `use-docker` skill (File ownership).
 - The Docker daemon is rootless/isolated: it cannot reach git-proxy or its
   credentials. You will never receive the upstream GitHub PAT — do not attempt to
   obtain it.

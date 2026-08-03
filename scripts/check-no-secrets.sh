@@ -16,8 +16,8 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
 # Patterns that indicate a REAL secret (not a placeholder). ERE syntax — braces
 # are NOT escaped. High-signal enough that the placeholder strings
-# (REPLACE_WITH_GITHUB_PAT, your_ollama_cloud_api_key, agent-token-1,
-# "AAAAAAAAAAAAA") do not match.
+# (REPLACE_WITH_GITHUB_PAT, REPLACE_WITH_DEPENDAPROXY_TOKEN,
+# your_ollama_cloud_api_key, agent-token-1, "AAAAAAAAAAAAA") do not match.
 patterns=(
   'ghp_[0-9A-Za-z]{36,}'               # GitHub classic PAT
   'github_pat_[0-9A-Za-z_]{20,}'       # GitHub fine-grained PAT

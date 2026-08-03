@@ -43,10 +43,22 @@ appear at `/work` inside the container and sets the working directory there.
 
 ## Per-language one-liners
 
+npm MUST go through DependaProxy (see *npm → DependaProxy* below). Other
+registries (pypi, Go module proxy) are not proxied in this stack yet — leave
+them on their defaults.
+
 ```sh
-# Node (use a fresh container for isolation, not the agent's node)
-docker run --rm -v /workspace:/work -w /work node:22-alpine node script.js
-docker run --rm -v /workspace:/work -w /work node:22-alpine sh -c 'npm install && npm test'
+# Node (use a fresh container for isolation, not the agent's node). Run as the
+# `node` user (uid 1000) so files written under /workspace belong to the agent —
+# see *File ownership* below.
+docker run --rm -u node -v /workspace:/work -w /work node:22-alpine node script.js
+# npm install/test: mount the entrypoint-generated .npmrc (registry + token) and
+# add the dependaproxy host entry (the nested daemon cannot resolve the compose
+# name — the static dinernet IP is 172.20.0.10). With -u node, HOME=/home/node,
+# so npm reads /home/node/.npmrc.
+docker run --rm -u node -v /workspace:/work -w /work \
+  -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+  node:22-alpine sh -c 'npm install && npm test'
 
 # Python
 docker run --rm -v /workspace:/work -w /work python:3-alpine python script.py
@@ -64,6 +76,49 @@ persist only if they are written under `/workspace` (the shared volume) OR a nam
 volume you create. State written elsewhere inside the container is lost when `--rm`
 removes it. For Go, set `GOMODCACHE`/`GOCACHE` under `/work` if you want build
 caches to persist.
+
+## npm → DependaProxy (mandatory)
+
+Every `npm install` in a workload container goes through the DependaProxy service
+(`http://dependaproxy:8080/npm`) — supply-chain-safe: each package is validated and
+served only if it matches the stored hash. Two hard constraints:
+
+- **The public npm registries are blocked at the network layer** (the DinD daemon
+  rejects egress to `registry.npmjs.org`/`.com`, `registry.yarnpkg.com`,
+  `registry.npmmirror.com`). Even if you set `--registry=https://registry.npmjs.org`
+  or edit `.npmrc`, the install will fail with a connection error — do not try to
+  work around the block.
+- **Always mount the generated npm config + host entry, and run as `node`** (see
+  the node one-liners):
+  ```sh
+  docker run --rm -u node -v /workspace:/work -w /work \
+    -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+    node:22-alpine sh -c 'npm install && npm test'
+  ```
+  `/workspace/.npmrc` is written by the claude entrypoint (registry
+  `http://dependaproxy:8080/npm` + `_authToken`). `-u node` matters — without it
+  the container runs as root and leaves root-owned files the agent cannot delete
+  (see *File ownership* below).
+
+A package blocked by DependaProxy's validation (default: published less than 7 days
+ago) returns a 403 — read the error and pick a different version; the block is
+intentional.
+
+## File ownership (run as uid 1000, not root)
+
+Workload images (node, python, go) default to running as **root**. Files they
+create under `/workspace` are then **root-owned** on the host — and because the
+agent runs as uid 1000, it can read them but **cannot delete them** (e.g.
+`rm -rf node_modules` fails with "Permission denied").
+
+Fix: run workloads as **uid 1000** — the agent's uid, which owns `/workspace`:
+- node images: `-u node` (node:22-alpine ships a `node` user, uid 1000)
+- any image: `-u "$(id -u):$(id -g)"` (resolves to `1000:1000` on this host)
+
+Then every file the workload writes under `/workspace` belongs to the agent and
+can be managed or deleted normally. If you already ran as root and need to clean
+up, use a root container (root owns those files):
+`docker run --rm -v /workspace:/work alpine rm -rf /work/node_modules`.
 
 ## Standing up a service dependency (postgres, mysql, minio, redis, …)
 
