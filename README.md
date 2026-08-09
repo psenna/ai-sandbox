@@ -9,22 +9,23 @@ containers that cannot reach the host or the proxy's credentials.
 ```
  proxynet (bridge):  ollama ──┐
    git-proxy ──────── https ──> github.com   (holds the PAT; agent never sees it)
-   dependaproxy ──── https ──> registry.npmjs.org   (validates + hashes every package)
+   dependaproxy ──── https ──> registry.npmjs.org / pypi.org / proxy.golang.org
    claude ─── git/push/PR ───> git-proxy (8080 git / 8090 broker)
         ├── /v1/messages ───> ollama (11434, Anthropic-compatible API)
-        └── npm ───────────> dependaproxy (8080 /npm)
+        └── npm/pip/go ────> dependaproxy (8080 /npm /pypi /goproxy)
  dinernet (bridge):  docker (rootless DinD, sysbox-runc, no --privileged)
    claude ─── DOCKER_HOST=tcp://docker:2375 ──> runs node/python/go/services
-   workload containers ── npm ──> dependaproxy (static IP 172.20.0.10)
+   workload containers ── npm/pip/go ──> dependaproxy (static IP 172.20.0.10)
  dbnet (bridge):  postgres <── dependaproxy (trust-anchor storage; isolated)
 ```
 
 The agent never gets the upstream PAT, never has `gh`, and never has python/go on
 its container — dev tooling runs inside disposable DinD containers. Pushes are
-policy-gated (`secret_scan`, `history_protect`, `branch_pattern`) and audited. npm
-is supply-chain-gated too: every package is validated and hash-verified by
-DependaProxy, and the public npm registries are network-blocked from the DinD
-daemon — workloads cannot fetch npm any other way.
+policy-gated (`secret_scan`, `history_protect`, `branch_pattern`) and audited.
+Dependencies are supply-chain-gated too: every npm/pypi/Go package is validated
+and hash-verified by DependaProxy, and the public npm/pypi/Go registries are
+network-blocked from the DinD daemon — workloads cannot fetch dependencies any
+other way.
 
 ---
 
@@ -37,8 +38,8 @@ Five services on three isolated bridge networks (see `docker-compose.yaml`):
 | `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
 | `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.4` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `postgres` | `postgres:18` | dbnet | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
-| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.0` | proxynet + dinernet + dbnet | Secure npm proxy: validates + hashes every package, serves `/npm`. Static dinernet IP `172.20.0.10`. |
-| `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks npm egress to the public registries (`scripts/dind-init.sh`). |
+| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.2` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`. Static dinernet IP `172.20.0.10`. |
+| `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks egress to the public npm/pypi/Go registries (`scripts/dind-init.sh`). |
 | `claude` | built from `Dockerfile` | proxynet + dinernet | Slim agent: node + claude-code + git + docker-cli. No python/go. |
 
 `git-proxy` is on **proxynet only**; the DinD daemon is on **dinernet only** — so
@@ -47,13 +48,18 @@ a compromised daemon has no route to the proxy's bind-mounted `credentials.yaml`
 only route. The shared `workspace` volume (mounted in `claude` and `docker`) is the
 only file-exchange point between the agent and the containers it launches.
 
-**npm flow:** the agent's npm clients (claude itself + workload containers) point
-their registry at `http://dependaproxy:8080/npm`. DependaProxy validates each
-package (min-publication-age 7 days), stores a sha256 trust anchor in postgres, and
-serves only bytes that match the stored hash. The DinD daemon rejects egress to
-`registry.npmjs.org`/`.com`, `registry.yarnpkg.com`, and `registry.npmmirror.com`
-(see `scripts/dind-init.sh`), so workloads physically cannot fetch npm any other
-way — even if an agent overrides the registry.
+**Registry flow:** the agent's clients (claude itself + workload containers) point
+their registries at `http://dependaproxy:8080/npm` (npm), `…/pypi/simple` (pip),
+and `…/goproxy` (Go modules). DependaProxy validates each package
+(min-publication-age 7 days), stores a sha256 trust anchor in postgres, and serves
+only bytes that match the stored hash. The DinD daemon rejects egress to the public
+npm hosts (`registry.npmjs.org`/`.com`, `registry.yarnpkg.com`,
+`registry.npmmirror.com`), pypi hosts (`pypi.org`, `files.pythonhosted.org`,
+`pypi.python.org`), and Go hosts (`proxy.golang.org`, `goproxy.io`, `goproxy.cn`)
+(see `scripts/dind-init.sh`), so workloads physically cannot fetch dependencies any
+other way — even if an agent overrides a registry. Go still verifies module
+checksums against `sum.golang.org` directly (that host is intentionally not
+blocked).
 
 ---
 
@@ -74,8 +80,11 @@ way — even if an agent overrides the registry.
    line and uncomment the `build:` block (`context: ../git-proxy`), then
    `docker compose build git-proxy`.
 
-3. **`ghcr.io/psenna/dependaproxy:v0.0.0`** published (the dependaproxy repo's
-   `release` workflow builds and pushes the image on every GitHub release).
+3. **`ghcr.io/psenna/dependaproxy:v0.0.2`** published (the dependaproxy repo's
+   `release` workflow builds and pushes the image on every GitHub release). v0.0.2
+   adds HTTP Basic auth support (kept for other deployments) and fixes the pypi
+   adapter so pip installs work. The sandbox runs it with auth disabled (see
+   `dependaproxy.yaml`).
 
 4. **A GitHub fine-grained PAT** for the repo(s) the agent will work on:
    https://github.com/settings/personal-access-tokens
@@ -112,9 +121,11 @@ cp .env.example .env
 #       and pass it to the git-proxy container via docker-compose.yaml environment.
 #    NEVER commit a real PAT — credentials.yaml is tracked with placeholders only.
 
-# 3. Give DependaProxy its bearer token: edit dependaproxy.yaml (tracked with the
-#    placeholder REPLACE_WITH_DEPENDAPROXY_TOKEN) and set DEPENDAPROXY_TOKEN in
-#    .env to the SAME value. Never commit the real token.
+# 3. DependaProxy auth is DISABLED in this stack (auth.token: "" in
+#    dependaproxy.yaml) — Go's module client refuses credentials over plaintext
+#    HTTP, and the proxy is on isolated internal networks. If you re-enable auth,
+#    set a token in dependaproxy.yaml AND DEPENDAPROXY_TOKEN in .env to the same
+#    value. Never commit a real token.
 
 # 4. Create the bind-mount dirs (git-proxy writes as uid 1000; dependaproxy as
 #    uid 65532 — see the uid note below if your host uid differs).
@@ -145,31 +156,40 @@ is rewritten to `http://git-proxy:8080/<x>` with the agent Bearer attached, and
 drops the `use-git-proxy` + `use-docker` skills and `CLAUDE.md` into
 `/workspace/.claude/`. So ordinary `git clone`/`push`/`fetch` flow through the
 proxy with no extra flags, and PRs/CI/issues go through the broker via the
-`use-git-proxy` skill (no `gh` CLI). The entrypoint also writes `.npmrc`
-(`registry=http://dependaproxy:8080/npm` + the DependaProxy token) to
-`/home/node/.npmrc` and a shared copy at `/workspace/.npmrc` that the
-`use-docker` skill mounts into npm workload containers.
+`use-git-proxy` skill (no `gh` CLI). The entrypoint also writes the registry
+configs from env: `.npmrc` (`registry=http://dependaproxy:8080/npm`) to
+`/home/node/.npmrc` and a shared copy at `/workspace/.npmrc`, plus
+`/workspace/pip.env` (`PIP_INDEX_URL` + `PIP_TRUSTED_HOST`) and
+`/workspace/go.env` (`GOPROXY`). The `use-docker` skill passes these into
+workload containers via `--env-file`.
 
-### npm (DependaProxy)
+### Registries (DependaProxy)
 
-Every npm fetch in the sandbox goes through DependaProxy at
-`http://dependaproxy:8080/npm` — there is no other way to get npm packages:
+Every npm/pip/Go fetch in the sandbox goes through DependaProxy — there is no
+other way to get dependencies:
 
 - **claude's own npm** (`/home/node/.npmrc`) already points at the proxy; `npm`
   on the agent container resolves `dependaproxy` on proxynet.
-- **Workload containers** mount the shared `/workspace/.npmrc`, add the host
-  entry for the static dinernet IP (the nested daemon can't resolve compose
-  names), and run as the `node` user so installed files belong to the agent:
+- **Workload containers** mount/pass the shared configs, add the host entry for
+  the static dinernet IP (the nested daemon can't resolve compose names), and run
+  as uid 1000 so installed files belong to the agent:
   ```sh
+  # npm
   docker run --rm -u node -v /workspace:/work -w /work \
     -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
     node:22-alpine sh -c 'npm install'
+  # pip
+  docker run --rm -v /workspace:/work -w /work \
+    --env-file /work/pip.env --add-host=dependaproxy:172.20.0.10 \
+    python:3-alpine sh -c 'pip install -r requirements.txt'
+  # go
+  docker run --rm -v /workspace:/work -w /work \
+    --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+    golang:1-alpine go mod download
   ```
 - **Enforcement:** the DinD daemon (`scripts/dind-init.sh`) inserts iptables
-  REJECTs for `registry.npmjs.org`/`.com`, `registry.yarnpkg.com`, and
-  `registry.npmmirror.com`, so workloads cannot reach a public npm registry even if
-  an agent overrides the registry setting. `pip`/`go` are not proxied yet and still
-  use their defaults.
+  REJECTs for the public npm/pypi/Go hosts, so workloads cannot reach a public
+  registry even if an agent overrides the registry setting.
 
 ### Ollama: local vs cloud
 
@@ -223,11 +243,11 @@ claude plugin install code-simplifier@claude-plugins-official
 - **No secrets in images.** All credentials are runtime env/bind-mounts; the
   `.dockerignore` excludes `.env`, `credentials.yaml`, `dependaproxy.yaml`,
   `data/`, and runtime state from the `claude` build context.
-- **npm is proxy-only.** The DependaProxy bearer token is an internal-only
-  credential (`DEPENDAPROXY_TOKEN` in .env, placeholder `REPLACE_WITH_...` in the
-  tracked `dependaproxy.yaml`, never committed), and the public npm registries are
-  network-blocked from the DinD daemon — so the agent cannot fetch npm packages
-  outside DependaProxy.
+- **Dependencies are proxy-only.** The public npm/pypi/Go registries are
+  network-blocked from the DinD daemon — so the agent cannot fetch dependencies
+  outside DependaProxy. DependaProxy auth is disabled in this stack (the proxy is
+  on isolated internal networks; Go's module client refuses credentials over
+  plaintext HTTP), so there is no proxy token to leak.
 - **Repo self-check** before committing:
   ```sh
   bash scripts/check-no-secrets.sh
@@ -276,7 +296,7 @@ claude plugin install code-simplifier@claude-plugins-official
 3. From inside a `claude` session, clone the configured repo (rewritten to the
    proxy), push a `feat/test` branch, open a PR via the `use-git-proxy` skill.
    Confirm a push to `main` and a `--force` are both rejected by policy.
-4. DependaProxy + npm routing:
+4. DependaProxy + registry routing:
    ```sh
    # the proxy is up (open /healthz):
    docker compose exec claude curl -s http://dependaproxy:8080/healthz          # {"status":"ok"}
@@ -287,9 +307,19 @@ claude plugin install code-simplifier@claude-plugins-official
    docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
      -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
      node:22-alpine sh -c 'npm install lodash && node -e "require(\"lodash\")"'
-   # the public registry is BLOCKED from workloads — this must fail:
+   # pip through the proxy (passes pip.env):
+   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
+     --env-file /work/pip.env --add-host=dependaproxy:172.20.0.10 \
+     python:3-alpine sh -c 'pip install requests && python -c "import requests"'
+   # go through the proxy (passes go.env):
+   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
+     --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+     golang:1-alpine sh -c 'cd /work && go mod init example.com/hello && go get github.com/google/uuid'
+   # the public registries are BLOCKED from workloads — these must fail:
    docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
      node:22-alpine sh -c 'npm install --registry=https://registry.npmjs.org lodash' || echo 'blocked as expected'
+   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
+     python:3-alpine sh -c 'pip install --index-url https://pypi.org/simple requests' || echo 'blocked as expected'
    ```
 5. DinD isolation:
    ```sh
@@ -305,15 +335,15 @@ claude plugin install code-simplifier@claude-plugins-official
 
 - `docker-compose.yaml` — the 5-service stack.
 - `Dockerfile` — slim agent image (node:22-alpine + claude-code + git + docker-cli).
-- `claude-code/entrypoint.sh` — sets `insteadOf`/`extraHeader`, drops skills + CLAUDE.md, writes `.npmrc` (npm → DependaProxy), `exec "$@"`.
+- `claude-code/entrypoint.sh` — sets `insteadOf`/`extraHeader`, drops skills + CLAUDE.md, writes `.npmrc` + `pip.env` + `go.env` (npm/pip/go → DependaProxy), `exec "$@"`.
 - `claude-code/agent-context/CLAUDE.md` — always-loaded agent context (two execution surfaces, rules).
 - `claude-code/use-git-proxy/SKILL.md` — git-protocol + broker REST skill (sourced from the git-proxy repo).
-- `claude-code/use-docker/SKILL.md` — rootless DinD skill with mysql/minio/postgres recipes + mandatory npm → DependaProxy.
+- `claude-code/use-docker/SKILL.md` — rootless DinD skill with mysql/minio/postgres recipes + mandatory npm/pip/go → DependaProxy.
 - `claude-code/implement-issue/SKILL.md` — tiered-model issue pipeline (Opus plans, Sonnet implements, Opus validates & fixes → PR).
 - `config.yaml` — git-proxy config (github upstream, broker, policy, audit).
 - `credentials.yaml` — GitHub PAT profile (PLACEHOLDERS ONLY — never commit a real PAT).
-- `dependaproxy.yaml` — DependaProxy config (npm registry, bearer-token placeholder, postgres DSN).
-- `scripts/dind-init.sh` — DinD entrypoint override that blocks npm egress to the public registries.
+- `dependaproxy.yaml` — DependaProxy config (npm/pypi/goproxy registries, token placeholder, postgres DSN).
+- `scripts/dind-init.sh` — DinD entrypoint override that blocks egress to the public npm/pypi/Go registries.
 - `.env.example` — operator secrets template (copy to `.env`).
 - `setup-ubuntu-host.sh` — installs Docker + sysbox-ce on Ubuntu 24.04.
 - `scripts/check-no-secrets.sh` — pre-commit secret scan backstop.

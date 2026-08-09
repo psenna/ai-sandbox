@@ -1,5 +1,6 @@
 # ai-sandbox: Claude Code (via Ollama) → git-proxy → real GitHub, with a rootless
-# DinD daemon for dev workloads and a DependaProxy for supply-chain-safe npm.
+# DinD daemon for dev workloads and a DependaProxy for supply-chain-safe
+# npm / pypi / Go module dependencies.
 #
 # Topology (three isolated bridge networks):
 #   proxynet:  ollama, git-proxy, dependaproxy, claude
@@ -15,9 +16,10 @@
 #     http.extraHeader attaches the agent Bearer
 #   claude (agent) --DOCKER_HOST=tcp://docker:2375--> docker (rootless DinD)
 #     └── runs node/python/go/services in isolated containers on dinernet
-#   npm (claude + workload containers) → http://dependaproxy:8080/npm
+#   npm/pypi/go (claude + workload containers) → http://dependaproxy:8080/{npm,pypi,goproxy}
 #     └── DependaProxy validates + hashes every package (postgres trust anchor);
-#         the DinD daemon blocks direct egress to registry.npmjs.org (dind-init.sh)
+#         the DinD daemon blocks direct egress to the public npm/pypi/go registries
+#         (dind-init.sh)
 #
 # The agent NEVER sees the GitHub PAT: git-proxy holds it in credentials.yaml and
 # attaches it on the proxy→GitHub leg (HTTP Basic for the git protocol, Bearer for
@@ -29,7 +31,8 @@
 #   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
 #   - ghcr.io/psenna/git-proxy:v0.0.3 published (or uncomment the build: block
 #     below to build from a sibling ../git-proxy checkout).
-#   - ghcr.io/psenna/dependaproxy:v0.0.0 published.
+#   - ghcr.io/psenna/dependaproxy:v0.0.2 published (v0.0.2 adds HTTP Basic auth
+#     so pip and Go's module client can authenticate with the shared token).
 
 services:
   ollama:
@@ -108,18 +111,19 @@ services:
       retries: 30
       start_period: 10s
 
-  # The secure dependency proxy: validates + hashes every npm package and serves
-  # them under /npm. The agent's npm clients (claude itself + the workload
-  # containers it launches in DinD) point their registry here and never touch
-  # registry.npmjs.org. On proxynet so claude reaches it by name; on dinernet
-  # (STATIC IP 172.20.0.10) so workload containers inside the nested daemon can
-  # reach it — they cannot resolve sibling compose names, so the use-docker skill
-  # passes --add-host=dependaproxy:172.20.0.10. The cache dir is a host bind mount
-  # that must be writable by the image's uid 65532 — see README.md (sudo chown -R
+  # The secure dependency proxy: validates + hashes every npm/pypi/Go package and
+  # serves them under /npm, /pypi, /goproxy. The agent's clients (claude itself +
+  # the workload containers it launches in DinD) point their registries here and
+  # never touch registry.npmjs.org / pypi.org / proxy.golang.org. On proxynet so
+  # claude reaches it by name; on dinernet (STATIC IP 172.20.0.10) so workload
+  # containers inside the nested daemon can reach it — they cannot resolve sibling
+  # compose names, so the use-docker skill passes
+  # --add-host=dependaproxy:172.20.0.10. The cache dir is a host bind mount that
+  # must be writable by the image's uid 65532 — see README.md (sudo chown -R
   # 65532:65532 data/dependaproxy-cache). No healthcheck: the image is FROM scratch
   # and has no healthcheck binary; claude depends on it with service_started.
   dependaproxy:
-    image: ghcr.io/psenna/dependaproxy:v0.0.0
+    image: ghcr.io/psenna/dependaproxy:v0.0.2
     container_name: ai-sandbox-dependaproxy
     depends_on:
       postgres:
@@ -227,12 +231,19 @@ services:
       GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
       GIT_PROXY_TOKEN: "${AGENT_TOKEN}"
       GIT_PROXY_HEADER: "http.extraheader=Authorization: Bearer ${AGENT_TOKEN}"
-      # --- DependaProxy: npm MUST go through the secure proxy ---
-      # The entrypoint writes these into /home/node/.npmrc (claude's own npm) and
-      # /workspace/.npmrc (mounted into DinD workload containers by use-docker).
+      # --- DependaProxy: npm/pypi/go MUST go through the secure proxy ---
+      # The entrypoint writes these into /home/node/.npmrc (claude's own npm),
+      # /workspace/.npmrc, /workspace/pip.env, and /workspace/go.env (passed into
+      # DinD workload containers by use-docker via --env-file). The *_URL vars
+      # are informational for the agent; PIP_INDEX_URL / GOPROXY are the env vars
+      # the workload containers actually consume.
       DEPENDAPROXY_URL: "http://dependaproxy:8080/npm"
-      DEPENDAPROXY_TOKEN: "${DEPENDAPROXY_TOKEN}"    # placeholder in dependaproxy.yaml; fill .env
+      DEPENDAPROXY_PYPI_URL: "http://dependaproxy:8080/pypi"
+      DEPENDAPROXY_GOPROXY_URL: "http://dependaproxy:8080/goproxy"
+      DEPENDAPROXY_TOKEN: "${DEPENDAPROXY_TOKEN}"    # unused: auth is disabled (see dependaproxy.yaml)
       NPM_CONFIG_REGISTRY: "http://dependaproxy:8080/npm"
+      PIP_INDEX_URL: "http://dependaproxy:8080/pypi/simple"
+      GOPROXY: "http://dependaproxy:8080/goproxy"
       # Docker client -> the rootless DinD daemon on the isolated dinernet.
       DOCKER_HOST: "tcp://docker:2375"
       DOCKER_TLS_VERIFY: ""

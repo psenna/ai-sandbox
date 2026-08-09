@@ -40,24 +40,33 @@ cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 mkdir -p /workspace/.claude/skills/implement-issue
 cp /opt/skills/implement-issue/SKILL.md /workspace/.claude/skills/implement-issue/SKILL.md
 
-# Route ALL npm through DependaProxy: write .npmrc from env (the token is never
-# baked into the image — it comes from the compose environment at runtime).
-#   - /home/node/.npmrc : the claude container's OWN npm (claude-code updates,
-#     plugin installs, any direct npm the agent runs).
-#   - /workspace/.npmrc: the shared-volume copy the use-docker skill tells the
-#     agent to mount into DinD workload containers, run as the `node` user
-#     (-v /workspace/.npmrc:/home/node/.npmrc:ro -u node).
-# npm sends _authToken as `Authorization: Bearer <token>`, exactly DependaProxy's
-# auth scheme.
+# Route ALL npm/pip/go through DependaProxy: write the config files from env.
+# The use-docker skill tells the agent to pass these into DinD workload
+# containers. DependaProxy auth is DISABLED in this stack (see dependaproxy.yaml:
+# Go's module client refuses credentials over plaintext HTTP), so the configs
+# carry no token.
+#   - /home/node/.npmrc + /workspace/.npmrc : npm registry.
+#   - /workspace/pip.env                    : pip (PIP_INDEX_URL + PIP_TRUSTED_HOST;
+#     pip 26.x ignores bind-mounted pip.conf files, so we use env vars).
+#   - /workspace/go.env                     : go (GOPROXY; no userinfo — go refuses
+#     to send credentials over HTTP).
 : "${DEPENDAPROXY_URL:=http://dependaproxy:8080/npm}"
+: "${DEPENDAPROXY_PYPI_URL:=http://dependaproxy:8080/pypi}"
+: "${DEPENDAPROXY_GOPROXY_URL:=http://dependaproxy:8080/goproxy}"
+
+# --- npm ---
 printf 'registry=%s\n' "$DEPENDAPROXY_URL" > /home/node/.npmrc
-if [ -n "${DEPENDAPROXY_TOKEN:-}" ]; then
-  # The auth entry is keyed on the registry HOST (npm matches by prefix).
-  printf '//dependaproxy:8080/:_authToken=%s\n' "$DEPENDAPROXY_TOKEN" >> /home/node/.npmrc
-else
-  echo "entrypoint: WARNING DEPENDAPROXY_TOKEN is unset — npm installs against DependaProxy will get 401 (fill it in .env and set auth.token in dependaproxy.yaml)" >&2
-fi
 cp /home/node/.npmrc /workspace/.npmrc
+
+# --- pip ---
+# PIP_TRUSTED_HOST is required for the plain-HTTP index URL.
+printf 'PIP_INDEX_URL=%s/simple\n' "$DEPENDAPROXY_PYPI_URL" > /workspace/pip.env
+printf 'PIP_TRUSTED_HOST=dependaproxy\n' >> /workspace/pip.env
+
+# --- go ---
+# Go still verifies module checksums against sum.golang.org directly (that host
+# is intentionally not blocked by dind-init.sh).
+printf 'GOPROXY=%s\n' "$DEPENDAPROXY_GOPROXY_URL" > /workspace/go.env
 
 # The compose `command` / `docker compose exec` args become $@. With no args the
 # default CMD (`bash`) keeps the container alive for interactive `docker compose
