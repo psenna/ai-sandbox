@@ -2,10 +2,10 @@
 # dind-init.sh — ai-sandbox DinD entrypoint override.
 #
 # Starts dockerd (args come from the `docker` service's compose `command:`), waits
-# for it to come up, then blocks egress to the public npm registries so workload
-# containers launched inside this daemon can fetch npm packages ONLY through
-# DependaProxy. Without the block, an agent that overrides npm's registry would
-# reach registry.npmjs.org directly.
+# for it to come up, then blocks egress to the public npm/pypi/Go registries so
+# workload containers launched inside this daemon can fetch dependencies ONLY
+# through DependaProxy. Without the block, an agent that overrides a registry
+# would reach registry.npmjs.org / pypi.org / proxy.golang.org directly.
 #
 # Why an entrypoint override: docker:27-dind's own entrypoint only generates TLS
 # certs (skipped when DOCKER_TLS_CERTDIR="") and then execs dockerd. This script
@@ -14,7 +14,9 @@
 #
 # The blocked host list is resolved to IPs at container start — restart the
 # `docker` service to refresh it. See use-docker/SKILL.md for how the agent is
-# expected to route npm through DependaProxy (this is the enforcement backstop).
+# expected to route npm/pip/go through DependaProxy (this is the enforcement
+# backstop). sum.golang.org is intentionally NOT blocked: Go verifies module
+# checksums against it directly (it returns hashes, not module content).
 set -eu
 
 # Start dockerd with the compose command args (TCP + unix sockets), backgrounded
@@ -40,9 +42,11 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-# Public npm registries the sandbox must NOT reach directly. Extend this list if
+# Public registries the sandbox must NOT reach directly. Extend these lists if
 # you add mirrors. Resolved at startup; restart the docker service to refresh.
 NPM_HOSTS="registry.npmjs.org registry.npmjs.com registry.yarnpkg.com registry.npmmirror.com"
+PYPI_HOSTS="pypi.org files.pythonhosted.org pypi.python.org"
+GO_HOSTS="proxy.golang.org goproxy.io goproxy.cn"
 
 # Docker's DOCKER-USER chain is its reserved spot for operator rules — daemon
 # network events do not flush it, and FORWARD already jumps to it.
@@ -53,7 +57,7 @@ fi
 
 blocked=0
 failed=0
-for host in $NPM_HOSTS; do
+for host in $NPM_HOSTS $PYPI_HOSTS $GO_HOSTS; do
   # getent ahostsv4 prints one line per A record: "<ip> <canonical> ...".
   ips=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u)
   if [ -z "$ips" ]; then
@@ -76,7 +80,7 @@ for host in $NPM_HOSTS; do
   done
 done
 
-echo "dind-init: dockerd up; blocked $blocked npm egress IP(s)${failed:+ ($failed insertions failed)}" >&2
+echo "dind-init: dockerd up; blocked $blocked registry egress IP(s)${failed:+ ($failed insertions failed)}" >&2
 
 # Stay as the container's main process, forwarding termination to dockerd.
 wait "$DPID"

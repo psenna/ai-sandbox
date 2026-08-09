@@ -43,9 +43,10 @@ appear at `/work` inside the container and sets the working directory there.
 
 ## Per-language one-liners
 
-npm MUST go through DependaProxy (see *npm → DependaProxy* below). Other
-registries (pypi, Go module proxy) are not proxied in this stack yet — leave
-them on their defaults.
+npm, pip, and Go modules MUST all go through DependaProxy (see *Registries →
+DependaProxy* below). The public npm/pypi/Go registries are network-blocked from
+the DinD daemon, so a workload that bypasses the proxy fails with a connection
+error — do not try to work around the block.
 
 ```sh
 # Node (use a fresh container for isolation, not the agent's node). Run as the
@@ -60,15 +61,25 @@ docker run --rm -u node -v /workspace:/work -w /work \
   -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
   node:22-alpine sh -c 'npm install && npm test'
 
-# Python
+# Python: pass the entrypoint-generated pip.env (PIP_INDEX_URL + PIP_TRUSTED_HOST)
+# via --env-file, and add the dependaproxy host entry. (pip 26.x ignores
+# bind-mounted pip.conf files, so env vars are used.)
 docker run --rm -v /workspace:/work -w /work python:3-alpine python script.py
-docker run --rm -v /workspace:/work -w /work python:3-alpine sh -c 'pip install -r requirements.txt && python script.py'
-
-# Go (keep module/build caches on the shared volume so they persist)
 docker run --rm -v /workspace:/work -w /work \
+  --env-file /work/pip.env --add-host=dependaproxy:172.20.0.10 \
+  python:3-alpine sh -c 'pip install -r requirements.txt && python script.py'
+
+# Go: pass the entrypoint-generated go.env (GOPROXY) via --env-file, and add the
+# dependaproxy host entry. Keep module/build caches on the shared volume so they
+# persist. Go still verifies module checksums against sum.golang.org directly
+# (that host is intentionally not blocked).
+docker run --rm -v /workspace:/work -w /work \
+  --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
   -e GOMODCACHE=/work/.gocache/mod -e GOCACHE=/work/.gocache/build \
   golang:1-alpine go test ./...
-docker run --rm -v /workspace:/work -w /work golang:1-alpine go build -o /work/app .
+docker run --rm -v /workspace:/work -w /work \
+  --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+  golang:1-alpine go build -o /work/app .
 ```
 
 Note: a workload's installed dependencies (e.g. `node_modules/`, a Python venv)
@@ -77,28 +88,30 @@ volume you create. State written elsewhere inside the container is lost when `--
 removes it. For Go, set `GOMODCACHE`/`GOCACHE` under `/work` if you want build
 caches to persist.
 
-## npm → DependaProxy (mandatory)
+## Registries → DependaProxy (mandatory)
 
-Every `npm install` in a workload container goes through the DependaProxy service
-(`http://dependaproxy:8080/npm`) — supply-chain-safe: each package is validated and
-served only if it matches the stored hash. Two hard constraints:
+Every dependency fetch in a workload container goes through the DependaProxy
+service — supply-chain-safe: each package is validated and served only if it
+matches the stored hash. Three hard constraints:
 
-- **The public npm registries are blocked at the network layer** (the DinD daemon
-  rejects egress to `registry.npmjs.org`/`.com`, `registry.yarnpkg.com`,
-  `registry.npmmirror.com`). Even if you set `--registry=https://registry.npmjs.org`
-  or edit `.npmrc`, the install will fail with a connection error — do not try to
-  work around the block.
-- **Always mount the generated npm config + host entry, and run as `node`** (see
-  the node one-liners):
-  ```sh
-  docker run --rm -u node -v /workspace:/work -w /work \
-    -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
-    node:22-alpine sh -c 'npm install && npm test'
-  ```
-  `/workspace/.npmrc` is written by the claude entrypoint (registry
-  `http://dependaproxy:8080/npm` + `_authToken`). `-u node` matters — without it
-  the container runs as root and leaves root-owned files the agent cannot delete
-  (see *File ownership* below).
+- **The public registries are blocked at the network layer** (the DinD daemon
+  rejects egress to the npm hosts `registry.npmjs.org`/`.com`,
+  `registry.yarnpkg.com`, `registry.npmmirror.com`; the pypi hosts `pypi.org`,
+  `files.pythonhosted.org`, `pypi.python.org`; and the Go hosts
+  `proxy.golang.org`, `goproxy.io`, `goproxy.cn`). Even if you override a
+  registry, the fetch will fail with a connection error — do not try to work
+  around the block.
+- **Always mount/pass the generated config + host entry** (see the one-liners
+  above). The claude entrypoint writes three artifacts to `/workspace` (DependaProxy
+  auth is disabled in this stack, so they carry no token):
+  - `/workspace/.npmrc` — npm registry `http://dependaproxy:8080/npm`. Mount as
+    `/home/node/.npmrc:ro` and run as `node`.
+  - `/workspace/pip.env` — `PIP_INDEX_URL=http://dependaproxy:8080/pypi/simple` +
+    `PIP_TRUSTED_HOST=dependaproxy`. Pass via `--env-file /work/pip.env`.
+  - `/workspace/go.env` — `GOPROXY=http://dependaproxy:8080/goproxy`. Pass via
+    `--env-file /work/go.env`.
+  All three need `--add-host=dependaproxy:172.20.0.10` (the nested daemon cannot
+  resolve the compose name).
 
 A package blocked by DependaProxy's validation (default: published less than 7 days
 ago) returns a 403 — read the error and pick a different version; the block is
