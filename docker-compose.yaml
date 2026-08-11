@@ -97,8 +97,14 @@ services:
       POSTGRES_USER: dependaproxy
       POSTGRES_PASSWORD: dependaproxy-secret
       POSTGRES_DB: dependaproxy
+    # Mount the volume at /var/lib/postgresql (the parent), NOT .../data. The
+    # postgres 18+ image stores data in a major-version subdirectory
+    # (/var/lib/postgresql/18/docker) to align with pg_ctlcluster and enable
+    # pg_upgrade --link across major versions (docker-library/postgres#1259).
+    # Mounting at .../data puts data outside the versioned layout and triggers
+    # the "unused mount/volume" error on image updates.
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     networks:
       - dbnet
     healthcheck:
