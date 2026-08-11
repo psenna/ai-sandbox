@@ -152,9 +152,10 @@ curl -s "$GIT_PROXY_BROKER_URL/healthz"   # {"status":"ok"}
 REPO="owner%2Frepo.git"
 AUTH="Authorization: Bearer $GIT_PROXY_TOKEN"
 
-# Create a PR. Body: {head, base, title}. → 201 {"number":N,"url":"..."}
+# Create a PR. Body: {head, base, title, body}. The optional markdown `body`
+# (the PR description) is forwarded to GitHub (git-proxy #78). → 201 {"number":N,"url":"..."}
 curl -s -X POST "$GIT_PROXY_BROKER_URL/$REPO/prs" -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"head":"feat/my-branch","base":"main","title":"Add thing"}'
+  -d '{"head":"feat/my-branch","base":"main","title":"Add thing","body":"## What was done\n\ndesc"}'
 
 # List PRs (?state=open|closed|all, defaults to open). → 200 [PRState,...]
 curl -s "$GIT_PROXY_BROKER_URL/$REPO/prs?state=open" -H "$AUTH"
