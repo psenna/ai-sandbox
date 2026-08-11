@@ -41,6 +41,21 @@ registries:
       - type: min-publication-age
         params:
           min_days: 7
+      # Fast static heuristics on the tarball (npm install scripts + suspicious
+      # script contents). warn: serve + log rather than deny.
+      - type: malware-scan
+        params:
+          mode: warn
+      # Real malware scanner (GuardDog CLI). Runs after the fast heuristic.
+      # deny (default, 403) | warn (serve + log). on_error: fail_open (default)
+      # | fail_closed. timeout: scan budget (default 60s). sandbox: true
+      # (default) | false — set false if Landlock is blocked in the container.
+      - type: guarddog-scan
+        params:
+          mode: deny
+          on_error: fail_open
+          timeout: 60s
+          sandbox: false
     retrieval:
       - type: local-disk-cache
         params:
@@ -54,6 +69,20 @@ registries:
       - type: min-publication-age
         params:
           min_days: 7
+      # Fast static heuristics on the wheel/sdist (setup.py/PKG-INFO patterns +
+      # wheel exec files). warn: serve + log rather than deny.
+      - type: malware-scan
+        params:
+          mode: warn
+      # Real malware scanner (GuardDog CLI). deny (default, 403) | warn.
+      # on_error: fail_open (default) | fail_closed. sandbox: false because
+      # Landlock is not available in this container.
+      - type: guarddog-scan
+        params:
+          mode: deny
+          on_error: fail_open
+          timeout: 60s
+          sandbox: false
     retrieval:
       - type: local-disk-cache
         params:
@@ -67,6 +96,14 @@ registries:
       - type: min-publication-age
         params:
           min_days: 7
+      # Virus scanners (malware-scan / guarddog-scan) are npm/pypi-only — they
+      # do not support Go modules. The Go-equivalent supply-chain scan is
+      # cve-check, mapped to OSV's "Go" ecosystem. deny (default) | warn;
+      # on_error: fail_open (default) | fail_closed.
+      - type: cve-check
+        params:
+          mode: deny
+          on_error: fail_open
     retrieval:
       - type: local-disk-cache
         params:
