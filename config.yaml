@@ -60,12 +60,16 @@ policy:
       # with params.ignore_paths (gitignore-style, fail-closed on malformed).
       params:
         ignore_paths:
-          # git-proxy's own deploy/docker/README.md demonstrates secret_scan
-          # with an intentionally AWS-key-shaped example string, which the
-          # aws-access-key-id rule flags on a whole-tree scan of a fresh branch
-          # push — blocking every push of a new branch to psenna/git-proxy
-          # through this proxy.
+          # git-proxy's own docs + test fixtures demonstrate secret_scan with
+          # intentionally secret-shaped strings (a fake AWS key, fake tokens,
+          # sample private keys), which the rules flag on a whole-tree scan of
+          # a fresh branch push — blocking every push of a new branch to
+          # psenna/git-proxy through this proxy. *_test.go matches at any depth
+          # (gitignore-style); this proxy only serves internal dev repos where
+          # test files never carry real credentials.
+          - "*_test.go"
           - "deploy/docker/README.md"
+          - "docs/deploy-docker.md"
   read:
     deny: ["secrets/**"]            # withhold secrets/ blobs from fetch (use --filter=blob:none to clone)
 

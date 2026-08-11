@@ -98,8 +98,14 @@ ownership-restore step if it ran container commands.
 - Push via git-proxy: `git -c "http.extraheader=Authorization: Bearer ${AGENT_TOKEN}" push origin feat/<slug>`.
   If the push is rejected by the high-entropy secret scan, fix the offending
   value (use a low-entropy placeholder) and re-push — do NOT try to circumvent it.
-- Open the PR via the broker: `POST /<repo>/prs` `{head, base, title, body}`
-  (body = issue link + summary of changes + verification result).
+- Open the PR via the broker: `POST /<repo>/prs` `{head, base, title, body}`.
+  The body MUST include a description of what was done on the PR:
+  - `## What was done` — a plain-language summary of the implementation: what
+    the change does, how it meets the issue's requirements, the key files
+    modified/created, and any notable design choices.
+  - `## Verification` — the gate result (vet/fmt/lint/vuln/test) and the
+    relevant test output.
+  - `Closes #N` to link the issue.
 - If `--merge`: poll `GET /<repo>/checks/<head>` until `overall` is `success` or
   `failure` (background poll, ~25s interval). On success, verify `mergeable=true`
   via `GET /<repo>/prs/<N>` then `POST /<repo>/prs/<N>/merge?method=squash`. On
