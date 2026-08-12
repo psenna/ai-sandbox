@@ -29,8 +29,9 @@
 #
 # Prerequisites:
 #   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
-#   - ghcr.io/psenna/git-proxy:v0.0.3 published (or uncomment the build: block
-#     below to build from a sibling ../git-proxy checkout).
+#   - ghcr.io/psenna/git-proxy:v0.0.7 published (v0.0.7 fixes the unknown-haves
+#     502 for stale client refs and forwards the PR body on create. Or uncomment
+#     the build: block below to build from a sibling ../git-proxy checkout).
 #   - ghcr.io/psenna/dependaproxy:v0.0.2 published (v0.0.2 adds HTTP Basic auth
 #     so pip and Go's module client can authenticate with the shared token).
 
@@ -70,7 +71,7 @@ services:
     #   build:
     #     context: ../git-proxy
     #     dockerfile: Dockerfile
-    image: ghcr.io/psenna/git-proxy:v0.0.4
+    image: ghcr.io/psenna/git-proxy:v0.0.7
     container_name: ai-sandbox-gitproxy
     # Run as the image's non-root gitproxy user (uid 1000). The bind-mounted
     # data/ dirs must be writable by uid 1000 — see README.md if your host uid
