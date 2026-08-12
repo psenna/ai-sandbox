@@ -36,7 +36,7 @@ Five services on three isolated bridge networks (see `docker-compose.yaml`):
 | Service | Image | Networks | Purpose |
 |---|---|---|---|
 | `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
-| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.4` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
+| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.7` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `postgres` | `postgres:18` | dbnet | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
 | `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.2` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`. Static dinernet IP `172.20.0.10`. |
 | `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks egress to the public npm/pypi/Go registries (`scripts/dind-init.sh`). |
@@ -73,11 +73,13 @@ blocked).
    This installs Docker Engine 28.x + containerd 1.7.x (pinned + held) and
    sysbox-ce 0.7.0, and verifies `docker run --runtime=sysbox-runc --rm alpine echo ok`.
 
-2. **`ghcr.io/psenna/git-proxy:v0.0.4`** published (the git-proxy repo's `release`
-   workflow builds and pushes the image to GHCR on every GitHub release). If a
-   newer tag than `v0.0.4` is out, bump the `git-proxy` `image:` line in
-   `docker-compose.yaml`. To run a local build instead, comment out the `image:`
-   line and uncomment the `build:` block (`context: ../git-proxy`), then
+2. **`ghcr.io/psenna/git-proxy:v0.0.7`** published (the git-proxy repo's `release`
+   workflow builds and pushes the image to GHCR on every GitHub release). v0.0.7
+   fixes the unknown-haves 502 (stale client refs no longer break fetches or
+   waste a mirror re-clone) and forwards the PR body on create (broker PRs now
+   carry their description). If a newer tag is out, bump the `git-proxy` `image:`
+   line in `docker-compose.yaml`. To run a local build instead, comment out the
+   `image:` line and uncomment the `build:` block (`context: ../git-proxy`), then
    `docker compose build git-proxy`.
 
 3. **`ghcr.io/psenna/dependaproxy:v0.0.2`** published (the dependaproxy repo's
