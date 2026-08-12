@@ -55,10 +55,10 @@ error — do not try to work around the block.
 docker run --rm -u node -v /workspace:/work -w /work node:22-alpine node script.js
 # npm install/test: mount the entrypoint-generated .npmrc (registry + token) and
 # add the dependaproxy host entry (the nested daemon cannot resolve the compose
-# name — the static dinernet IP is 172.20.0.10). With -u node, HOME=/home/node,
+# name — the static dinernet IP is 172.23.0.10). With -u node, HOME=/home/node,
 # so npm reads /home/node/.npmrc.
 docker run --rm -u node -v /workspace:/work -w /work \
-  -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+  -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
   node:22-alpine sh -c 'npm install && npm test'
 
 # Python: pass the entrypoint-generated pip.env (PIP_INDEX_URL + PIP_TRUSTED_HOST)
@@ -66,7 +66,7 @@ docker run --rm -u node -v /workspace:/work -w /work \
 # bind-mounted pip.conf files, so env vars are used.)
 docker run --rm -v /workspace:/work -w /work python:3-alpine python script.py
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/pip.env --add-host=dependaproxy:172.20.0.10 \
+  --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
   python:3-alpine sh -c 'pip install -r requirements.txt && python script.py'
 
 # Go: pass the entrypoint-generated go.env (GOPROXY) via --env-file, and add the
@@ -74,11 +74,11 @@ docker run --rm -v /workspace:/work -w /work \
 # persist. Go still verifies module checksums against sum.golang.org directly
 # (that host is intentionally not blocked).
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+  --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
   -e GOMODCACHE=/work/.gocache/mod -e GOCACHE=/work/.gocache/build \
   golang:1-alpine go test ./...
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+  --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
   golang:1-alpine go build -o /work/app .
 ```
 
@@ -110,7 +110,7 @@ matches the stored hash. Three hard constraints:
     `PIP_TRUSTED_HOST=dependaproxy`. Pass via `--env-file /work/pip.env`.
   - `/workspace/go.env` — `GOPROXY=http://dependaproxy:8080/goproxy`. Pass via
     `--env-file /work/go.env`.
-  All three need `--add-host=dependaproxy:172.20.0.10` (the nested daemon cannot
+  All three need `--add-host=dependaproxy:172.23.0.10` (the nested daemon cannot
   resolve the compose name).
 
 A package blocked by DependaProxy's validation (default: published less than 7 days

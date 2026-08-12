@@ -15,7 +15,7 @@ containers that cannot reach the host or the proxy's credentials.
         └── npm/pip/go ────> dependaproxy (8080 /npm /pypi /goproxy)
  dinernet (bridge):  docker (rootless DinD, sysbox-runc, no --privileged)
    claude ─── DOCKER_HOST=tcp://docker:2375 ──> runs node/python/go/services
-   workload containers ── npm/pip/go ──> dependaproxy (static IP 172.20.0.10)
+   workload containers ── npm/pip/go ──> dependaproxy (static IP 172.23.0.10)
  dbnet (bridge):  postgres <── dependaproxy (trust-anchor storage; isolated)
 ```
 
@@ -38,7 +38,7 @@ Five services on three isolated bridge networks (see `docker-compose.yaml`):
 | `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
 | `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.7` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `postgres` | `postgres:18` | dbnet | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
-| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.2` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`. Static dinernet IP `172.20.0.10`. |
+| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.2` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`. Static dinernet IP `172.23.0.10`. |
 | `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks egress to the public npm/pypi/Go registries (`scripts/dind-init.sh`). |
 | `claude` | built from `Dockerfile` | proxynet + dinernet | Slim agent: node + claude-code + git + docker-cli. No python/go. |
 
@@ -178,15 +178,15 @@ other way to get dependencies:
   ```sh
   # npm
   docker run --rm -u node -v /workspace:/work -w /work \
-    -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+    -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
     node:22-alpine sh -c 'npm install'
   # pip
   docker run --rm -v /workspace:/work -w /work \
-    --env-file /work/pip.env --add-host=dependaproxy:172.20.0.10 \
+    --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
     python:3-alpine sh -c 'pip install -r requirements.txt'
   # go
   docker run --rm -v /workspace:/work -w /work \
-    --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+    --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
     golang:1-alpine go mod download
   ```
 - **Enforcement:** the DinD daemon (`scripts/dind-init.sh`) inserts iptables
@@ -307,15 +307,15 @@ claude plugin install code-simplifier@claude-plugins-official
    # a workload container installs through the proxy (mounts the shared .npmrc,
    # runs as uid 1000 so installed files belong to the agent):
    docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
-     -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.20.0.10 \
+     -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
      node:22-alpine sh -c 'npm install lodash && node -e "require(\"lodash\")"'
    # pip through the proxy (passes pip.env):
    docker compose exec claude docker run --rm -v /workspace:/work -w /work \
-     --env-file /work/pip.env --add-host=dependaproxy:172.20.0.10 \
+     --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
      python:3-alpine sh -c 'pip install requests && python -c "import requests"'
    # go through the proxy (passes go.env):
    docker compose exec claude docker run --rm -v /workspace:/work -w /work \
-     --env-file /work/go.env --add-host=dependaproxy:172.20.0.10 \
+     --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
      golang:1-alpine sh -c 'cd /work && go mod init example.com/hello && go get github.com/google/uuid'
    # the public registries are BLOCKED from workloads — these must fail:
    docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
