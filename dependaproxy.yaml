@@ -47,12 +47,17 @@ registries:
         params:
           mode: warn
       # Real malware scanner (GuardDog CLI). Runs after the fast heuristic.
-      # deny (default, 403) | warn (serve + log). on_error: fail_open (default)
+      # warn (serve + log) — NOT deny — because GuardDog 3.1.0's capability
+      # rules false-positive on legitimate dev packages (e.g. the
+      # capability-network-outbound regex `\bresolve\s*\(` matches Promise
+      # resolver callbacks), which would block react/vite/typescript etc. The
+      # malware-scan heuristic above still catches real install-script malware;
+      # GuardDog findings are served + logged. on_error: fail_open (default)
       # | fail_closed. timeout: scan budget (default 60s). sandbox: true
       # (default) | false — set false if Landlock is blocked in the container.
       - type: guarddog-scan
         params:
-          mode: deny
+          mode: warn
           on_error: fail_open
           timeout: 60s
           sandbox: false
@@ -74,12 +79,14 @@ registries:
       - type: malware-scan
         params:
           mode: warn
-      # Real malware scanner (GuardDog CLI). deny (default, 403) | warn.
-      # on_error: fail_open (default) | fail_closed. sandbox: false because
-      # Landlock is not available in this container.
+      # Real malware scanner (GuardDog CLI). warn (serve + log) — NOT deny —
+      # for the same reason as npm: GuardDog 3.1.0 capability rules
+      # false-positive on legitimate packages. on_error: fail_open (default)
+      # | fail_closed. sandbox: false because Landlock is not available in
+      # this container.
       - type: guarddog-scan
         params:
-          mode: deny
+          mode: warn
           on_error: fail_open
           timeout: 60s
           sandbox: false
