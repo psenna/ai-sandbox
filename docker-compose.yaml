@@ -102,7 +102,7 @@ services:
       POSTGRES_PASSWORD: dependaproxy-secret
       POSTGRES_DB: dependaproxy
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     networks:
       - dbnet
     healthcheck:
