@@ -41,6 +41,15 @@ registries:
       - type: min-publication-age
         params:
           min_days: 7
+      # Reject (or warn about) packages with known vulnerabilities, checked
+      # against OSV.dev (npm + PyPI ecosystems) at validation time. mode: deny
+      # (default, 403) | warn. on_error: fail_open (default) — an OSV outage
+      # serves | fail_closed. Note: denies on ANY advisory (no severity filter).
+      - type: cve-check
+        params:
+          mode: deny
+          on_error: fail_open
+          cache_ttl: 1h
       # Fast static heuristics on the tarball (npm install scripts + suspicious
       # script contents). warn: serve + log rather than deny.
       - type: malware-scan
@@ -62,6 +71,14 @@ registries:
           timeout: 60s
           sandbox: false
     retrieval:
+      # MUST be first (outermost) so it re-checks OSV on EVERY serve — trusted
+      # (cache hit) and untrusted — catching a CVE published after the artifact
+      # was first validated. The validation cve-check gates the first fetch.
+      - type: cve-check-retrieval
+        params:
+          mode: deny
+          on_error: fail_open
+          cache_ttl: 1h
       - type: local-disk-cache
         params:
           path: /var/lib/dependaproxy/cache/npm
@@ -74,6 +91,15 @@ registries:
       - type: min-publication-age
         params:
           min_days: 7
+      # Reject (or warn about) packages with known vulnerabilities, checked
+      # against OSV.dev (npm + PyPI ecosystems) at validation time. mode: deny
+      # (default, 403) | warn. on_error: fail_open (default) — an OSV outage
+      # serves | fail_closed. Note: denies on ANY advisory (no severity filter).
+      - type: cve-check
+        params:
+          mode: deny
+          on_error: fail_open
+          cache_ttl: 1h
       # Fast static heuristics on the wheel/sdist (setup.py/PKG-INFO patterns +
       # wheel exec files). warn: serve + log rather than deny.
       - type: malware-scan
@@ -91,6 +117,14 @@ registries:
           timeout: 60s
           sandbox: false
     retrieval:
+      # MUST be first (outermost) so it re-checks OSV on EVERY serve — trusted
+      # (cache hit) and untrusted — catching a CVE published after the artifact
+      # was first validated. The validation cve-check gates the first fetch.
+      - type: cve-check-retrieval
+        params:
+          mode: deny
+          on_error: fail_open
+          cache_ttl: 1h
       - type: local-disk-cache
         params:
           path: /var/lib/dependaproxy/cache/pypi
