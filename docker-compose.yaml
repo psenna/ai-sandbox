@@ -116,10 +116,10 @@ services:
   # serves them under /npm, /pypi, /goproxy. The agent's clients (claude itself +
   # the workload containers it launches in DinD) point their registries here and
   # never touch registry.npmjs.org / pypi.org / proxy.golang.org. On proxynet so
-  # claude reaches it by name; on dinernet (STATIC IP 172.20.0.10) so workload
+  # claude reaches it by name; on dinernet (STATIC IP 172.23.0.10) so workload
   # containers inside the nested daemon can reach it — they cannot resolve sibling
   # compose names, so the use-docker skill passes
-  # --add-host=dependaproxy:172.20.0.10. The cache dir is a host bind mount that
+  # --add-host=dependaproxy:172.23.0.10. The cache dir is a host bind mount that
   # must be writable by the image's uid 65532 — see README.md (sudo chown -R
   # 65532:65532 data/dependaproxy-cache). No healthcheck: the image is FROM scratch
   # and has no healthcheck binary; claude depends on it with service_started.
@@ -136,7 +136,7 @@ services:
       proxynet: {}
       dbnet: {}
       dinernet:
-        ipv4_address: 172.20.0.10
+        ipv4_address: 172.23.0.10
 
   # Rootless Docker-in-Docker daemon. The agent (claude) uses it to run arbitrary
   # images (node, python, go, postgres, mysql, minio, …) via DOCKER_HOST — dev
@@ -257,7 +257,7 @@ services:
 
 networks:
   # Explicit subnets everywhere: dependaproxy needs a stable dinernet IP
-  # (172.20.0.10) so workload containers inside the DinD daemon can reach it by
+  # (172.23.0.10) so workload containers inside the DinD daemon can reach it by
   # --add-host, and fixed ranges prevent accidental overlap with Docker's
   # auto-assigned bridge subnets.
   proxynet:
@@ -269,7 +269,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/24
+        - subnet: 172.23.0.0/24
   dbnet:
     driver: bridge
     ipam:
