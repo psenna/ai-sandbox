@@ -40,7 +40,7 @@ registries:
     validation:
       - type: min-publication-age
         params:
-          min_days: 7
+          min_days: 3
       # Reject (or warn about) packages with known vulnerabilities, checked
       # against OSV.dev (npm + PyPI ecosystems) at validation time. mode: deny
       # (default, 403) | warn. on_error: fail_open (default) — an OSV outage
@@ -90,7 +90,7 @@ registries:
     validation:
       - type: min-publication-age
         params:
-          min_days: 7
+          min_days: 3
       # Reject (or warn about) packages with known vulnerabilities, checked
       # against OSV.dev (npm + PyPI ecosystems) at validation time. mode: deny
       # (default, 403) | warn. on_error: fail_open (default) — an OSV outage
