@@ -38,7 +38,7 @@ Five services on three isolated bridge networks (see `docker-compose.yaml`):
 | `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
 | `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.7` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `postgres` | `postgres:18` | dbnet | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
-| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.2` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`. Static dinernet IP `172.23.0.10`. |
+| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.3` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`, plus an embedded web UI / admin dashboard at `/`. Static dinernet IP `172.23.0.10`. |
 | `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks egress to the public npm/pypi/Go registries (`scripts/dind-init.sh`). |
 | `claude` | built from `Dockerfile` | proxynet + dinernet | Slim agent: node + claude-code + git + docker-cli. No python/go. |
 
@@ -82,11 +82,13 @@ blocked).
    `image:` line and uncomment the `build:` block (`context: ../git-proxy`), then
    `docker compose build git-proxy`.
 
-3. **`ghcr.io/psenna/dependaproxy:v0.0.2`** published (the dependaproxy repo's
-   `release` workflow builds and pushes the image on every GitHub release). v0.0.2
-   adds HTTP Basic auth support (kept for other deployments) and fixes the pypi
-   adapter so pip installs work. The sandbox runs it with auth disabled (see
-   `dependaproxy.yaml`).
+3. **`ghcr.io/psenna/dependaproxy:v0.0.3`** published (the dependaproxy repo's
+   `release` workflow builds and pushes the image on every GitHub release). v0.0.3
+   adds the embedded web UI / admin dashboard (served at `/`, gated by
+   `auth.admin_token`), the `cve-check` `min_severity` threshold, and the npm
+   public-tarball-filename fix; v0.0.2 added HTTP Basic auth support (kept for
+   other deployments) and fixed the pypi adapter so pip installs work. The sandbox
+   runs it with auth disabled (see `dependaproxy.yaml`).
 
 4. **A GitHub fine-grained PAT** for the repo(s) the agent will work on:
    https://github.com/settings/personal-access-tokens

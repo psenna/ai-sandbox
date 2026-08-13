@@ -32,8 +32,10 @@
 #   - ghcr.io/psenna/git-proxy:v0.0.7 published (v0.0.7 fixes the unknown-haves
 #     502 for stale client refs and forwards the PR body on create. Or uncomment
 #     the build: block below to build from a sibling ../git-proxy checkout).
-#   - ghcr.io/psenna/dependaproxy:v0.0.2 published (v0.0.2 adds HTTP Basic auth
-#     so pip and Go's module client can authenticate with the shared token).
+#   - ghcr.io/psenna/dependaproxy:v0.0.3 published (v0.0.3 adds the embedded
+#     web UI / admin dashboard served at /, the cve-check min_severity threshold,
+#     and the npm public-tarball-filename fix; v0.0.2 added HTTP Basic auth so pip
+#     and Go's module client can authenticate with the shared token).
 
 services:
   ollama:
@@ -124,7 +126,7 @@ services:
   # 65532:65532 data/dependaproxy-cache). No healthcheck: the image is FROM scratch
   # and has no healthcheck binary; claude depends on it with service_started.
   dependaproxy:
-    image: ghcr.io/psenna/dependaproxy:v0.0.2
+    image: ghcr.io/psenna/dependaproxy:v0.0.3
     container_name: ai-sandbox-dependaproxy
     depends_on:
       postgres:
