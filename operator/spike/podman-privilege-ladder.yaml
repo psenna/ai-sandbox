@@ -1,0 +1,130 @@
+# Reproduction manifest for the #23 privilege ladder. Apply it, then for each
+# pod run:
+#
+#   kubectl -n spike exec <pod> -- podman run --rm docker.io/library/alpine:3.20 echo RUN-OK
+#
+# Expected on Ubuntu/AppArmor (see ../docs/spike-rootless-podman.md):
+#   pm-baseline        FAIL   configure storage: failed to make mount private
+#   pm-hostusers       FAIL   same; a pod userns does not help
+#   pm-sysadmin        FAIL   caps are not effective for a non-root uid
+#   pm-sysadmin-root   FAIL   root + SYS_ADMIN is still not enough
+#   pm-apparmor        OK     AppArmor Unconfined alone unblocks it
+#   pm-aa-seccomp      FAIL   cannot clone: seccomp RuntimeDefault blocks userns
+#   pm-aa-noprivesc    FAIL   newuidmap cannot apply its file capability
+#   pm-privileged      OK     works, but far more privilege than necessary
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spike
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-baseline, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext: { runAsUser: 1000, runAsGroup: 1000 }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-hostusers, namespace: spike }
+spec:
+  hostUsers: false
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext: { runAsUser: 1000, runAsGroup: 1000 }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-sysadmin, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities: { add: ["SYS_ADMIN"] }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-sysadmin-root, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      securityContext:
+        runAsUser: 0
+        capabilities: { drop: ["ALL"], add: ["SYS_ADMIN"] }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-apparmor, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        appArmorProfile: { type: Unconfined }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-aa-seccomp, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+        appArmorProfile: { type: Unconfined }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-aa-noprivesc, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        allowPrivilegeEscalation: false
+        appArmorProfile: { type: Unconfined }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pm-privileged, namespace: spike }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["sleep", "36000"]
+      env: [{ name: HOME, value: /home/podman }]
+      securityContext: { privileged: true }
