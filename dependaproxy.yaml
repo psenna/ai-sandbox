@@ -18,12 +18,16 @@
 #   - storage.dsn password: internal-only dev default (postgres is on the isolated
 #     dbnet, unreachable from claude/DinD). If you change it, change POSTGRES_PASSWORD
 #     in docker-compose.yaml too.
+#   - auth.admin_token: internal-only dev default, gates the admin dashboard/API
+#     at /admin (v0.0.3+; required whenever storage is configured, since storage
+#     enables the admin API). Not used by the agent's npm/pypi/goproxy traffic.
 
 server:
   addr: ":8080"
 
 auth:
   token: ""
+  admin_token: "change-me-admin"
 
 storage:
   type: postgres
