@@ -1,0 +1,76 @@
+# Reference manifest for the rootless-podman engine, verified working on
+# k3s v1.36.3 / Ubuntu 24.04 / kernel 6.8 / containerd 2.3.
+# See ../docs/spike-rootless-podman.md for the full decision record (issue #23).
+#
+# This is the topology SandboxEnvironment should render for
+# `engine: rootless-podman`: a podman sidecar serving the Docker-compatible API
+# on loopback, and an agent container driving it over DOCKER_HOST.
+#
+# The ONLY relaxation is `appArmorProfile: Unconfined` on the sidecar. It is
+# required because the containerd default AppArmor profile denies the mount
+# operations podman needs for overlay storage. Two further constraints are
+# load-bearing and must not be "hardened" later without re-reading the record:
+#
+#   * seccompProfile MUST stay unset on the sidecar. Setting RuntimeDefault
+#     denies clone(CLONE_NEWUSER) and podman cannot start at all.
+#   * allowPrivilegeEscalation MUST stay at its default. newuidmap carries
+#     cap_setuid as a file capability; no-new-privileges stops it taking effect.
+#
+# Requires a namespace with NO Pod Security Standards enforcement, or
+# enforce: privileged. Both `baseline` and `restricted` reject the sidecar
+# solely on the AppArmor profile.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sandbox-podman-reference
+spec:
+  restartPolicy: Never
+  containers:
+    # The engine sidecar. Non-root, no added capabilities, not privileged.
+    - name: podman
+      image: quay.io/podman/stable
+      command: ["podman", "system", "service", "--time=0", "tcp://127.0.0.1:2375"]
+      env:
+        - name: HOME
+          value: /home/podman
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        appArmorProfile:
+          type: Unconfined
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        # Layer cache on its own volume so freeze snapshots can exclude it.
+        # Verified: native overlay is still selected on an emptyDir.
+        - name: layer-cache
+          mountPath: /home/podman/.local/share/containers
+
+    # The agent. Runs LLM-authored code and gets NO relaxation at all --
+    # this container satisfies PSS restricted on its own.
+    - name: agent
+      image: docker.io/library/docker:27-cli
+      command: ["sleep", "infinity"]
+      env:
+        - name: DOCKER_HOST
+          value: tcp://127.0.0.1:2375
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+
+  volumes:
+    - name: workspace
+      emptyDir: {}
+    # emptyDir in this reference; the real chart sizes this and keeps it out of
+    # snapshots. Measured 1.4 GB after alpine + postgres:18 + golang:1.25.
+    - name: layer-cache
+      emptyDir: {}
