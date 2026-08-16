@@ -21,12 +21,40 @@ IMG             ?= ghcr.io/psenna/ai-sandbox-operator:dev
 
 GOLANGCI_LINT_VERSION    ?= v2.12.2
 GOVULNCHECK_VERSION      ?= v1.6.0
-CONTROLLER_TOOLS_VERSION ?= v0.20.1
 KUSTOMIZE_VERSION        ?= v5.8.1
+
+# When invoking `make IN_CONTAINER=1 envtest-assets|test-envtest` manually
+# from outside (the agent has no host `make`, so this means running make
+# itself inside a golang container), mount SHARED_DIR at its own path -- e.g.
+# `-v /workspace:/workspace -w /workspace/ai-sandbox/operator` -- NOT
+# remapped to /work the way DOCKER_RUN's own wrapping does for every other
+# target. IN_CONTAINER=1 skips that /work rewrite entirely (see
+# ENVTEST_TARGET_DIR below), matching how CI invokes it with no SHARED_DIR
+# concept at all.
+ENVTEST_K8S_VERSION ?= 1.35.0
+ENVTEST_DIR         ?= $(SHARED_DIR)/.envtest
 
 REPO_SUBDIR := $(patsubst $(SHARED_DIR)/%,%,$(CURDIR))
 CACHE_DIR   := /work/$(CACHE_SUBDIR)
 GO_ENV_FLAG := $(if $(wildcard $(GO_ENV_FILE)),--env-file $(GO_ENV_FILE),)
+
+# hack/tools is a separate Go module (never referenced from operator/go.mod)
+# that builds controller-gen. Its own go.mod pins golang.org/x/mod above
+# every version DependaProxy's CVE gate denies; that pin only resolves
+# against a local module cache, not the public proxy. When
+# /workspace/gomodcache/cache/download exists (this sandbox), prefer it,
+# falling back to DependaProxy. On a normal CI runner (no such path) this
+# evaluates empty and hack/tools builds against the ordinary Go proxy chain.
+X_MOD_CACHE   := $(SHARED_DIR)/gomodcache/cache/download
+comma         := ,
+TOOLS_GOPROXY := $(if $(wildcard $(X_MOD_CACHE)/golang.org/x/mod/@v),file:///work/gomodcache/cache/download$(comma)http://dependaproxy:8080/goproxy,)
+
+# ENVTEST_DIR is a host-side path (default under SHARED_DIR). When
+# DOCKER_RUN wraps commands in a container, SHARED_DIR is mounted at /work,
+# so the in-container path must be rewritten; when IN_CONTAINER=1 there is
+# no such wrapping (CI passes its own ENVTEST_DIR, e.g. $PWD/.envtest) and
+# the path is used as-is.
+ENVTEST_TARGET_DIR := $(if $(filter 1,$(IN_CONTAINER)),$(ENVTEST_DIR),/work/$(patsubst $(SHARED_DIR)/%,%,$(ENVTEST_DIR)))
 
 ifeq ($(IN_CONTAINER),1)
 DOCKER_RUN :=
@@ -45,7 +73,7 @@ DOCKER_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 endif
 
 .PHONY: all build test vet fmt fmt-check lint vuln tidy manifests generate \
-	kustomize-build docker-build cross smoke clean
+	kustomize-build docker-build cross smoke clean envtest-assets test-envtest
 
 all: vet fmt-check lint test
 
@@ -77,17 +105,32 @@ vuln:
 		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
 		govulncheck ./...'
 
-manifests:
-	$(DOCKER_RUN) sh -c 'command -v controller-gen >/dev/null || \
-		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); \
-		controller-gen crd webhook paths="./..." \
-		  output:crd:artifacts:config=config/crd/bases'
-	# rbac generator restored in #17/#18 once +kubebuilder:rbac markers exist
+# bin/controller-gen is a real file target (not phony): built from the
+# hack/tools module, which is never referenced from operator/go.mod. See
+# operator/README.md for why go install controller-gen@version is a dead
+# end here (it transitively needs golang.org/x/mod, denied by DependaProxy's
+# CVE gate at every version, and go install can't route around that pin the
+# way a module's own go.mod requires can).
+bin/controller-gen:
+	$(DOCKER_RUN) sh -c '$(if $(TOOLS_GOPROXY),GOPROXY="$(TOOLS_GOPROXY)",) \
+	  go -C hack/tools build -mod=readonly -o ../../bin/controller-gen \
+	     sigs.k8s.io/controller-tools/cmd/controller-gen'
 
-generate:
-	$(DOCKER_RUN) sh -c 'command -v controller-gen >/dev/null || \
-		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); \
-		controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."'
+manifests: bin/controller-gen
+	$(DOCKER_RUN) ./bin/controller-gen crd paths="./..." \
+	  output:crd:artifacts:config=config/crd/bases
+	# rbac generator restored in #18 once +kubebuilder:rbac markers exist
+
+generate: bin/controller-gen
+	$(DOCKER_RUN) ./bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+envtest-assets:
+	$(DOCKER_RUN) ./hack/fetch-envtest.sh $(ENVTEST_K8S_VERSION) $(ENVTEST_TARGET_DIR)
+
+test-envtest: envtest-assets
+	$(DOCKER_RUN) sh -c 'CGO_ENABLED=1 \
+	  KUBEBUILDER_ASSETS=$(ENVTEST_TARGET_DIR)/k8s/$(ENVTEST_K8S_VERSION) \
+	  go test -race -count=1 -coverprofile=cover.out ./...'
 
 kustomize-build:
 	$(DOCKER_RUN) sh -c 'command -v kustomize >/dev/null || \

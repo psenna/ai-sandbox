@@ -10,6 +10,7 @@ import (
 
 	"k8s.io/client-go/rest"
 
+	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/config"
 )
 
@@ -108,6 +109,23 @@ func TestNew_WatchNamespaceScopesCache(t *testing.T) {
 	}
 	if mgr == nil {
 		t.Fatal("New() returned nil manager with nil error")
+	}
+}
+
+// TestScheme_RecognizesSandboxAPITypes verifies the scheme built by Scheme()
+// knows about both v1alpha1 API kinds, so the manager can decode/encode
+// them once controllers are registered in issue #18.
+func TestScheme_RecognizesSandboxAPITypes(t *testing.T) {
+	scheme, err := Scheme()
+	if err != nil {
+		t.Fatalf("Scheme() returned error: %v", err)
+	}
+
+	for _, kind := range []string{"SandboxClass", "SandboxEnvironment"} {
+		gvk := sandboxv1alpha1.GroupVersion.WithKind(kind)
+		if !scheme.Recognizes(gvk) {
+			t.Errorf("scheme does not recognize %s", gvk)
+		}
 	}
 }
 

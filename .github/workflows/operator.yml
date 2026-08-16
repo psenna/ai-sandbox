@@ -51,6 +51,21 @@ jobs:
           name: operator-coverage
           path: operator/cover.out
 
+  api:
+    name: manifests + envtest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "${{ env.GO_VERSION }}"
+      - run: make IN_CONTAINER=1 manifests generate
+      - run: git diff --exit-code -- api config PROJECT
+      - run: make IN_CONTAINER=1 ENVTEST_DIR=$PWD/.envtest envtest-assets
+      - run: |
+          make IN_CONTAINER=1 ENVTEST_DIR=$PWD/.envtest test-envtest 2>&1 | tee out.txt
+          grep -q 'ok .*internal/apitest' out.txt
+
   docker-build:
     name: docker build (${{ matrix.platform }})
     runs-on: ubuntu-latest

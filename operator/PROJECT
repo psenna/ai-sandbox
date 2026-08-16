@@ -3,4 +3,21 @@ layout:
 - go.kubebuilder.io/v4
 projectName: operator
 repo: github.com/psenna/ai-sandbox/operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: false
+  domain: psenna.dev
+  group: sandbox
+  kind: SandboxClass
+  path: github.com/psenna/ai-sandbox/operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: psenna.dev
+  group: sandbox
+  kind: SandboxEnvironment
+  path: github.com/psenna/ai-sandbox/operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

@@ -2,6 +2,7 @@ namespace: ai-sandbox-operator-system
 namePrefix: ai-sandbox-operator-
 
 resources:
+  - ../crd
   - ../rbac
   - ../manager
 

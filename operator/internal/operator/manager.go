@@ -15,16 +15,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/config"
 )
 
 // Scheme builds the runtime.Scheme the manager uses to decode/encode
-// objects. It currently registers only the client-go built-in types; the
-// operator's own API types are added in issue #17.
+// objects. It registers the client-go built-in types plus the operator's
+// own sandbox.psenna.dev/v1alpha1 API types (SandboxClass,
+// SandboxEnvironment), added in issue #17. Controllers for these types are
+// added in issue #18.
 func Scheme() (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("registering client-go scheme: %w", err)
+	}
+	if err := sandboxv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("registering sandbox.psenna.dev/v1alpha1 scheme: %w", err)
 	}
 	return scheme, nil
 }

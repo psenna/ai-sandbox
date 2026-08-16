@@ -1,0 +1,363 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: sandboxenvironments.sandbox.psenna.dev
+spec:
+  group: sandbox.psenna.dev
+  names:
+    categories:
+    - sandbox
+    kind: SandboxEnvironment
+    listKind: SandboxEnvironmentList
+    plural: sandboxenvironments
+    shortNames:
+    - sbenv
+    singular: sandboxenvironment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.slot.granted
+      name: Slot
+      type: boolean
+    - jsonPath: .status.freezeCount
+      name: Freezes
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .spec.classRef.name
+      name: Class
+      priority: 1
+      type: string
+    - jsonPath: .spec.repo
+      name: Repo
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          SandboxEnvironment is a namespaced resource representing a single agent
+          run: the class to build the sandbox from, the repository and task the
+          agent operates on, and the observed lifecycle state of that run.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Spec is the desired state of the environment.
+            properties:
+              classRef:
+                description: |-
+                  ClassRef references the SandboxClass this environment's sandbox is
+                  built from. Immutable after creation.
+                properties:
+                  name:
+                    description: Name is the name of the referenced SandboxClass.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: classRef is immutable
+                  rule: self == oldSelf
+              priority:
+                default: 0
+                description: |-
+                  Priority influences scheduling order among environments competing for
+                  a slot; higher values are scheduled first.
+                format: int32
+                maximum: 1000
+                minimum: -1000
+                type: integer
+              repo:
+                description: |-
+                  Repo is the repository this environment's agent operates on, in
+                  "owner/name" or "owner/name.git" form. Immutable after creation.
+                minLength: 1
+                pattern: ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$
+                type: string
+                x-kubernetes-validations:
+                - message: repo is immutable
+                  rule: self == oldSelf
+              suspend:
+                default: false
+                description: |-
+                  Suspend pauses scheduling of this environment: a suspended
+                  environment will not be granted a slot, and a running sandbox will be
+                  frozen, until suspend is cleared.
+                type: boolean
+              task:
+                description: |-
+                  Task describes the work the agent should perform. Immutable after
+                  creation.
+                properties:
+                  issueRef:
+                    description: |-
+                      IssueRef references an issue whose title/body/comments the agent
+                      should use as its task instructions.
+                    properties:
+                      number:
+                        description: Number is the issue number.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      repo:
+                        description: Repo is the repository the issue belongs to,
+                          in "owner/name" form.
+                        minLength: 1
+                        type: string
+                    required:
+                    - number
+                    - repo
+                    type: object
+                  prompt:
+                    description: Prompt is free-form task instructions given directly
+                      to the agent.
+                    maxLength: 8192
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: task is immutable
+                  rule: self == oldSelf
+                - message: task requires at least one of prompt or issueRef
+                  rule: (has(self.prompt) && size(self.prompt) > 0) || has(self.issueRef)
+            required:
+            - classRef
+            - repo
+            - task
+            type: object
+          status:
+            default: {}
+            description: Status is the most recently observed state of the environment.
+            properties:
+              archiveURI:
+                description: |-
+                  ArchiveURI is the location of this environment's final workspace
+                  archive, once the environment has reached a terminal phase.
+                type: string
+              conditions:
+                description: |-
+                  Conditions represents the latest available observations of this
+                  environment's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              finishedAt:
+                description: |-
+                  FinishedAt is when the environment reached a terminal phase (Done or
+                  Failed).
+                format: date-time
+                type: string
+              freezeCount:
+                default: 0
+                description: |-
+                  FreezeCount is the number of times this environment's sandbox has
+                  been frozen.
+                format: int32
+                minimum: 0
+                type: integer
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed by the
+                  controller reconciling this environment.
+                format: int64
+                type: integer
+              phase:
+                default: Pending
+                description: Phase is the coarse-grained lifecycle state of the environment.
+                enum:
+                - Pending
+                - Ready
+                - Running
+                - Freezing
+                - Waiting
+                - Restoring
+                - Done
+                - Failed
+                type: string
+              queuedSince:
+                description: QueuedSince is when the environment started waiting for
+                  a slot.
+                format: date-time
+                type: string
+              slot:
+                description: |-
+                  Slot records whether this environment currently holds a scheduling
+                  slot.
+                properties:
+                  granted:
+                    default: false
+                    description: |-
+                      Granted is true when this environment currently holds a scheduling
+                      slot.
+                    type: boolean
+                  grantedAt:
+                    description: GrantedAt is when the slot was granted.
+                    format: date-time
+                    type: string
+                  leaseName:
+                    description: LeaseName is the name of the lease resource backing
+                      the granted slot.
+                    type: string
+                type: object
+              snapshot:
+                description: |-
+                  Snapshot records the most recent workspace snapshot taken for this
+                  environment.
+                properties:
+                  seq:
+                    description: |-
+                      Seq is the monotonically increasing sequence number of this
+                      snapshot.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  sha256:
+                    description: SHA256 is the lowercase hex-encoded SHA-256 checksum
+                      of the snapshot.
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                  sizeBytes:
+                    description: SizeBytes is the size of the snapshot in bytes.
+                    format: int64
+                    type: integer
+                  takenAt:
+                    description: TakenAt is when the snapshot was taken.
+                    format: date-time
+                    type: string
+                  uri:
+                    description: URI is the location the snapshot was written to.
+                    type: string
+                required:
+                - seq
+                type: object
+              startedAt:
+                description: StartedAt is when the sandbox first started running.
+                format: date-time
+                type: string
+              waitFor:
+                description: |-
+                  WaitFor records the external condition, if any, blocking a frozen
+                  sandbox from being restored.
+                properties:
+                  declaredAt:
+                    description: DeclaredAt is when this wait condition was declared.
+                    format: date-time
+                    type: string
+                  params:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Params carries type-specific parameters for the wait condition (for
+                      example a pull request number or a duration string).
+                    type: object
+                  reason:
+                    description: |-
+                      Reason is a human-readable explanation of why this wait was
+                      declared.
+                    type: string
+                  type:
+                    description: Type identifies the kind of condition being waited
+                      on.
+                    enum:
+                    - PullRequestMerged
+                    - PullRequestChecks
+                    - IssueClosed
+                    - Duration
+                    - Manual
+                    type: string
+                required:
+                - type
+                type: object
+              wakeCount:
+                default: 0
+                description: |-
+                  WakeCount is the number of times this environment's sandbox has been
+                  restored from a frozen state.
+                format: int32
+                minimum: 0
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
