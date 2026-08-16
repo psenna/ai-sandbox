@@ -1,0 +1,11 @@
+.git
+.gitignore
+bin
+cover.out
+cover.html
+*.test
+.gocache*
+config
+docs
+spike
+README.md

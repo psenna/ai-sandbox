@@ -1,0 +1,6 @@
+domain: psenna.dev
+layout:
+- go.kubebuilder.io/v4
+projectName: operator
+repo: github.com/psenna/ai-sandbox/operator
+version: "3"
