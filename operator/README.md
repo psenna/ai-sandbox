@@ -3,23 +3,28 @@
 Kubernetes operator for ai-sandbox. See [issue #15](https://github.com/psenna/ai-sandbox/issues/15)
 for the broader design context.
 
-This directory is currently a **scaffold only** (issue #16): a Go module,
+This directory started as a **scaffold only** (issue #16): a Go module,
 kubebuilder v4 project layout, CI, and a manager that starts, serves health
-probes, and exits cleanly. It has no API types or controllers yet — those
-land in [#17](https://github.com/psenna/ai-sandbox/issues/17) (API types)
-and [#18](https://github.com/psenna/ai-sandbox/issues/18) (controllers).
+probes, and exits cleanly. [Issue #17](https://github.com/psenna/ai-sandbox/issues/17)
+added the `sandbox.psenna.dev/v1alpha1` API types (`SandboxClass`,
+`SandboxEnvironment`), their CRDs, and envtest-backed validation/round-trip
+tests. Controllers land in [#18](https://github.com/psenna/ai-sandbox/issues/18).
 
 ## Layout
 
 ```
 operator/
 ├── cmd/main.go              entrypoint: config, manager, signal handling
+├── api/v1alpha1/            SandboxClass / SandboxEnvironment API types
 ├── internal/config/         flag/env configuration surface
 ├── internal/operator/       manager construction (scheme, options, probes)
-├── config/                  kustomize bases (manager Deployment, RBAC)
-├── hack/                    boilerplate header, smoke test script
-├── Dockerfile                multi-stage, cross-compiled, distroless
-└── Makefile                  build/test/lint entrypoints (see below)
+├── internal/apitest/        envtest-backed API validation/round-trip tests
+├── config/                  kustomize bases (CRDs, manager Deployment, RBAC)
+├── config/samples/          example SandboxClass/SandboxEnvironment YAML
+├── hack/                    boilerplate header, smoke test, tool scripts
+├── hack/tools/              separate Go module that builds controller-gen
+├── Dockerfile               multi-stage, cross-compiled, distroless
+└── Makefile                 build/test/lint entrypoints (see below)
 ```
 
 ## Make targets
@@ -40,8 +45,10 @@ own `docker run` against `$DOCKER_HOST`.
 | `lint` | `golangci-lint run` |
 | `vuln` | `govulncheck` |
 | `tidy` | `go mod tidy` |
-| `manifests` | CRD/webhook manifests via `controller-gen` (no-op until #17 adds API types) |
-| `generate` | deepcopy generation via `controller-gen` (no-op until #17 adds API types) |
+| `manifests` | CRD manifests (`config/crd/bases/*.yaml`) via `controller-gen`, built from `hack/tools` |
+| `generate` | deepcopy generation (`api/v1alpha1/zz_generated.deepcopy.go`) via `controller-gen` |
+| `envtest-assets` | download and checksum-verify real kube-apiserver/etcd/kubectl binaries for envtest |
+| `test-envtest` | `go test -race` against `internal/apitest`, using the envtest binaries above |
 | `kustomize-build` | render `config/default` |
 | `cross` | cross-compile linux/amd64 and linux/arm64 |
 | `docker-build` | build the operator image |
@@ -87,11 +94,58 @@ CVE gate:
   `golang.org/x/tools`, which requires `golang.org/x/mod`, and `go install
   pkg@version` builds against that tool's own pinned dependency graph, so
   this project's `go.mod` requires can't bump it out of the way the way
-  they can for our own module. As a result `make lint`, `make vuln`,
-  `make manifests`, `make generate` and `make kustomize-build` cannot
-  currently succeed in this environment — not a code or Makefile defect,
-  but an upstream/proxy gap (no `golang.org/x/mod` release currently
-  clears DependaProxy's CVE gate). These targets are expected to start
-  working again once a patched `x/mod` release is available through
-  DependaProxy; no workaround was applied since bypassing the CVE gate is
-  out of scope here.
+  they can for our own module. `make lint`, `make vuln` and
+  `make kustomize-build` therefore still cannot succeed in this
+  environment — not a code or Makefile defect, but an upstream/proxy gap
+  (no `golang.org/x/mod` release currently clears DependaProxy's CVE
+  gate). These are expected to start working again once a patched `x/mod`
+  release is available through DependaProxy.
+
+### `make manifests` / `make generate`: `hack/tools`
+
+Unlike `go install pkg@version`, a Go **module**'s own `go.mod` requires
+*can* override a dependency's transitive pin via MVS (minimal version
+selection). `hack/tools/` is a separate Go module (never referenced from
+`operator/go.mod`, never part of `operator`'s own build, test, or
+`govulncheck` scan) whose only purpose is building `controller-gen` from
+source, with `golang.org/x/mod` explicitly bumped above every version
+DependaProxy's CVE gate denies (`GO-2026-6179`/`GO-2026-6180`).
+
+That explicit pin only resolves if the target version of `golang.org/x/mod`
+is fetchable somewhere. DependaProxy denies it outright, so `hack/tools`'
+build resolves it from a local, pre-fetched, DependaProxy-validated module
+cache at `/workspace/gomodcache/cache/download` (this sandbox only) via a
+`GOPROXY=file:///work/gomodcache/cache/download,http://dependaproxy:8080/goproxy`
+chain — file cache first, DependaProxy second for everything else. The
+`Makefile`'s `bin/controller-gen` target detects whether that cache exists
+(`TOOLS_GOPROXY` in the `Makefile`) and only sets the file:// proxy when it
+does; on a normal CI runner (no such path), it's unset and `hack/tools`
+builds against the ordinary Go proxy chain with no special handling — see
+the `api` job in `.github/workflows/operator.yml`.
+
+If `/workspace/gomodcache/cache/download` is ever missing or lacks the
+pinned `golang.org/x/mod` version, re-seed it by fetching
+`golang.org/x/mod@<version>` through DependaProxy directly (it validates
+and caches on first successful fetch) before running `make manifests` /
+`make generate` in this sandbox.
+
+`setup-envtest` (the usual way to fetch controller-gen *and* envtest
+binaries together) is not used at all: both its released versions declare
+`go 1.26.0`, unbuildable on the `golang:1.25` toolchain this project pins,
+and both pin a denied `x/mod` version — the same dead end as `go install
+controller-gen@version`, just one level removed.
+
+### `make envtest-assets` / `make test-envtest`
+
+Since `setup-envtest` is a dead end here, `hack/fetch-envtest.sh` downloads
+the real `kube-apiserver`/`etcd`/`kubectl` binaries directly from
+`controller-tools`' `envtest-v<version>` GitHub releases and verifies their
+sha512 checksum before use — idempotent, and independent of `go install`
+entirely. `internal/apitest/` is the envtest-backed test suite: it installs
+both CRDs from `config/crd/bases/` into a real (locally started)
+`kube-apiserver`/`etcd`, then round-trips fully-populated objects, checks
+every documented defaulting/validation/immutability rule against the real
+API server (not against controller code), and checks the printer columns
+and short names/categories via discovery. It's skipped (not failed) when
+`KUBEBUILDER_ASSETS` isn't set, so `make test` still passes without the
+envtest binaries present.

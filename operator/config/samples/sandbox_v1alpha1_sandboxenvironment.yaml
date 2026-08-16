@@ -1,0 +1,15 @@
+apiVersion: sandbox.psenna.dev/v1alpha1
+kind: SandboxEnvironment
+metadata:
+  name: sandbox-issue-17
+  namespace: default
+spec:
+  classRef:
+    name: default
+  repo: psenna/ai-sandbox
+  task:
+    issueRef:
+      repo: psenna/ai-sandbox
+      number: 17
+  priority: 0
+  suspend: false

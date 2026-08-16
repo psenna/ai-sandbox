@@ -3,3 +3,4 @@ cover.out
 cover.html
 .gocache*/
 dist/
+.envtest/
