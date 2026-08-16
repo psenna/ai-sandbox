@@ -351,6 +351,7 @@ claude plugin install code-simplifier@claude-plugins-official
 - `.env.example` — operator secrets template (copy to `.env`).
 - `setup-ubuntu-host.sh` — installs Docker + sysbox-ce on Ubuntu 24.04.
 - `scripts/check-no-secrets.sh` — pre-commit secret scan backstop.
+- `operator/` — Kubernetes operator scaffold (Go module, kubebuilder v4 layout, CI); see [issue #15](https://github.com/psenna/ai-sandbox/issues/15).
 
 ## Teardown
 

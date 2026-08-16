@@ -1,0 +1,8 @@
+# role.yaml and role_binding.yaml (the operator's own resource permissions)
+# arrive with #17/#18 once controller-gen has +kubebuilder:rbac markers to
+# generate them from. Only the ServiceAccount and leader-election Role/
+# RoleBinding exist here for now.
+resources:
+  - service_account.yaml
+  - leader_election_role.yaml
+  - leader_election_role_binding.yaml

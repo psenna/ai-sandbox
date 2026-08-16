@@ -1,0 +1,11 @@
+namespace: ai-sandbox-operator-system
+namePrefix: ai-sandbox-operator-
+
+resources:
+  - ../rbac
+  - ../manager
+
+images:
+  - name: controller
+    newName: ghcr.io/psenna/ai-sandbox-operator
+    newTag: dev

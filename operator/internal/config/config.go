@@ -1,0 +1,117 @@
+// Package config defines the operator's configuration surface: flags with
+// environment-variable fallbacks, and validation of the resulting values.
+package config
+
+import (
+	"flag"
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+const envPrefix = "SANDBOX_OPERATOR_"
+
+// Config holds the operator's runtime configuration, sourced from CLI flags
+// with environment-variable fallbacks (flag > env > built-in default).
+type Config struct {
+	SlotCapacity        int
+	ClusterID           string
+	WatchNamespace      string // "" = all namespaces
+	DefaultSandboxClass string
+
+	MetricsAddr     string // "0" disables the metrics listener
+	HealthProbeAddr string // "0" disables the health/readiness listener
+
+	EnableLeaderElection    bool
+	LeaderElectionID        string
+	LeaderElectionNamespace string
+}
+
+// dns1123LabelRE matches a valid DNS-1123 label: lowercase alphanumeric
+// characters or '-', starting and ending with an alphanumeric character.
+var dns1123LabelRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// Load parses args (typically os.Args[1:]) into a Config, falling back to
+// the environment (via getenv) and then to built-in defaults for any flag
+// not explicitly set on the command line.
+func Load(args []string, getenv func(string) string) (Config, error) {
+	var c Config
+
+	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
+
+	fs.IntVar(&c.SlotCapacity, "slot-capacity",
+		envOrInt(getenv, "SLOT_CAPACITY", 4), "maximum number of sandbox slots this node/cluster may run concurrently")
+	fs.StringVar(&c.ClusterID, "cluster-id",
+		envOr(getenv, "CLUSTER_ID", "default"), "identifier for this cluster, used as a storage path segment")
+	fs.StringVar(&c.WatchNamespace, "watch-namespace",
+		envOr(getenv, "WATCH_NAMESPACE", ""), "namespace to restrict watches to; empty watches all namespaces")
+	fs.StringVar(&c.DefaultSandboxClass, "default-sandbox-class",
+		envOr(getenv, "DEFAULT_SANDBOX_CLASS", "default"), "name of the SandboxClass used when none is specified")
+	fs.StringVar(&c.MetricsAddr, "metrics-bind-address",
+		envOr(getenv, "METRICS_BIND_ADDRESS", ":8080"), "address the metrics endpoint binds to; \"0\" disables it")
+	fs.StringVar(&c.HealthProbeAddr, "health-probe-bind-address",
+		envOr(getenv, "HEALTH_PROBE_BIND_ADDRESS", ":8081"), "address the health/readiness probe endpoint binds to; \"0\" disables it")
+	fs.BoolVar(&c.EnableLeaderElection, "leader-elect",
+		envOrBool(getenv, "LEADER_ELECT", true), "enable leader election for controller manager")
+	fs.StringVar(&c.LeaderElectionID, "leader-election-id",
+		envOr(getenv, "LEADER_ELECTION_ID", "sandbox-operator.sandbox.psenna.dev"), "name of the resource used for leader election")
+	fs.StringVar(&c.LeaderElectionNamespace, "leader-election-namespace",
+		envOr(getenv, "LEADER_ELECTION_NAMESPACE", ""), "namespace used for leader election; empty uses the in-cluster namespace")
+
+	if err := fs.Parse(args); err != nil {
+		return Config{}, fmt.Errorf("parsing flags: %w", err)
+	}
+
+	return c, nil
+}
+
+// Validate returns an error naming the first invalid field, or nil if c is
+// well-formed.
+func (c Config) Validate() error {
+	if c.SlotCapacity < 1 {
+		return fmt.Errorf("slot-capacity: must be >= 1, got %d", c.SlotCapacity)
+	}
+	if c.ClusterID == "" {
+		return fmt.Errorf("cluster-id: must not be empty")
+	}
+	if !dns1123LabelRE.MatchString(c.ClusterID) {
+		return fmt.Errorf("cluster-id: %q is not a valid DNS-1123 label (lowercase alphanumeric and '-')", c.ClusterID)
+	}
+	if c.DefaultSandboxClass == "" {
+		return fmt.Errorf("default-sandbox-class: must not be empty")
+	}
+	return nil
+}
+
+func envOr(getenv func(string) string, name, def string) string {
+	if v := getenv(envPrefix + name); v != "" {
+		return v
+	}
+	return def
+}
+
+func envOrInt(getenv func(string) string, name string, def int) int {
+	v := getenv(envPrefix + name)
+	if v == "" {
+		return def
+	}
+	var n int
+	if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &n); err != nil {
+		return def
+	}
+	return n
+}
+
+func envOrBool(getenv func(string) string, name string, def bool) bool {
+	v := strings.TrimSpace(getenv(envPrefix + name))
+	switch strings.ToLower(v) {
+	case "":
+		return def
+	case "1", "t", "true", "yes":
+		return true
+	case "0", "f", "false", "no":
+		return false
+	default:
+		return def
+	}
+}

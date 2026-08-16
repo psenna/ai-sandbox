@@ -1,0 +1,152 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func emptyEnv(string) string { return "" }
+
+func envFrom(m map[string]string) func(string) string {
+	return func(k string) string {
+		return m[k]
+	}
+}
+
+func TestLoad_Defaults(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	want := Config{
+		SlotCapacity:            4,
+		ClusterID:               "default",
+		WatchNamespace:          "",
+		DefaultSandboxClass:     "default",
+		MetricsAddr:             ":8080",
+		HealthProbeAddr:         ":8081",
+		EnableLeaderElection:    true,
+		LeaderElectionID:        "sandbox-operator.sandbox.psenna.dev",
+		LeaderElectionNamespace: "",
+	}
+	if c != want {
+		t.Fatalf("Load defaults = %+v, want %+v", c, want)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() on defaults: %v", err)
+	}
+}
+
+func TestLoad_EnvOverride(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_SLOT_CAPACITY":         "8",
+		"SANDBOX_OPERATOR_CLUSTER_ID":            "cluster-a",
+		"SANDBOX_OPERATOR_WATCH_NAMESPACE":       "team-a",
+		"SANDBOX_OPERATOR_DEFAULT_SANDBOX_CLASS": "large",
+		"SANDBOX_OPERATOR_LEADER_ELECT":          "false",
+	})
+
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SlotCapacity != 8 {
+		t.Errorf("SlotCapacity = %d, want 8", c.SlotCapacity)
+	}
+	if c.ClusterID != "cluster-a" {
+		t.Errorf("ClusterID = %q, want cluster-a", c.ClusterID)
+	}
+	if c.WatchNamespace != "team-a" {
+		t.Errorf("WatchNamespace = %q, want team-a", c.WatchNamespace)
+	}
+	if c.DefaultSandboxClass != "large" {
+		t.Errorf("DefaultSandboxClass = %q, want large", c.DefaultSandboxClass)
+	}
+	if c.EnableLeaderElection {
+		t.Errorf("EnableLeaderElection = true, want false")
+	}
+}
+
+func TestLoad_FlagBeatsEnv(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_SLOT_CAPACITY": "8",
+		"SANDBOX_OPERATOR_CLUSTER_ID":    "from-env",
+	})
+
+	c, err := Load([]string{"--slot-capacity=16", "--cluster-id=from-flag"}, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SlotCapacity != 16 {
+		t.Errorf("SlotCapacity = %d, want 16 (flag should beat env)", c.SlotCapacity)
+	}
+	if c.ClusterID != "from-flag" {
+		t.Errorf("ClusterID = %q, want from-flag (flag should beat env)", c.ClusterID)
+	}
+}
+
+func TestLoad_UnknownFlagErrors(t *testing.T) {
+	_, err := Load([]string{"--does-not-exist=1"}, emptyEnv)
+	if err == nil {
+		t.Fatal("Load with unknown flag: expected error, got nil")
+	}
+}
+
+func TestValidate_SlotCapacityZeroErrors(t *testing.T) {
+	c, err := Load([]string{"--slot-capacity=0"}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() with slot-capacity=0: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "slot-capacity") {
+		t.Errorf("Validate() error = %v, want it to mention slot-capacity", err)
+	}
+}
+
+func TestValidate_InvalidClusterID(t *testing.T) {
+	cases := []string{"Uppercase", "has_underscore", "-leading-dash", "trailing-dash-", ""}
+	for _, id := range cases {
+		t.Run(id, func(t *testing.T) {
+			var args []string
+			if id != "" {
+				args = []string{"--cluster-id=" + id}
+			} else {
+				args = []string{"--cluster-id="}
+			}
+			c, err := Load(args, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			if err := c.Validate(); err == nil {
+				t.Fatalf("Validate() with cluster-id=%q: expected error, got nil", id)
+			}
+		})
+	}
+}
+
+func TestValidate_ValidClusterID(t *testing.T) {
+	cases := []string{"default", "cluster-a", "a", "a1-b2"}
+	for _, id := range cases {
+		t.Run(id, func(t *testing.T) {
+			c, err := Load([]string{"--cluster-id=" + id}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("Validate() with cluster-id=%q: unexpected error: %v", id, err)
+			}
+		})
+	}
+}
+
+func TestValidate_EmptyDefaultSandboxClassErrors(t *testing.T) {
+	c, err := Load([]string{"--default-sandbox-class="}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() with empty default-sandbox-class: expected error, got nil")
+	}
+}
