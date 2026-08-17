@@ -272,7 +272,24 @@ e2e-up: e2e-tools
 # `go run`, NOT `go install`, so the ginkgo CLI resolves through the pinned
 # module graph -- exactly like this repo's README already documents for
 # controller-gen/golangci-lint.
+#
+# `cd test/e2e &&` and the explicit E2E_*/KUBECONFIG env prefix are both
+# REQUIRED, not redundant, under IN_CONTAINER=1: E2E_GO_RUN is empty there
+# (no docker wrapping), so nothing else supplies test/e2e as the working
+# directory or maps the Makefile's E2E_KUBECONFIG variable onto the
+# KUBECONFIG env var client-go actually reads (os.Getenv("KUBECONFIG") in
+# harness.go). Under the non-IN_CONTAINER path this is harmless
+# duplication: `cd` only affects the host shell before docker is invoked
+# (E2E_GO_RUN's own -w already sets the container's cwd), and the env
+# prefix only affects the host shell's environment, which docker run does
+# not inherit without an explicit -e (already present on E2E_GO_RUN).
 e2e-run:
+	cd test/e2e && \
+	KUBECONFIG=$(E2E_KUBECONFIG_TARGET) E2E_ARTIFACT_DIR=$(E2E_ARTIFACT_TARGET_DIR) \
+	E2E_HOST=$(E2E_HOST) E2E_MINIO_PORT=$(E2E_MINIO_PORT) E2E_BROKER_PORT=$(E2E_BROKER_PORT) E2E_MODEL_PORT=$(E2E_MODEL_PORT) \
+	E2E_OPERATOR_NS=$(E2E_OPERATOR_NS) E2E_SERVICES_NS=$(E2E_SERVICES_NS) E2E_AGENT_IMAGE=$(E2E_AGENT_IMAGE) \
+	E2E_BUCKET=$(E2E_BUCKET) E2E_FIXTURE_BUCKET=$(E2E_FIXTURE_BUCKET) E2E_BROKER_TOKEN=$(E2E_BROKER_TOKEN) \
+	E2E_PHASE_TIMEOUT=$(E2E_PHASE_TIMEOUT) E2E_POD_TIMEOUT=$(E2E_POD_TIMEOUT) E2E_POLL=$(E2E_POLL) \
 	$(E2E_GO_RUN) go run github.com/onsi/ginkgo/v2/ginkgo $(GINKGO_FLAGS) .
 
 e2e-down:
