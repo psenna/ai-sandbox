@@ -1,0 +1,44 @@
+apiVersion: v1
+data:
+  sandbox.json: |
+    {
+      "apiVersion": "sandbox.psenna.dev/v1alpha1",
+      "kind": "SandboxEnvironment",
+      "clusterID": "test-cluster",
+      "environment": {
+        "name": "full-env",
+        "namespace": "default",
+        "uid": "11111111-1111-1111-1111-111111111111"
+      },
+      "class": "default",
+      "engine": "",
+      "repo": "org/repo",
+      "workspacePath": "/workspace",
+      "agentHome": "/home/node/.claude-sandbox",
+      "configPath": "/etc/ai-sandbox",
+      "taskFile": "task.md",
+      "sidecarURL": "http://localhost:9099",
+      "task": {
+        "hasPrompt": true
+      }
+    }
+  task.md: do the full thing
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: sandbox-environment
+    app.kubernetes.io/instance: full-env
+    app.kubernetes.io/managed-by: ai-sandbox-operator
+    app.kubernetes.io/name: ai-sandbox
+    app.kubernetes.io/part-of: ai-sandbox
+    sandbox.psenna.dev/class: default
+    sandbox.psenna.dev/environment: full-env
+  name: full-env-config
+  namespace: default
+  ownerReferences:
+  - apiVersion: sandbox.psenna.dev/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SandboxEnvironment
+    name: full-env
+    uid: 11111111-1111-1111-1111-111111111111

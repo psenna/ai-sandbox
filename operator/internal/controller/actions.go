@@ -10,10 +10,10 @@ import (
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
 )
 
-type actionFunc func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment) error
+type actionFunc func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error
 
 func notImplemented(name string, issue int) actionFunc {
-	return func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment) error {
+	return func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, _ *v1alpha1.SandboxClass) error {
 		ctrl.LoggerFrom(ctx).V(1).Info("action not implemented yet", "action", name, "issue", issue, "environment", env.Name)
 		return nil
 	}
@@ -25,20 +25,22 @@ func notImplemented(name string, issue int) actionFunc {
 // nothing with no log would hide it. Replace entries as the referenced issues
 // land.
 var actions = map[lifecycle.Action]actionFunc{
-	lifecycle.ActionEnsureResources: notImplemented("EnsureResources", 19),
-	lifecycle.ActionEnsurePod:       notImplemented("EnsurePod", 21),
-	lifecycle.ActionFreezePod:       notImplemented("FreezePod", 28),
-	lifecycle.ActionDeletePod:       notImplemented("DeletePod", 21),
-	lifecycle.ActionArchive:         notImplemented("Archive", 32),
+	lifecycle.ActionEnsureResources: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
+		return r.ensureResources(ctx, env, class)
+	},
+	lifecycle.ActionEnsurePod: notImplemented("EnsurePod", 21),
+	lifecycle.ActionFreezePod: notImplemented("FreezePod", 28),
+	lifecycle.ActionDeletePod: notImplemented("DeletePod", 21),
+	lifecycle.ActionArchive:   notImplemented("Archive", 32),
 }
 
-func (r *Reconciler) performActions(ctx context.Context, env *v1alpha1.SandboxEnvironment, d lifecycle.Decision) error {
+func (r *Reconciler) performActions(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass, d lifecycle.Decision) error {
 	for _, a := range d.Actions {
 		fn, ok := actions[a]
 		if !ok {
 			return fmt.Errorf("no handler registered for action %q", a)
 		}
-		if err := fn(ctx, r, env); err != nil {
+		if err := fn(ctx, r, env, class); err != nil {
 			return fmt.Errorf("action %q: %w", a, err)
 		}
 	}

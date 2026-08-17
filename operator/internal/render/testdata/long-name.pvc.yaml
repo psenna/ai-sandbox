@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app.kubernetes.io/component: sandbox-environment
+    app.kubernetes.io/instance: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-3f05cf87
+    app.kubernetes.io/managed-by: ai-sandbox-operator
+    app.kubernetes.io/name: ai-sandbox
+    app.kubernetes.io/part-of: ai-sandbox
+    sandbox.psenna.dev/class: default
+    sandbox.psenna.dev/environment: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-3f05cf87
+  name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-3f05cf87-workspace
+  namespace: default
+  ownerReferences:
+  - apiVersion: sandbox.psenna.dev/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SandboxEnvironment
+    name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbb
+    uid: 11111111-1111-1111-1111-111111111111
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  volumeMode: Filesystem

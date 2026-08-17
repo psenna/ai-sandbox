@@ -19,6 +19,12 @@ type Config struct {
 	WatchNamespace      string // "" = all namespaces
 	DefaultSandboxClass string
 
+	// ClassSecretNamespace is the namespace holding the Secrets referenced by
+	// a SandboxClass (e.g. services.gitProxy.tokenSecretRef). The operator
+	// reads them and projects only the values an environment needs into a
+	// new Secret it owns in the environment's own namespace.
+	ClassSecretNamespace string
+
 	MetricsAddr     string // "0" disables the metrics listener
 	HealthProbeAddr string // "0" disables the health/readiness listener
 
@@ -57,6 +63,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 		envOr(getenv, "LEADER_ELECTION_ID", "sandbox-operator.sandbox.psenna.dev"), "name of the resource used for leader election")
 	fs.StringVar(&c.LeaderElectionNamespace, "leader-election-namespace",
 		envOr(getenv, "LEADER_ELECTION_NAMESPACE", ""), "namespace used for leader election; empty uses the in-cluster namespace")
+	fs.StringVar(&c.ClassSecretNamespace, "class-secret-namespace",
+		classSecretNamespaceDefault(getenv),
+		"namespace holding the Secrets referenced by SandboxClass (e.g. services.gitProxy.tokenSecretRef); the operator reads them and projects only the values an environment needs")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -80,7 +89,26 @@ func (c Config) Validate() error {
 	if c.DefaultSandboxClass == "" {
 		return fmt.Errorf("default-sandbox-class: must not be empty")
 	}
+	if c.ClassSecretNamespace == "" {
+		return fmt.Errorf("class-secret-namespace: must not be empty")
+	}
+	if !dns1123LabelRE.MatchString(c.ClassSecretNamespace) {
+		return fmt.Errorf("class-secret-namespace: %q is not a valid DNS-1123 label (lowercase alphanumeric and '-')", c.ClassSecretNamespace)
+	}
 	return nil
+}
+
+// classSecretNamespaceDefault resolves, in order: the prefixed env override,
+// the raw POD_NAMESPACE (downward API convention, intentionally unprefixed),
+// then a fixed fallback matching config/default/kustomization.yaml's namespace.
+func classSecretNamespaceDefault(getenv func(string) string) string {
+	if v := getenv(envPrefix + "CLASS_SECRET_NAMESPACE"); v != "" {
+		return v
+	}
+	if v := getenv("POD_NAMESPACE"); v != "" {
+		return v
+	}
+	return "ai-sandbox-operator-system"
 }
 
 func envOr(getenv func(string) string, name, def string) string {

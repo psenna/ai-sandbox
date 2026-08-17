@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,6 +56,8 @@ func TestMain(m *testing.M) {
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+	_ = authorizationv1.AddToScheme(scheme)
 	_ = sandboxv1alpha1.AddToScheme(scheme)
 
 	k8s, err = client.New(k8sCfg, client.Options{Scheme: scheme})
@@ -131,8 +135,57 @@ func (s *factsStore) observe(_ context.Context, env *sandboxv1alpha1.SandboxEnvi
 
 func newReconciler(t *testing.T, clk *fakeClock, fs *factsStore) *Reconciler {
 	t.Helper()
-	r := &Reconciler{Client: k8s, Clock: clk.Now, Observe: fs.observe}
+	r := &Reconciler{
+		Client:               k8s,
+		Clock:                clk.Now,
+		Observe:              fs.observe,
+		ClassSecretNamespace: "default",
+		ClusterID:            "test",
+	}
 	return r
+}
+
+// newResourceReconciler builds a Reconciler wired to the REAL observer
+// (observeCluster), for tests that exercise #19's child-resource rendering,
+// application and observation end-to-end rather than injecting facts.
+// observeCluster is unexported, so this helper lives inside package
+// controller itself (an internal test file), matching newReconciler's own
+// pattern of direct field construction rather than going through
+// SetupWithManager.
+func newResourceReconciler(t *testing.T, clk *fakeClock) *Reconciler {
+	t.Helper()
+	r := &Reconciler{
+		Client:               k8s,
+		Clock:                clk.Now,
+		ClassSecretNamespace: "default",
+		ClusterID:            "test",
+	}
+	r.Observe = r.observeCluster
+	return r
+}
+
+// mustCreateSourceSecret creates (or reuses) namespace ns, then creates a
+// Secret named name in it with a single key/value pair. Used to simulate the
+// class-referenced Secret D3 describes: a Secret in the operator's own
+// namespace that the operator reads and projects into an environment-scoped
+// Secret.
+func mustCreateSourceSecret(t *testing.T, ns, name, key, value string) *corev1.Secret {
+	t.Helper()
+	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+	if err := k8s.Create(ctx, nsObj); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("creating namespace %s: %v", ns, err)
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Data:       map[string][]byte{key: []byte(value)},
+	}
+	if err := k8s.Create(ctx, secret); err != nil {
+		t.Fatalf("creating source secret %s/%s: %v", ns, name, err)
+	}
+	t.Cleanup(func() {
+		_ = k8s.Delete(ctx, secret)
+	})
+	return secret
 }
 
 // mustCreateClass creates a minimal valid SandboxClass named "default" with
@@ -158,6 +211,52 @@ func mustCreateClass(t *testing.T) *sandboxv1alpha1.SandboxClass {
 			},
 		},
 	}
+	if err := k8s.Create(ctx, class); err != nil {
+		t.Fatalf("creating SandboxClass: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8s.Delete(ctx, class)
+	})
+	return class
+}
+
+// mustCreateClassWithGitProxy creates a minimal valid SandboxClass named
+// "default" whose services.gitProxy.tokenSecretRef points at secretName/key
+// in secretNamespace -- the class-referenced Secret D3 describes.
+func mustCreateClassWithGitProxy(t *testing.T, secretNamespace, secretName, key string) *sandboxv1alpha1.SandboxClass {
+	t.Helper()
+	class := &sandboxv1alpha1.SandboxClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: sandboxv1alpha1.SandboxClassSpec{
+			Agent: sandboxv1alpha1.AgentSpec{Image: "ghcr.io/psenna/ai-sandbox-agent:v1"},
+			Storage: sandboxv1alpha1.StorageSpec{
+				Backend: sandboxv1alpha1.BackendSpec{
+					Type: sandboxv1alpha1.StorageBackendTypeS3,
+					S3: &sandboxv1alpha1.S3Backend{
+						Endpoint: "https://s3.example.com",
+						Bucket:   "sandbox-snapshots",
+						CredentialsSecretRef: sandboxv1alpha1.SecretKeyRef{
+							Name: "s3-creds",
+						},
+					},
+				},
+			},
+			Services: sandboxv1alpha1.ServicesSpec{
+				GitProxy: &sandboxv1alpha1.GitProxyService{
+					GitURL:    "http://git-proxy:8080",
+					BrokerURL: "http://git-proxy:8090",
+					TokenSecretRef: sandboxv1alpha1.SecretKeyRef{
+						Name: secretName,
+						Key:  key,
+					},
+				},
+			},
+		},
+	}
+	// secretNamespace is only meaningful when it equals the reconciler's
+	// ClassSecretNamespace; callers are responsible for keeping the two in
+	// sync (the tokenSecretRef itself carries no namespace -- see D3).
+	_ = secretNamespace
 	if err := k8s.Create(ctx, class); err != nil {
 		t.Fatalf("creating SandboxClass: %v", err)
 	}

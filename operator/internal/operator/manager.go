@@ -9,11 +9,13 @@ package operator
 import (
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -50,8 +52,38 @@ func Options(cfg config.Config, scheme *runtime.Scheme) ctrl.Options {
 		LeaderElectionID:              cfg.LeaderElectionID,
 		LeaderElectionNamespace:       cfg.LeaderElectionNamespace,
 		LeaderElectionReleaseOnCancel: true,
+		// Secret reads must always be live/uncached: the class-referenced
+		// Secrets an environment's gitProxy service points at (see
+		// Config.ClassSecretNamespace, internal/controller's
+		// resolveCredentials) live in the operator's own namespace, but
+		// environments -- and this ClusterRole's secrets grant -- span
+		// arbitrary namespaces. Without this, an informer would cache every
+		// Secret in every watched namespace.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Secret{}},
+			},
+		},
 	}
 
+	// Deliberately NOT setting Cache.ByObject to label-scope the
+	// PVC/ConfigMap/ServiceAccount informers to app.kubernetes.io/managed-by
+	// (as originally sketched for this issue): controller-runtime's
+	// defaultOpts eagerly resolves a RESTMapping for every Cache.ByObject key
+	// at manager-construction time (see
+	// sigs.k8s.io/controller-runtime@v0.23.3/pkg/cache/cache.go's
+	// defaultOpts -> apiutil.IsObjectNamespaced -> RESTMapping), which
+	// requires live API server connectivity. That directly breaks this
+	// package's own TestNew_ConstructsWithoutCluster /
+	// TestManager_ServesProbesAndShutsDownCleanly contract ("New() alone
+	// must not require connectivity"), which construct the manager against
+	// an unreachable https://127.0.0.1:6443. managedByLabelSelector is kept
+	// as a documented seam for #21 (or later) to revisit once that
+	// constraint is either accepted or worked around (e.g. a static
+	// RESTMapper). The informers for these three kinds remain unscoped
+	// (namespace-restricted only, via DefaultNamespaces below, same as
+	// before this issue) -- correctness is unaffected, this is purely a
+	// cache-memory optimization left undone.
 	if cfg.WatchNamespace != "" {
 		opts.Cache = cache.Options{
 			DefaultNamespaces: map[string]cache.Config{

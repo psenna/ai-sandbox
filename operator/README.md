@@ -12,12 +12,53 @@ tests. [Issue #18](https://github.com/psenna/ai-sandbox/issues/18) added the
 `SandboxEnvironment` phase state machine as a pure function
 (`internal/lifecycle`), the reconciler that drives it against a real cluster
 (`internal/controller`), and the RBAC generated from its
-`+kubebuilder:rbac` markers. The reconciler's `Observe` seam is deliberately
-a stub today (`ObserveStub`): no child resources, pods, snapshots, or probes
-exist yet, so a new environment settles in `Pending` and stays there. Those
-subsystems land incrementally in #19, #20, #21, #24, #27, #28, #29, #30 and
-#32, each replacing one piece of `ObserveStub` and one `notImplemented`
-action without touching the state machine or the reconcile loop itself.
+`+kubebuilder:rbac` markers. [Issue #19](https://github.com/psenna/ai-sandbox/issues/19)
+made the reconciler's `Observe` seam real (`observeCluster`, replacing the
+earlier stub) for everything an environment needs besides its pod: a pure,
+deterministic renderer (`internal/render`) produces the workspace PVC, the
+sidecar's ServiceAccount/Role/RoleBinding, the agent's environment Secret,
+and the entrypoint ConfigMap, applied via server-side apply and observed for
+readiness. Still stubbed/not-implemented: the agent pod itself and pod
+observation (#21/#24), the sidecar control channel (#27), freeze/wake
+(#28/#29), wait probes (#30), and the terminal archive (#32) -- each lands
+incrementally, replacing one `notImplemented` action and one piece of
+`observeCluster` without touching the state machine or the reconcile loop
+itself.
+
+### Child resources (#19)
+
+For a `SandboxEnvironment` named `<env>`, `internal/render.Render` produces
+six objects, all labeled with the standard `app.kubernetes.io/*` set plus
+`sandbox.psenna.dev/environment=<truncated-env>` and
+`sandbox.psenna.dev/class=<truncated-class>`, and owned by a single
+controller `ownerReference` back to the environment (so deleting the CR
+garbage-collects the lot):
+
+| kind | name | purpose |
+|---|---|---|
+| `ServiceAccount` | `<env>-agent` | the sidecar's identity; `automountServiceAccountToken: false` |
+| `Role` + `RoleBinding` | `<env>-sidecar` | `get` on the environment, `get`/`patch` on its `status`, `resourceNames`-restricted to the environment's own name -- nothing else |
+| `PersistentVolumeClaim` | `<env>-workspace` | the warm workspace cache, sized from `SandboxClass.spec.storage.workspace`, retained across freeze/wake |
+| `ConfigMap` | `<env>-config` | `sandbox.json` (resolved run configuration) and `task.md` (the agent's task instructions) |
+| `Secret` | `<env>-env` | the agent's process environment (git-proxy bearer, service URLs, model tier mapping, `CLAUDE_CONFIG_DIR`, ...) |
+
+Names longer than 63 characters are truncated and suffixed with an 8-hex-char
+SHA-256 hash of the full environment name (see `internal/render/names.go`);
+label values use the same scheme. The class-referenced credentials (e.g.
+`services.gitProxy.tokenSecretRef`) are read from a single operator-level
+namespace (`--class-secret-namespace` / `SANDBOX_OPERATOR_CLASS_SECRET_NAMESPACE`,
+falling back to the downward-API `POD_NAMESPACE`, then
+`ai-sandbox-operator-system`) and projected into the environment's own
+`Secret` -- the operator never mints or logs a credential, and Secret reads
+always bypass the client cache (see `internal/operator/manager.go`'s
+`Client.Cache.DisableFor`).
+
+Rendering (`internal/render`) is covered by golden-file tests under
+`internal/render/testdata/`; run `go test ./internal/render/... -update` to
+regenerate them after an intentional rendering change (a rendered `Secret`'s
+values are redacted to a `sha256:`-prefixed fingerprint before being written
+to a golden file, since `testdata/*.yaml` is not covered by git-proxy's
+`secret_scan` ignore-paths the way `*_test.go` is).
 
 ## Layout
 
@@ -28,6 +69,7 @@ operator/
 ├── internal/config/         flag/env configuration surface
 ├── internal/operator/       manager construction (scheme, options, probes)
 ├── internal/lifecycle/      pure SandboxEnvironment phase state machine (no controller-runtime import)
+├── internal/render/         pure child-object renderer: PVC/ServiceAccount/Role/RoleBinding/ConfigMap/Secret (no controller-runtime import)
 ├── internal/controller/     the reconciler: Observe -> lifecycle.Next -> actions -> status write
 ├── internal/apitest/        envtest-backed API validation/round-trip tests
 ├── config/                  kustomize bases (CRDs, manager Deployment, RBAC)

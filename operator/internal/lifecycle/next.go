@@ -33,8 +33,27 @@ func Next(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Time) De
 	}
 
 	d := decide(env, facts, now, phase)
+	d.Actions = withEnsureResources(d.Actions, d.Phase, facts)
 	d.RequeueAfter = computeRequeueAfter(d.Phase, env, facts, now)
 	return d
+}
+
+// withEnsureResources prepends ActionEnsureResources for every non-terminal
+// phase with a resolved class, so child objects are re-applied (and drift
+// corrected) on every pass, not only while Pending. Terminal phases (Done,
+// Failed) are excluded -- see TestNext_TerminalIsSticky's invariant that a
+// terminal Decision performs no action other than Archive. An unresolved
+// class is excluded: there is nothing to render from yet.
+func withEnsureResources(actions []Action, phase v1alpha1.Phase, facts ClusterFacts) []Action {
+	if isTerminal(phase) || !facts.ClassResolved {
+		return actions
+	}
+	for _, a := range actions {
+		if a == ActionEnsureResources {
+			return actions // already present (e.g. nextPending's own emission)
+		}
+	}
+	return append([]Action{ActionEnsureResources}, actions...)
 }
 
 func decide(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Time, phase v1alpha1.Phase) Decision {

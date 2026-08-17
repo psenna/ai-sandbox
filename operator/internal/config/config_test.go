@@ -24,6 +24,7 @@ func TestLoad_Defaults(t *testing.T) {
 		ClusterID:               "default",
 		WatchNamespace:          "",
 		DefaultSandboxClass:     "default",
+		ClassSecretNamespace:    "ai-sandbox-operator-system",
 		MetricsAddr:             ":8080",
 		HealthProbeAddr:         ":8081",
 		EnableLeaderElection:    true,
@@ -148,5 +149,80 @@ func TestValidate_EmptyDefaultSandboxClassErrors(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("Validate() with empty default-sandbox-class: expected error, got nil")
+	}
+}
+
+func TestClassSecretNamespace_DefaultFallback(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.ClassSecretNamespace != "ai-sandbox-operator-system" {
+		t.Errorf("ClassSecretNamespace = %q, want ai-sandbox-operator-system", c.ClassSecretNamespace)
+	}
+}
+
+func TestClassSecretNamespace_EnvOverride(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_CLASS_SECRET_NAMESPACE": "custom-ns",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.ClassSecretNamespace != "custom-ns" {
+		t.Errorf("ClassSecretNamespace = %q, want custom-ns", c.ClassSecretNamespace)
+	}
+}
+
+func TestClassSecretNamespace_PodNamespaceFallback(t *testing.T) {
+	env := envFrom(map[string]string{
+		"POD_NAMESPACE": "pod-ns",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.ClassSecretNamespace != "pod-ns" {
+		t.Errorf("ClassSecretNamespace = %q, want pod-ns", c.ClassSecretNamespace)
+	}
+}
+
+func TestClassSecretNamespace_PrefixedEnvBeatsPodNamespace(t *testing.T) {
+	env := envFrom(map[string]string{
+		"POD_NAMESPACE": "pod-ns",
+		"SANDBOX_OPERATOR_CLASS_SECRET_NAMESPACE": "prefixed-ns",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.ClassSecretNamespace != "prefixed-ns" {
+		t.Errorf("ClassSecretNamespace = %q, want prefixed-ns", c.ClassSecretNamespace)
+	}
+}
+
+func TestClassSecretNamespace_FlagBeatsEnv(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_CLASS_SECRET_NAMESPACE": "env-ns",
+	})
+	c, err := Load([]string{"--class-secret-namespace=flag-ns"}, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.ClassSecretNamespace != "flag-ns" {
+		t.Errorf("ClassSecretNamespace = %q, want flag-ns", c.ClassSecretNamespace)
+	}
+}
+
+func TestValidate_InvalidClassSecretNamespaceErrors(t *testing.T) {
+	c, err := Load([]string{"--class-secret-namespace=Invalid_NS"}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() with invalid class-secret-namespace: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "class-secret-namespace") {
+		t.Errorf("Validate() error = %v, want it to mention class-secret-namespace", err)
 	}
 }

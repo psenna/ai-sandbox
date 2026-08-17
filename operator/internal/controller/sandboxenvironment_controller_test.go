@@ -105,17 +105,28 @@ func TestReconcile_MissingClassHoldsAndReportsUnknown(t *testing.T) {
 	}
 }
 
-func TestReconcile_PendingHoldsWithStubObserver(t *testing.T) {
+// TestReconcile_PendingThenReady replaces the old
+// TestReconcile_PendingHoldsWithStubObserver from #18 (that test asserted the
+// stub's ResourcesReady: false forever; with a real observer and real
+// resources, the environment now genuinely progresses).
+//
+// This is ALSO the regression test for the D5 binding-mode decision:
+// envtest runs no storage provisioner at all, so the workspace PVC never
+// becomes Bound -- if this test passes, ResourcesReady is correctly NOT
+// requiring Bound (see observeCluster's doc comment). If someone later
+// "fixes" the observer to require Bound, this test deadlocks (never reaches
+// Ready) and fails with a clear signal.
+func TestReconcile_PendingThenReady(t *testing.T) {
 	mustCreateClass(t)
-	env := mustCreateEnv(t, "pending-stub")
+	env := mustCreateEnv(t, "pending-then-ready")
 	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
 
-	r := &Reconciler{Client: k8s, Clock: newFakeClock(fixedStart).Now, Observe: ObserveStub}
-	reconcileOnce(t, r, key)
+	r := newResourceReconciler(t, newFakeClock(fixedStart))
 
+	reconcileOnce(t, r, key)
 	got := getEnv(t, key)
 	if got.Status.Phase != sandboxv1alpha1.PhasePending {
-		t.Errorf("Phase = %s, want Pending", got.Status.Phase)
+		t.Errorf("Phase after first reconcile = %s, want Pending", got.Status.Phase)
 	}
 	c := findCondition(got, lifecycle.ConditionScheduled)
 	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lifecycle.ReasonResourcesNotReady {
@@ -123,6 +134,12 @@ func TestReconcile_PendingHoldsWithStubObserver(t *testing.T) {
 	}
 	if got.Status.ObservedGeneration != 1 {
 		t.Errorf("ObservedGeneration = %d, want 1", got.Status.ObservedGeneration)
+	}
+
+	reconcileOnce(t, r, key)
+	got = getEnv(t, key)
+	if got.Status.Phase != sandboxv1alpha1.PhaseReady {
+		t.Errorf("Phase after second reconcile = %s, want Ready", got.Status.Phase)
 	}
 }
 
