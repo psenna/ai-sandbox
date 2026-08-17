@@ -29,7 +29,7 @@ func TestRender_Full(t *testing.T) {
 	in := Inputs{
 		Env:         baseEnv("full-env", withPrompt("do the full thing")),
 		Class:       fullClass(),
-		Credentials: Credentials{GitProxyToken: "fake-git-proxy-token-full"},
+		Credentials: Credentials{GitProxyToken: "fake-git-proxy-token-full"}, //nolint:gosec // G101: deliberately fake test fixture value, not a real credential
 		ClusterID:   "test-cluster",
 	}
 	assertGoldenObjects(t, "full", in)
