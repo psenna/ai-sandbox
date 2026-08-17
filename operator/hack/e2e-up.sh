@@ -1,15 +1,18 @@
 #!/bin/sh
-set -euo pipefail
+set -eu
 # Stands up the operator's e2e kind cluster: creates the cluster and builds
 # the three test images in parallel, loads them into the cluster (no
 # registry/ghcr.io credentials needed -- see `kind load docker-image`),
 # deploys the operator + MinIO + the platform doubles, waits for everything
 # to roll out, and writes a kubeconfig for the Ginkgo suite to use.
 #
-# Run via `make e2e-up` (from operator/), which wraps this script inside the
-# E2E_TOOLBOX_IMAGE (docker:28-cli) toolbox container -- this script itself
-# must stay POSIX `sh` (no bashisms beyond `set -o pipefail`, which ash
-# supports): the toolbox image has no bash.
+# Run via `make e2e-up` (from operator/), either wrapped inside the
+# E2E_TOOLBOX_IMAGE (docker:28-cli, whose /bin/sh is ash) or -- under
+# IN_CONTAINER=1, e.g. CI -- executed directly by the runner's own /bin/sh
+# (dash on Ubuntu, which does NOT support `set -o pipefail`, unlike ash).
+# This script must therefore stay strict POSIX `sh` with no `-o pipefail`
+# and no other bashisms; it has no actual `cmd1 | cmd2` pipeline anywhere,
+# so pipefail semantics were never needed here in the first place.
 #
 # Idempotent: any existing cluster of the same name is deleted first, so
 # re-running this script is a full restart, not a no-op.
@@ -39,7 +42,7 @@ kind create cluster --name "$E2E_CLUSTER" --image "$KIND_NODE_IMAGE" --config "$
 kind_pid=$!
 
 (
-  set -euo pipefail
+  set -eu
   echo "--> building $OPERATOR_IMAGE"
   docker buildx build --load -f Dockerfile -t "$OPERATOR_IMAGE" .
   echo "--> building $AGENT_IMAGE"
