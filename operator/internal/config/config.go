@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const envPrefix = "SANDBOX_OPERATOR_"
@@ -31,6 +32,12 @@ type Config struct {
 	EnableLeaderElection    bool
 	LeaderElectionID        string
 	LeaderElectionNamespace string
+
+	// SchedulerInterval is how often the slot scheduler runs an admission
+	// pass. Each pass performs one live LIST of SandboxEnvironments across
+	// the watch scope, so this trades admission latency against API-server
+	// load.
+	SchedulerInterval time.Duration
 }
 
 // dns1123LabelRE matches a valid DNS-1123 label: lowercase alphanumeric
@@ -66,6 +73,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.ClassSecretNamespace, "class-secret-namespace",
 		classSecretNamespaceDefault(getenv),
 		"namespace holding the Secrets referenced by SandboxClass (e.g. services.gitProxy.tokenSecretRef); the operator reads them and projects only the values an environment needs")
+	fs.DurationVar(&c.SchedulerInterval, "scheduler-interval",
+		envOrDuration(getenv, "SCHEDULER_INTERVAL", 5*time.Second),
+		"how often the slot scheduler runs an admission pass")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -94,6 +104,9 @@ func (c Config) Validate() error {
 	}
 	if !dns1123LabelRE.MatchString(c.ClassSecretNamespace) {
 		return fmt.Errorf("class-secret-namespace: %q is not a valid DNS-1123 label (lowercase alphanumeric and '-')", c.ClassSecretNamespace)
+	}
+	if c.SchedulerInterval < 100*time.Millisecond || c.SchedulerInterval > 5*time.Minute {
+		return fmt.Errorf("scheduler-interval: must be between 100ms and 5m, got %s", c.SchedulerInterval)
 	}
 	return nil
 }
@@ -128,6 +141,18 @@ func envOrInt(getenv func(string) string, name string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envOrDuration(getenv func(string) string, name string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(getenv(envPrefix + name))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
 }
 
 func envOrBool(getenv func(string) string, name string, def bool) bool {

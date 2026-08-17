@@ -8,11 +8,13 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
+	"github.com/psenna/ai-sandbox/operator/internal/scheduler"
 )
 
 // ObserveFunc gathers the ClusterFacts for one environment. It is a field on
@@ -30,8 +32,9 @@ type resourceCheck struct {
 
 // observeCluster is the real observer, replacing the earlier ObserveStub. It
 // keeps the two honest readings the stub already had (SlotGranted,
-// AgentWaitDeclared read straight off status) and adds real child-resource
-// observation (#19).
+// AgentWaitDeclared read straight off status -- SlotGranted now reads back
+// what #20's SlotScheduler authoritatively writes, not a degenerate stub)
+// and adds real child-resource observation (#19).
 //
 // ResourcesReady deliberately does NOT require the workspace PVC to be
 // Bound. The default volumeBindingMode on most real StorageClasses
@@ -49,6 +52,10 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		SlotGranted:       env.Status.Slot.Granted,
 		AgentWaitDeclared: env.Status.WaitFor != nil,
 	}
+	if scheduler.IsCandidate(env) {
+		r.observeQueuePosition(ctx, env, &f)
+	}
+
 	if class == nil {
 		return f, nil
 	}
@@ -105,6 +112,23 @@ func (r *Reconciler) observeResources(ctx context.Context, env *v1alpha1.Sandbox
 		}
 	}
 	return pvc, true, nil
+}
+
+// observeQueuePosition fills in the advisory queue position from the
+// CACHED client: it only feeds a condition message, so slight staleness is
+// harmless and a List against the informer costs no API call. (The
+// authoritative admission decision itself uses a live, uncached read -- see
+// SlotScheduler.) A List error is swallowed: position stays 0, the message
+// stays empty, and the reconcile proceeds normally -- queue position must
+// never fail a reconcile.
+func (r *Reconciler) observeQueuePosition(ctx context.Context, env *v1alpha1.SandboxEnvironment, f *lifecycle.ClusterFacts) {
+	var list v1alpha1.SandboxEnvironmentList
+	if err := r.List(ctx, &list, client.InNamespace(r.WatchNamespace)); err != nil {
+		ctrl.LoggerFrom(ctx).V(1).Info("queue position unavailable", "error", err)
+		return
+	}
+	_, candidates := scheduler.Partition(list.Items)
+	f.QueuePosition, f.QueueDepth = scheduler.QueuePosition(candidates, env.UID)
 }
 
 // ownedByEnv reports whether obj's controller owner reference matches env's

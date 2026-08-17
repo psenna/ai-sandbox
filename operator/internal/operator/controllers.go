@@ -12,9 +12,24 @@ import (
 // starts a manager against a fake host; a registered controller's informer
 // would never sync there).
 func SetupControllers(mgr manager.Manager, cfg config.Config) error {
-	return (&controller.Reconciler{
+	if err := (&controller.Reconciler{
 		Client:               mgr.GetClient(),
 		ClassSecretNamespace: cfg.ClassSecretNamespace,
 		ClusterID:            cfg.ClusterID,
-	}).SetupWithManager(mgr)
+		WatchNamespace:       cfg.WatchNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		return err
+	}
+	// The slot scheduler is a Runnable, not a controller: admission compares
+	// every environment in the watch scope, which no per-object Reconcile
+	// can do deterministically (#20). mgr.Add places it in the
+	// leader-election runnable group (see SlotScheduler.NeedLeaderElection),
+	// so exactly one instance ever runs cluster-wide.
+	return mgr.Add(&controller.SlotScheduler{
+		Client:    mgr.GetClient(),
+		Reader:    mgr.GetAPIReader(),
+		Capacity:  cfg.SlotCapacity,
+		Interval:  cfg.SchedulerInterval,
+		Namespace: cfg.WatchNamespace,
+	})
 }

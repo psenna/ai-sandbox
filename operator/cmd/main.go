@@ -47,6 +47,7 @@ func main() {
 
 	log.Info("starting operator",
 		"slotCapacity", cfg.SlotCapacity,
+		"schedulerInterval", cfg.SchedulerInterval,
 		"clusterID", cfg.ClusterID,
 		"watchNamespace", cfg.WatchNamespace,
 		"defaultSandboxClass", cfg.DefaultSandboxClass,
