@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func emptyEnv(string) string { return "" }
@@ -30,6 +31,7 @@ func TestLoad_Defaults(t *testing.T) {
 		EnableLeaderElection:    true,
 		LeaderElectionID:        "sandbox-operator.sandbox.psenna.dev",
 		LeaderElectionNamespace: "",
+		SchedulerInterval:       5 * time.Second,
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -224,5 +226,85 @@ func TestValidate_InvalidClassSecretNamespaceErrors(t *testing.T) {
 		t.Fatal("Validate() with invalid class-secret-namespace: expected error, got nil")
 	} else if !strings.Contains(err.Error(), "class-secret-namespace") {
 		t.Errorf("Validate() error = %v, want it to mention class-secret-namespace", err)
+	}
+}
+
+func TestSchedulerInterval_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SchedulerInterval != 5*time.Second {
+		t.Errorf("SchedulerInterval = %s, want 5s", c.SchedulerInterval)
+	}
+}
+
+func TestSchedulerInterval_EnvOverride(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_SCHEDULER_INTERVAL": "250ms",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SchedulerInterval != 250*time.Millisecond {
+		t.Errorf("SchedulerInterval = %s, want 250ms", c.SchedulerInterval)
+	}
+}
+
+func TestSchedulerInterval_UnparseableEnvFallsBackToDefault(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_SCHEDULER_INTERVAL": "not-a-duration",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SchedulerInterval != 5*time.Second {
+		t.Errorf("SchedulerInterval = %s, want 5s (default) on unparseable env value", c.SchedulerInterval)
+	}
+}
+
+func TestSchedulerInterval_FlagBeatsEnv(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_SCHEDULER_INTERVAL": "250ms",
+	})
+	c, err := Load([]string{"--scheduler-interval=1s"}, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SchedulerInterval != time.Second {
+		t.Errorf("SchedulerInterval = %s, want 1s (flag should beat env)", c.SchedulerInterval)
+	}
+}
+
+func TestValidate_SchedulerIntervalBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		wantErr bool
+	}{
+		{"too low", "--scheduler-interval=50ms", true},
+		{"too high", "--scheduler-interval=10m", true},
+		{"lower boundary accepted", "--scheduler-interval=100ms", false},
+		{"upper boundary accepted", "--scheduler-interval=5m", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{tc.flag}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() with %s: expected error, got nil", tc.flag)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() with %s: unexpected error: %v", tc.flag, err)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "scheduler-interval") {
+				t.Errorf("Validate() error = %v, want it to mention scheduler-interval", err)
+			}
+		})
 	}
 }

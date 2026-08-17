@@ -164,7 +164,7 @@ func defaultScheduled(phase v1alpha1.Phase, env v1alpha1.SandboxEnvironment, fac
 	case v1alpha1.PhaseWaiting:
 		return metav1.ConditionFalse, ReasonWaiting, ""
 	default:
-		return metav1.ConditionFalse, ReasonQueued, ""
+		return metav1.ConditionFalse, ReasonQueued, queueMessage(facts)
 	}
 }
 

@@ -105,12 +105,21 @@ type ClusterFacts struct {
 	// SlotGranted reports that this environment currently holds a scheduling
 	// slot. Next NEVER grants a slot -- granting needs global capacity state
 	// and lives in #20. Next only observes the grant here and declares
-	// Decision.SlotWanted. Until #20 exists, the reconciler reads this
-	// straight off status.slot.granted (see internal/controller/observe.go)
-	// -- a real, if degenerate, observation: it is precisely the field #20
-	// will eventually write, so nothing about the seam changes when #20
-	// lands.
+	// Decision.SlotWanted. #20's SlotScheduler is now the authoritative
+	// writer of status.slot.granted; the reconciler (see
+	// internal/controller/observe.go) simply reads back what it wrote.
 	SlotGranted bool
+
+	// ---- queue position (#20) ----
+
+	// QueuePosition is this environment's 1-based position in the admission
+	// queue, and QueueDepth the number of environments queued with it, as
+	// observed by internal/controller's observeCluster. Purely advisory:
+	// they only enrich the Scheduled condition's message and NEVER affect a
+	// transition. 0 means "not queued, or not computed" -- the safe zero
+	// reading, per this struct's design rules.
+	QueuePosition int
+	QueueDepth    int
 
 	// ---- agent pod (#21, #24) ----
 

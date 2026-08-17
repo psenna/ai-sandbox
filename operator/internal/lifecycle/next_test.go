@@ -23,6 +23,10 @@ type transitionCase struct {
 	wantSlotWanted bool
 	wantActions    []Action
 	wantConds      map[string]wantCond
+	// wantMsgs, when set, asserts the exact Message of the named condition
+	// type (checked in addition to wantConds' Status/Reason check for that
+	// same type, if present). Absent entries are not checked.
+	wantMsgs map[string]string
 }
 
 func (tc transitionCase) run(t *testing.T) {
@@ -49,6 +53,16 @@ func (tc transitionCase) run(t *testing.T) {
 		}
 		if c.Status != want.status || c.Reason != want.reason {
 			t.Errorf("condition %s = %s/%s, want %s/%s", condType, c.Status, c.Reason, want.status, want.reason)
+		}
+	}
+	for condType, wantMsg := range tc.wantMsgs {
+		c := findCond(d, condType)
+		if c == nil {
+			t.Errorf("condition %s missing", condType)
+			continue
+		}
+		if c.Message != wantMsg {
+			t.Errorf("condition %s Message = %q, want %q", condType, c.Message, wantMsg)
 		}
 	}
 }
@@ -110,6 +124,22 @@ func TestNext_Transitions(t *testing.T) {
 			wantSlotWanted: true,
 			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionScheduled: {metav1.ConditionFalse, ReasonQueued}},
+			wantMsgs:       map[string]string{ConditionScheduled: ""},
+		},
+		{
+			name: "R3b queued, no slot, with queue position (#20)",
+			env:  envAt(v1alpha1.PhaseReady),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.QueuePosition = 3
+				f.QueueDepth = 7
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseReady,
+			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
+			wantConds:      map[string]wantCond{ConditionScheduled: {metav1.ConditionFalse, ReasonQueued}},
+			wantMsgs:       map[string]string{ConditionScheduled: "queued at position 3 of 7"},
 		},
 
 		// --- Restoring ---

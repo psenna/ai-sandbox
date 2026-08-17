@@ -22,9 +22,13 @@ package controller
 // Cache.DisableFor) so this grant never causes a cluster-wide Secret cache.
 //
 // Markers for pods, events, leases are deliberately NOT added here -- they
-// belong to the issues that actually touch those objects (#21, #20, #33).
-// Adding them now would ship an over-broad ClusterRole with no code behind
-// it.
+// belong to the issues that actually touch those objects (#21, #33). #20's
+// SlotScheduler needed no new grants: it only lists sandboxenvironments and
+// updates sandboxenvironments/status, both already covered above, and
+// LeaseName is deliberately left unset (see slotscheduler.go), so no
+// coordination.k8s.io marker is added either. Adding markers now for
+// objects nothing in this codebase touches yet would ship an over-broad
+// ClusterRole with no code behind it.
 
 import (
 	"context"
@@ -50,6 +54,10 @@ type Reconciler struct {
 	ClassSecretNamespace string
 	// ClusterID is projected into the rendered sandbox.json.
 	ClusterID string
+	// WatchNamespace mirrors internal/config.Config.WatchNamespace ("" = all
+	// namespaces). Used by observeQueuePosition to scope its cached List
+	// consistently with SlotScheduler's own scope.
+	WatchNamespace string
 }
 
 func (r *Reconciler) now() time.Time {

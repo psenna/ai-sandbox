@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -205,8 +206,19 @@ func nextReady(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Tim
 	return newBuilder(env, facts, now).
 		phase(v1alpha1.PhaseReady).
 		slot(true).
-		cond(ConditionScheduled, metav1.ConditionFalse, ReasonQueued, "").
+		cond(ConditionScheduled, metav1.ConditionFalse, ReasonQueued, queueMessage(facts)).
 		build()
+}
+
+// queueMessage renders the advisory queue-position message carried by the
+// Scheduled=False/Queued condition. Empty when the position is unknown
+// (facts.QueuePosition <= 0), so a caller that cannot compute a position
+// produces exactly the message this condition carried before #20.
+func queueMessage(f ClusterFacts) string {
+	if f.QueuePosition <= 0 || f.QueueDepth <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("queued at position %d of %d", f.QueuePosition, f.QueueDepth)
 }
 
 // nextRestoring: Restoring -> Running once the pod is up and ready; bails

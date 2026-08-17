@@ -294,3 +294,126 @@ func reconcileOnce(t *testing.T, r *Reconciler, key types.NamespacedName) ctrl.R
 	}
 	return res
 }
+
+// ---- #20 slot scheduler test helpers ----
+
+// mustCreateNamespace creates namespace name, tolerating AlreadyExists (the
+// suite shares a single envtest apiserver across tests).
+func mustCreateNamespace(t *testing.T, name string) {
+	t.Helper()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if err := k8s.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("creating namespace %s: %v", name, err)
+	}
+}
+
+// mustCreateEnvIn creates a minimal valid SandboxEnvironment named name in
+// namespace ns (created if needed) with the given priority, referencing the
+// "default" SandboxClass.
+func mustCreateEnvIn(t *testing.T, ns, name string, priority int32) *sandboxv1alpha1.SandboxEnvironment {
+	t.Helper()
+	mustCreateNamespace(t, ns)
+	env := &sandboxv1alpha1.SandboxEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: sandboxv1alpha1.SandboxEnvironmentSpec{
+			ClassRef: sandboxv1alpha1.ClassRef{Name: "default"},
+			Repo:     "org/repo",
+			Task:     sandboxv1alpha1.TaskSpec{Prompt: "do stuff"},
+			Priority: priority,
+		},
+	}
+	if err := k8s.Create(ctx, env); err != nil {
+		t.Fatalf("creating SandboxEnvironment %s/%s: %v", ns, name, err)
+	}
+	return env
+}
+
+// mustSetPhase forces key's status (phase, slot grant, queuedSince) via a
+// direct Status().Update, bypassing the reconciler entirely -- for setting
+// up scheduler-test fixtures that don't need a full reconcile history. A
+// zero queuedSince leaves status.queuedSince untouched.
+func mustSetPhase(t *testing.T, key types.NamespacedName, phase sandboxv1alpha1.Phase, granted bool, queuedSince time.Time) {
+	t.Helper()
+	env := &sandboxv1alpha1.SandboxEnvironment{}
+	if err := k8s.Get(ctx, key, env); err != nil {
+		t.Fatalf("Get(%s) before mustSetPhase: %v", key, err)
+	}
+	env.Status.Phase = phase
+	env.Status.Slot.Granted = granted
+	if !queuedSince.IsZero() {
+		qs := metav1.NewTime(queuedSince)
+		env.Status.QueuedSince = &qs
+	}
+	if err := k8s.Status().Update(ctx, env); err != nil {
+		t.Fatalf("mustSetPhase Status().Update(%s): %v", key, err)
+	}
+}
+
+// listEnvs lists every SandboxEnvironment in namespace ns ("" = all
+// namespaces).
+func listEnvs(t *testing.T, ns string) []sandboxv1alpha1.SandboxEnvironment {
+	t.Helper()
+	var list sandboxv1alpha1.SandboxEnvironmentList
+	opts := []client.ListOption{}
+	if ns != "" {
+		opts = append(opts, client.InNamespace(ns))
+	}
+	if err := k8s.List(ctx, &list, opts...); err != nil {
+		t.Fatalf("listEnvs(%s): %v", ns, err)
+	}
+	return list.Items
+}
+
+// countGranted independently counts live environments in namespace ns
+// ("" = all namespaces) with status.slot.granted == true. Deliberately
+// hand-written rather than calling scheduler.Partition, so it's a genuine
+// independent check on the code under test. Scoped to a namespace (a
+// deviation from the plan's ()-arity sketch) because this suite's fixtures
+// from other tests share the same envtest apiserver and are never cleaned
+// up -- an unscoped count would be polluted by whatever other tests in this
+// package happen to have run first.
+func countGranted(t *testing.T, ns string) int {
+	t.Helper()
+	n := 0
+	for _, e := range listEnvs(t, ns) {
+		if e.Status.Slot.Granted {
+			n++
+		}
+	}
+	return n
+}
+
+// countOccupying independently counts live environments in namespace ns
+// ("" = all namespaces) holding compute (Restoring/Running/Freezing phase,
+// or granted). Deliberately hand-written rather than calling
+// scheduler.Partition. See countGranted's comment on the ns parameter.
+func countOccupying(t *testing.T, ns string) int {
+	t.Helper()
+	n := 0
+	for _, e := range listEnvs(t, ns) {
+		switch {
+		case e.Status.Slot.Granted:
+			n++
+		case e.Status.Phase == sandboxv1alpha1.PhaseRestoring,
+			e.Status.Phase == sandboxv1alpha1.PhaseRunning,
+			e.Status.Phase == sandboxv1alpha1.PhaseFreezing:
+			n++
+		}
+	}
+	return n
+}
+
+// newSlotScheduler builds a SlotScheduler wired to the envtest suite's own
+// k8s client for BOTH Client and Reader: envtest's direct client is already
+// uncached (no informer in front of it), so it is a faithful test double
+// for the production Reader (mgr.GetAPIReader()).
+func newSlotScheduler(t *testing.T, capacity int, clk *fakeClock) *SlotScheduler {
+	t.Helper()
+	return &SlotScheduler{
+		Client:   k8s,
+		Reader:   k8s,
+		Capacity: capacity,
+		Interval: 50 * time.Millisecond,
+		Clock:    clk.Now,
+	}
+}
