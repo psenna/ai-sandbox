@@ -65,6 +65,7 @@ jobs:
       - run: |
           make IN_CONTAINER=1 ENVTEST_DIR=$PWD/.envtest test-envtest 2>&1 | tee out.txt
           grep -q 'ok .*internal/apitest' out.txt
+          grep -q 'ok .*internal/controller' out.txt
 
   docker-build:
     name: docker build (${{ matrix.platform }})

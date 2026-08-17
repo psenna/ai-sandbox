@@ -1,6 +1,9 @@
 // Package operator wires the operator's controller-runtime manager:
 // scheme registration, leader election, health/readiness probes and the
-// metrics listener. Controllers are added in later issues (#17, #18).
+// metrics listener. Controller registration itself lives in
+// controllers.go's SetupControllers, added in issue #18 -- kept separate
+// from New so manager construction stays testable without a cluster (see
+// manager_test.go).
 package operator
 
 import (
@@ -22,8 +25,8 @@ import (
 // Scheme builds the runtime.Scheme the manager uses to decode/encode
 // objects. It registers the client-go built-in types plus the operator's
 // own sandbox.psenna.dev/v1alpha1 API types (SandboxClass,
-// SandboxEnvironment), added in issue #17. Controllers for these types are
-// added in issue #18.
+// SandboxEnvironment), added in issue #17. The controller for
+// SandboxEnvironment is registered by SetupControllers (issue #18).
 func Scheme() (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -61,8 +64,8 @@ func Options(cfg config.Config, scheme *runtime.Scheme) ctrl.Options {
 }
 
 // New constructs a controller-runtime manager configured from cfg, with
-// /healthz and /readyz checks wired in. No controllers are registered; that
-// happens in issues #17 and #18.
+// /healthz and /readyz checks wired in. No controllers are registered here;
+// call SetupControllers separately (see cmd/main.go).
 func New(restCfg *rest.Config, cfg config.Config) (manager.Manager, error) {
 	scheme, err := Scheme()
 	if err != nil {

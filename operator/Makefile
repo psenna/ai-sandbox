@@ -117,9 +117,9 @@ bin/controller-gen:
 	     sigs.k8s.io/controller-tools/cmd/controller-gen'
 
 manifests: bin/controller-gen
-	$(DOCKER_RUN) ./bin/controller-gen crd paths="./..." \
-	  output:crd:artifacts:config=config/crd/bases
-	# rbac generator restored in #18 once +kubebuilder:rbac markers exist
+	$(DOCKER_RUN) ./bin/controller-gen crd rbac:roleName=manager-role paths="./..." \
+	  output:crd:artifacts:config=config/crd/bases \
+	  output:rbac:artifacts:config=config/rbac
 
 generate: bin/controller-gen
 	$(DOCKER_RUN) ./bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
