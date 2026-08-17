@@ -4,3 +4,8 @@ cover.html
 .gocache*/
 dist/
 .envtest/
+
+# operator/test/e2e diagnostics (`make e2e`/`make e2e-collect`). .e2e-bin/
+# and the kubeconfig default to $(SHARED_DIR)-anchored paths outside this
+# repo tree (see Makefile), so only the artifact dir needs ignoring here.
+test/e2e/_artifacts/
