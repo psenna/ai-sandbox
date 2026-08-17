@@ -42,6 +42,14 @@ jobs:
   matrix:
     name: compute run matrix
     runs-on: ubuntu-latest
+    # Overrides the workflow-level `defaults.run.working-directory: operator`
+    # -- this job never checks out the repo (it only computes a JSON array
+    # from an input), so an `operator/` directory never exists in its
+    # workspace. Without this override the runner tries to `cd operator`
+    # before the step even starts and fails outright.
+    defaults:
+      run:
+        working-directory: .
     outputs:
       runs: ${{ steps.gen.outputs.runs }}
     steps:
