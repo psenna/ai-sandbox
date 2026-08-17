@@ -3,6 +3,11 @@ module github.com/psenna/ai-sandbox/operator
 go 1.25.0
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.43.2
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.32
+	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.37
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.2
+	github.com/aws/smithy-go v1.27.5
 	github.com/go-logr/logr v1.4.4
 	k8s.io/api v0.35.0
 	k8s.io/apiextensions-apiserver v0.35.0
@@ -18,7 +23,7 @@ require (
 // flagged by DependaProxy's CVE gate. These explicit requires bump each to
 // the lowest version confirmed to pass validation (see operator/README.md).
 require (
-	github.com/klauspost/compress v1.18.7 // indirect
+	github.com/klauspost/compress v1.18.7
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
@@ -26,6 +31,14 @@ require (
 )
 
 require (
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.15 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.33 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.33 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.34 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.14 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.26 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.33 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.34 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect

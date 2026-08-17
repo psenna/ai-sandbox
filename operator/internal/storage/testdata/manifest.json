@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "seq": 7,
+  "createdAt": "2026-01-02T03:04:05Z",
+  "source": {
+    "clusterID": "cl",
+    "namespace": "ns",
+    "name": "env",
+    "uid": "uid-1",
+    "generation": 3
+  },
+  "specHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "agentImage": "ghcr.io/example/agent:v1",
+  "agentImageDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "files": [
+    {
+      "name": "agent-home.tar.zst",
+      "size": 100,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "name": "workspace.tar.zst",
+      "size": 200,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

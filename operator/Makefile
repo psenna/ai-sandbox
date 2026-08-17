@@ -51,6 +51,15 @@ KIND_NODE_IMAGE    ?= kindest/node:v1.34.0
 KUBECTL_VERSION    ?= v1.34.0
 MINIO_IMAGE        ?= minio/minio:RELEASE.2025-09-07T16-13-09Z
 E2E_CLUSTER        ?= ai-sandbox-e2e
+# --- storage-conformance (operator/internal/storage's s3 leg; see that
+# package's doc.go) -- a plain MinIO server for a Go client library's own
+# tests, deliberately NOT the #22 kind-cluster MinIO pattern
+# (test/e2e/manifests/minio.yaml), which is for testing the operator inside
+# a real cluster. ---------------------------------------------------------
+MINIO_TEST_NETWORK   ?= ai-sandbox-operator-minio-test
+MINIO_TEST_CONTAINER ?= ai-sandbox-operator-minio
+MINIO_TEST_USER      ?= sandboxtest
+MINIO_TEST_PASSWORD  ?= sandboxtest123
 E2E_CNI            ?= kindnet
 # hack/e2e-up.sh joins the kind docker network and addresses the API server
 # via the node container's own name when this is set, instead of the
@@ -124,6 +133,7 @@ ifeq ($(IN_CONTAINER),1)
 DOCKER_RUN :=
 E2E_TOOLBOX_RUN :=
 E2E_GO_RUN :=
+MINIO_TEST_RUN :=
 else
 ifeq ($(REPO_SUBDIR),$(CURDIR))
 $(error CURDIR ($(CURDIR)) is not under SHARED_DIR ($(SHARED_DIR)) -- set SHARED_DIR=, or run with IN_CONTAINER=1)
@@ -175,11 +185,30 @@ E2E_GO_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	-e E2E_BUCKET=$(E2E_BUCKET) -e E2E_FIXTURE_BUCKET=$(E2E_FIXTURE_BUCKET) -e E2E_BROKER_TOKEN=$(E2E_BROKER_TOKEN) \
 	-e E2E_PHASE_TIMEOUT=$(E2E_PHASE_TIMEOUT) -e E2E_POD_TIMEOUT=$(E2E_POD_TIMEOUT) -e E2E_POLL=$(E2E_POLL) \
 	$(GOLANG_IMAGE)
+
+# MINIO_TEST_RUN: like DOCKER_RUN, but joins MINIO_TEST_NETWORK (a
+# user-defined bridge network) so it can address the sibling MinIO
+# container started by `make minio-up` by container name -- this sandbox's
+# DinD daemon is remote (no local docker socket), so two containers can only
+# reach each other through a shared user-defined network, the same
+# constraint E2E_GO_RUN's `--network kind` already documents.
+MINIO_TEST_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
+	--network $(MINIO_TEST_NETWORK) \
+	-v $(SHARED_DIR):/work -w /work/$(REPO_SUBDIR) \
+	--add-host=dependaproxy:$(DEPENDAPROXY_IP) $(GO_ENV_FLAG) \
+	-e HOME=$(CACHE_DIR) -e GOCACHE=$(CACHE_DIR)/build \
+	-e GOMODCACHE=$(CACHE_DIR)/mod -e GOBIN=$(CACHE_DIR)/bin \
+	-e PATH=$(CACHE_DIR)/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+	-e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local \
+	-e SANDBOX_TEST_MINIO_ENDPOINT=http://$(MINIO_TEST_CONTAINER):9000 \
+	-e SANDBOX_TEST_MINIO_ACCESS_KEY=$(MINIO_TEST_USER) -e SANDBOX_TEST_MINIO_SECRET_KEY=$(MINIO_TEST_PASSWORD) \
+	$(GOLANG_IMAGE)
 endif
 
 .PHONY: all build test vet fmt fmt-check lint vuln tidy manifests generate \
 	kustomize-build docker-build cross smoke clean envtest-assets test-envtest \
-	e2e-tools e2e-up e2e-run e2e-down e2e e2e-tidy e2e-vet e2e-collect
+	e2e-tools e2e-up e2e-run e2e-down e2e e2e-tidy e2e-vet e2e-collect \
+	minio-up minio-down test-minio storage-conformance
 
 all: vet fmt-check lint test
 
@@ -322,3 +351,34 @@ e2e-tidy:
 e2e-vet:
 	$(DOCKER_RUN) sh -c 'cd test/e2e && $(if $(TOOLS_GOPROXY),GOPROXY="$(TOOLS_GOPROXY)",) go vet ./...'
 	$(DOCKER_RUN) sh -c 'cd test/e2e/doubles && GOPROXY=off go vet ./...'
+
+# --- storage-conformance (internal/storage's s3 leg against a real MinIO) --
+
+minio-up:
+	$(DOCKER) network create $(MINIO_TEST_NETWORK) >/dev/null 2>&1 || true
+	$(DOCKER) rm -f $(MINIO_TEST_CONTAINER) >/dev/null 2>&1 || true
+	$(DOCKER) run -d --name $(MINIO_TEST_CONTAINER) --network $(MINIO_TEST_NETWORK) \
+		-e MINIO_ROOT_USER=$(MINIO_TEST_USER) -e MINIO_ROOT_PASSWORD=$(MINIO_TEST_PASSWORD) \
+		$(MINIO_IMAGE) server /data
+	@echo "waiting for $(MINIO_TEST_CONTAINER) to become healthy..."
+	$(DOCKER) run --rm --network $(MINIO_TEST_NETWORK) curlimages/curl:8.11.1 sh -c \
+		'for i in $$(seq 1 30); do curl -sf http://$(MINIO_TEST_CONTAINER):9000/minio/health/live && exit 0; sleep 1; done; echo "MinIO did not become healthy in time" >&2; exit 1'
+
+minio-down:
+	$(DOCKER) rm -f $(MINIO_TEST_CONTAINER) >/dev/null 2>&1 || true
+	$(DOCKER) network rm $(MINIO_TEST_NETWORK) >/dev/null 2>&1 || true
+
+# Runs internal/storage's tests (both the fs leg, always, and the s3 leg,
+# provided SANDBOX_TEST_MINIO_ENDPOINT is reachable -- see MINIO_TEST_RUN)
+# without managing the MinIO container's lifecycle; pair with a prior
+# `make minio-up`, or use `make storage-conformance` for the full cycle.
+test-minio:
+	$(MINIO_TEST_RUN) sh -c 'CGO_ENABLED=1 go test -race -count=1 ./internal/storage/...'
+
+# up -> test -> down, tearing down even on a test failure and propagating
+# its exit code -- same shape as the `e2e` target above.
+storage-conformance: minio-up
+	@rc=0; \
+	$(MAKE) IN_CONTAINER=$(IN_CONTAINER) test-minio || rc=$$?; \
+	$(MAKE) IN_CONTAINER=$(IN_CONTAINER) minio-down; \
+	exit $$rc

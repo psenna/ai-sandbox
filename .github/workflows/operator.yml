@@ -23,6 +23,11 @@ env:
   # image was built -- which can lag behind. Bump this alongside GOLANG_IMAGE
   # in the Makefile when a new patch lands.
   GO_VERSION: "1.25.13"
+  # Must match operator/Makefile's MINIO_IMAGE (pinned there for issue #22's
+  # kind-cluster e2e MinIO; reused here for internal/storage's s3
+  # conformance leg -- a plain MinIO server for a Go client library's own
+  # tests, not the same thing as that e2e manifest).
+  MINIO_IMAGE: "minio/minio:RELEASE.2025-09-07T16-13-09Z"
 
 defaults:
   run:
@@ -32,6 +37,17 @@ jobs:
   build-test:
     name: vet + fmt + lint + vuln + test
     runs-on: ubuntu-latest
+    env:
+      # internal/storage's s3 conformance leg (see that package's doc.go)
+      # is gated on this env var with t.Skip, not a build tag, so the
+      # package always compiles/vets/lints/gofmts regardless -- only
+      # execution is conditional. A plain `docker run -d` step below starts
+      # MinIO (a GitHub Actions `services:` container can't pass `server
+      # /data` as a command, so a bare minio/minio image there would just
+      # print usage and exit).
+      SANDBOX_TEST_MINIO_ENDPOINT: "http://localhost:9000"
+      SANDBOX_TEST_MINIO_ACCESS_KEY: "sandboxci"
+      SANDBOX_TEST_MINIO_SECRET_KEY: "sandboxci123"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -39,12 +55,45 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
           cache-dependency-path: operator/go.sum
+      - name: start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=$SANDBOX_TEST_MINIO_ACCESS_KEY \
+            -e MINIO_ROOT_PASSWORD=$SANDBOX_TEST_MINIO_SECRET_KEY \
+            "$MINIO_IMAGE" server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live; then
+              echo "MinIO is healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO did not become healthy in time" >&2
+          docker logs minio || true
+          exit 1
       - run: make IN_CONTAINER=1 vet
       - run: make IN_CONTAINER=1 fmt-check
       - run: make IN_CONTAINER=1 lint
       - run: make IN_CONTAINER=1 vuln
       - run: make IN_CONTAINER=1 build
       - run: make IN_CONTAINER=1 test
+      - name: verify the s3 conformance leg actually ran (not silently skipped)
+        # `make IN_CONTAINER=1 test` above already exercises the s3 leg (the
+        # job-level SANDBOX_TEST_MINIO_* env vars are ambient, and
+        # IN_CONTAINER=1 runs go test directly, no docker wrapping) -- but a
+        # broken MinIO step would just make it SKIP, and `go test` reports
+        # SKIP as part of an overall "ok", not a failure. Re-run the s3 leg
+        # alone and fail explicitly if it was skipped, so a silently-broken
+        # MinIO step can never quietly reduce "both backends pass" to a
+        # vacuous pass.
+        run: |
+          set -o pipefail
+          go test -run 'TestBackendConformance/s3' -v ./internal/storage/... 2>&1 | tee s3-conformance.txt
+          grep -q -- '--- PASS: TestBackendConformance/s3' s3-conformance.txt
+          if grep -q -- 'SKIP: TestBackendConformance/s3' s3-conformance.txt; then
+            echo "s3 conformance leg was skipped -- MinIO step is silently broken" >&2
+            exit 1
+          fi
       - run: go tool cover -func=cover.out
       - uses: actions/upload-artifact@v4
         with:

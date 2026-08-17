@@ -1,0 +1,10 @@
+Root:            acme-prod/cl-1/team-a/review-42/a1b2c3d4
+SnapshotsPrefix: acme-prod/cl-1/team-a/review-42/a1b2c3d4/snapshots
+SnapshotDir:     acme-prod/cl-1/team-a/review-42/a1b2c3d4/snapshots/00007-2026-03-04T05:06:07Z
+Workspace:       acme-prod/cl-1/team-a/review-42/a1b2c3d4/snapshots/00007-2026-03-04T05:06:07Z/workspace.tar.zst
+AgentHome:       acme-prod/cl-1/team-a/review-42/a1b2c3d4/snapshots/00007-2026-03-04T05:06:07Z/agent-home.tar.zst
+Manifest:        acme-prod/cl-1/team-a/review-42/a1b2c3d4/snapshots/00007-2026-03-04T05:06:07Z/manifest.json
+ArchivePrefix:   acme-prod/cl-1/team-a/review-42/a1b2c3d4/archive
+ArchiveRun:      acme-prod/cl-1/team-a/review-42/a1b2c3d4/archive/run.json
+ArchiveContext:  acme-prod/cl-1/team-a/review-42/a1b2c3d4/archive/context.tar.zst
+Latest:          acme-prod/cl-1/team-a/review-42/a1b2c3d4/latest.json
