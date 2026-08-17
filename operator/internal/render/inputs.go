@@ -65,19 +65,30 @@ func (o Objects) All() []runtime.ApplyConfiguration {
 	return []runtime.ApplyConfiguration{o.ServiceAccount, o.Role, o.RoleBinding, o.PVC, o.ConfigMap, o.Secret}
 }
 
+// validateInputs performs the nil/empty checks common to every renderer
+// entry point (Render, RenderPod): a non-nil Env and Class, and a
+// non-empty Env.UID (the object must be persisted first -- owner references
+// need a real UID).
+func validateInputs(in Inputs) error {
+	if in.Env == nil {
+		return fmt.Errorf("render: Env is required")
+	}
+	if in.Class == nil {
+		return fmt.Errorf("render: Class is required")
+	}
+	if in.Env.UID == "" {
+		return fmt.Errorf("render: Env.UID is required (object must be persisted first)")
+	}
+	return nil
+}
+
 // Render renders every child object for one environment. Pure: no client, no
 // clock, no randomness, deterministic map/slice ordering throughout. Returns
 // an error only for permanent misconfiguration (nil Env/Class, empty
 // Env.UID, an unparseable storage.workspace.size) -- never a transient one.
 func Render(in Inputs) (Objects, error) {
-	if in.Env == nil {
-		return Objects{}, fmt.Errorf("render: Env is required")
-	}
-	if in.Class == nil {
-		return Objects{}, fmt.Errorf("render: Class is required")
-	}
-	if in.Env.UID == "" {
-		return Objects{}, fmt.Errorf("render: Env.UID is required (object must be persisted first)")
+	if err := validateInputs(in); err != nil {
+		return Objects{}, err
 	}
 
 	sa := renderServiceAccount(in)

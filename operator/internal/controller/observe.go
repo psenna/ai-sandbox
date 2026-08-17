@@ -45,8 +45,8 @@ type resourceCheck struct {
 // forever on any normal cluster. Lost (the bound PV was destroyed) is a
 // real terminal fault and DOES flip readiness false.
 //
-// Still stubbed, unchanged from before this issue: PodObserved (#21/#24),
-// SnapshotComplete (#28), ProbeObserved (#30), ArchiveWritten (#32).
+// Still stubbed, unchanged from before this issue: SnapshotComplete (#28),
+// ProbeObserved (#30), ArchiveWritten (#32).
 func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) (lifecycle.ClusterFacts, error) {
 	f := lifecycle.ClusterFacts{
 		SlotGranted:       env.Status.Slot.Granted,
@@ -55,6 +55,7 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 	if scheduler.IsCandidate(env) {
 		r.observeQueuePosition(ctx, env, &f)
 	}
+	r.observePod(ctx, env, &f)
 
 	if class == nil {
 		return f, nil

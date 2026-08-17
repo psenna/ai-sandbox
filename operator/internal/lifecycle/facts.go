@@ -124,8 +124,8 @@ type ClusterFacts struct {
 	// ---- agent pod (#21, #24) ----
 
 	// PodObserved reports that the pod for this environment was actually
-	// looked up. False means "we cannot see pods" (this issue's stub, or a
-	// failed List) and is deliberately distinct from "there is no pod": it
+	// looked up. False means "we cannot see pods" (a failed Get against the
+	// API server) and is deliberately distinct from "there is no pod": it
 	// blocks Restoring->Running and Running->Done/Failed and surfaces as
 	// PodReady=Unknown rather than pretending the pod is merely slow.
 	PodObserved bool

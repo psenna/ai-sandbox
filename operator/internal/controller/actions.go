@@ -28,10 +28,14 @@ var actions = map[lifecycle.Action]actionFunc{
 	lifecycle.ActionEnsureResources: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
 		return r.ensureResources(ctx, env, class)
 	},
-	lifecycle.ActionEnsurePod: notImplemented("EnsurePod", 21),
+	lifecycle.ActionEnsurePod: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
+		return r.ensurePod(ctx, env, class)
+	},
 	lifecycle.ActionFreezePod: notImplemented("FreezePod", 28),
-	lifecycle.ActionDeletePod: notImplemented("DeletePod", 21),
-	lifecycle.ActionArchive:   notImplemented("Archive", 32),
+	lifecycle.ActionDeletePod: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
+		return r.deletePod(ctx, env, class)
+	},
+	lifecycle.ActionArchive: notImplemented("Archive", 32),
 }
 
 func (r *Reconciler) performActions(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass, d lifecycle.Decision) error {
