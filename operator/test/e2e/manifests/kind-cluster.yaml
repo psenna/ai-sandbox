@@ -1,0 +1,37 @@
+# Default kind cluster config for the operator's e2e suite. Single
+# control-plane node.
+#
+# CNI: kindnet (the default; disableDefaultCNI is left false). Verified
+# during planning with a real positive/negative/positive-after-allow/
+# egress-blocked connectivity sequence (see test/e2e/netpolicy.go) that
+# kind v0.30.0's bundled kindnetd (kindest/kindnetd:v20250512-df8de77b) DOES
+# enforce NetworkPolicy. The Calico fallback (kind-cluster-calico.yaml,
+# E2E_CNI=calico) exists for clusters/kind versions where that is not true,
+# but is NOT the default and is UNTESTED end-to-end -- see that file's
+# header.
+#
+# extraPortMappings expose the in-cluster NodePort services (MinIO, the fake
+# git-proxy broker, the stub model endpoint) at fixed host ports so the
+# Ginkgo suite -- which, on a real GitHub Actions runner, is a plain host
+# process talking to 127.0.0.1, not a container on the kind docker network
+# -- can reach them without depending on the `<cluster>-control-plane`
+# container-name DNS trick this sandbox's own DinD nesting allows. See
+# E2E_HOST in hack/e2e-up.sh / harness.go's LoadConfig.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        serializeImagePulls: false
+    extraPortMappings:
+      - containerPort: 30900
+        hostPort: 30900
+        protocol: TCP
+      - containerPort: 30901
+        hostPort: 30901
+        protocol: TCP
+      - containerPort: 30902
+        hostPort: 30902
+        protocol: TCP

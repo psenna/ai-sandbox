@@ -1,0 +1,37 @@
+# e2e overlay on top of ../../../../config/default (i.e. operator/config/default):
+# retags the operator image to the `:e2e` build hack/e2e-up.sh produces,
+# forces imagePullPolicy so kind-loaded images are actually used (never
+# `:latest` -- see RenderPod's imagePullPolicy note), and disables leader
+# election (single replica, no lease-acquisition latency in the critical
+# path of every e2e run -- deliberately out of scope for #22; a real flake
+# source with replicas=1). Flag names verified against operator/cmd/main.go
+# -> internal/config/config.go's flag.*Var calls.
+resources:
+  - ../../../../config/default
+
+images:
+  # config/default/kustomization.yaml (a nested kustomization, resolved
+  # before this overlay's own transformers run) already retags the base
+  # `controller:latest` placeholder to ghcr.io/psenna/ai-sandbox-operator:dev
+  # -- so the images transform here must match THAT resolved name, not the
+  # original `controller` placeholder, or it silently no-ops.
+  - name: ghcr.io/psenna/ai-sandbox-operator
+    newName: ai-sandbox-operator
+    newTag: e2e
+
+patches:
+  - target:
+      kind: Deployment
+      name: ai-sandbox-operator-controller-manager
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - --leader-elect=false
+          - --health-probe-bind-address=:8081
+          - --metrics-bind-address=:8080
+          - --slot-capacity=8
+          - --scheduler-interval=2s
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

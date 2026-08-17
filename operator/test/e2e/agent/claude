@@ -1,0 +1,97 @@
+#!/bin/bash
+# Fake `claude` CLI for the e2e test-agent image. Parses `-p <prompt>`
+# (exactly how RenderPod's agentCommand invokes the real CLI: `claude -p
+# "$(cat task.md)"`) and interprets the prompt as one SCRIPT: directive per
+# line, executed in order. This lets e2e specs script pod behaviour (write
+# files, require env/mounts, hit HTTP endpoints, sleep, exit with a chosen
+# code) without needing a real agent or model.
+#
+# Directives (one per line):
+#   SCRIPT:echo <text>            print <text> to stdout
+#   SCRIPT:log <text>             print <text> to stderr
+#   SCRIPT:sleep <seconds>        sleep (makes phase Running observable)
+#   SCRIPT:write <relpath> <text> write <text> under $WORKDIR/<relpath>          (exit 14 on failure)
+#   SCRIPT:require-env <NAME>     fail unless env var NAME is non-empty         (exit 10)
+#   SCRIPT:require-file <path>    fail unless <path> is readable               (exit 11)
+#   SCRIPT:http-get <url>         `curl -fsS --max-time 5 <url>` must succeed  (exit 12)
+#   SCRIPT:http-expect-fail <url> same GET must FAIL                           (exit 13)
+#   SCRIPT:exit <code>            exit immediately with <code>
+# An empty prompt, or a prompt with no directives, exits 0. An unrecognised
+# `SCRIPT:` line exits 20.
+
+WORKDIR="${PWD:-/workspace}"
+prompt=""
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-p)
+		shift
+		prompt="${1:-}"
+		shift || true
+		;;
+	*)
+		shift
+		;;
+	esac
+done
+
+if [ -z "$prompt" ]; then
+	exit 0
+fi
+
+while IFS= read -r line || [ -n "$line" ]; do
+	case "$line" in
+	"SCRIPT:echo "*)
+		printf '%s\n' "${line#SCRIPT:echo }"
+		;;
+	"SCRIPT:log "*)
+		printf '%s\n' "${line#SCRIPT:log }" >&2
+		;;
+	"SCRIPT:sleep "*)
+		sleep "${line#SCRIPT:sleep }"
+		;;
+	"SCRIPT:write "*)
+		rest="${line#SCRIPT:write }"
+		relpath="${rest%% *}"
+		text="${rest#* }"
+		target="$WORKDIR/$relpath"
+		mkdir -p "$(dirname "$target")" || exit 14
+		printf '%s\n' "$text" >"$target" || exit 14
+		;;
+	"SCRIPT:require-env "*)
+		name="${line#SCRIPT:require-env }"
+		val="${!name:-}"
+		[ -n "$val" ] || exit 10
+		;;
+	"SCRIPT:require-file "*)
+		path="${line#SCRIPT:require-file }"
+		[ -r "$path" ] || exit 11
+		;;
+	"SCRIPT:http-get "*)
+		url="${line#SCRIPT:http-get }"
+		curl -fsS --max-time 5 "$url" >/dev/null || exit 12
+		;;
+	"SCRIPT:http-expect-fail "*)
+		url="${line#SCRIPT:http-expect-fail }"
+		if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+			exit 13
+		fi
+		;;
+	"SCRIPT:exit "*)
+		exit "${line#SCRIPT:exit }"
+		;;
+	"SCRIPT:"*)
+		echo "claude: unrecognised directive: $line" >&2
+		exit 20
+		;;
+	"")
+		;;
+	*)
+		# Plain, non-directive prompt text: ignored.
+		;;
+	esac
+done <<PROMPT
+$prompt
+PROMPT
+
+exit 0

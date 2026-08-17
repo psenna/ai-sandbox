@@ -1,0 +1,138 @@
+# MinIO: the S3-compatible object store used by the e2e suite's SandboxClass
+# storage.backend.s3 (test/e2e/harness.go's WithS3Backend / CreateClass
+# default) and by test/e2e/s3.go's SDK-free reader/writer.
+#
+# Note: nothing in the operator itself reads storage.backend.s3's
+# credentialsSecretRef yet (freeze/wake/snapshot land in #28/#29, out of
+# scope for #22 -- see the epic's non-goals). The minio-creds Secret below
+# exists so a SandboxClass can reference *something* shaped like the CRD
+# expects (SecretKeyRef defaults Key to "token"), and so the bootstrap Job
+# below can authenticate `mc` to MinIO. The e2e suite's own S3 reads/writes
+# never use these credentials at all -- see minio-bootstrap's `mc anonymous
+# set download/public`, which makes plain unsigned GETs/ListObjectsV2 work.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-sandbox-e2e
+  labels:
+    app.kubernetes.io/part-of: ai-sandbox-e2e
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-creds
+  namespace: ai-sandbox-e2e
+type: Opaque
+stringData:
+  accessKeyID: e2e-minio-user
+  secretAccessKey: e2e-minio-password
+  # SecretKeyRef.Key defaults to "token" (api/v1alpha1/sandboxenvironment_types.go);
+  # not read by the operator today (see header comment), provided only so a
+  # class's s3.credentialsSecretRef resolves to a real key.
+  token: e2e-minio-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: ai-sandbox-e2e
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          # Pinned, NOT `latest` -- imagePullPolicy defaults from the tag
+          # (see the e2e agent image's own header comment / RenderPod's doc
+          # comment); a floating tag would force Always and could pull a
+          # different image than what was verified.
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: accessKeyID
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: secretAccessKey
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            periodSeconds: 2
+            failureThreshold: 30
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: ai-sandbox-e2e
+spec:
+  type: NodePort
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+      nodePort: 30900
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bootstrap
+  namespace: ai-sandbox-e2e
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AK
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: accessKeyID
+            - name: SK
+              valueFrom:
+                secretKeyRef:
+                  name: minio-creds
+                  key: secretAccessKey
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc alias set local http://minio:9000 "$AK" "$SK"; do sleep 2; done
+              mc mb --ignore-existing local/sandbox-snapshots
+              mc mb --ignore-existing local/e2e-fixtures
+              mc anonymous set download local/sandbox-snapshots
+              mc anonymous set public   local/e2e-fixtures
+              echo BOOTSTRAP_OK
