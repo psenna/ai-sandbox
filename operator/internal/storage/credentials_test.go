@@ -23,7 +23,7 @@ import (
 // a leak, not a coincidence.
 const sentinelSecret = "leak-canary-s3-secret-access-key-27" //nolint:gosec // G101: deliberately fake, low-entropy sentinel value used to detect secret leaks, not a real credential
 
-const sentinelAccessKeyID = "AKIALEAKCANARY0000000"
+const sentinelAccessKeyID = "AKIALEAKCANARY0000000" //nolint:gosec // G101: deliberately fake, obviously-not-real sentinel access key ID used to detect secret leaks, not a real credential
 
 // TestCredentialsNeverStringify runs a Credentials value containing
 // sentinelSecret through every stringification path this package exposes
@@ -39,12 +39,12 @@ func TestCredentialsNeverStringify(t *testing.T) {
 
 	outputs := map[string]string{
 		"%v on Secret":       fmt.Sprintf("%v", creds.SecretAccessKey),
-		"%s on Secret":       fmt.Sprintf("%s", creds.SecretAccessKey), //nolint:gosimple // deliberately exercising the %s verb
+		"%s on Secret":       fmt.Sprintf("%s", creds.SecretAccessKey), //nolint:staticcheck // S1025: deliberately exercising the %s verb (fmt.Sprintf, not Secret.String) to prove this specific stringification path is also redacted
 		"%q on Secret":       fmt.Sprintf("%q", creds.SecretAccessKey),
 		"%#v on Secret":      fmt.Sprintf("%#v", creds.SecretAccessKey),
 		"%+v on Secret":      fmt.Sprintf("%+v", creds.SecretAccessKey),
 		"%v on Credentials":  fmt.Sprintf("%v", creds),
-		"%s on Credentials":  fmt.Sprintf("%s", creds), //nolint:gosimple // deliberately exercising the %s verb
+		"%s on Credentials":  fmt.Sprintf("%s", creds), //nolint:staticcheck // S1025: deliberately exercising the %s verb (fmt.Sprintf, not Secret.String) to prove this specific stringification path is also redacted
 		"%#v on Credentials": fmt.Sprintf("%#v", creds),
 		"%+v on Credentials": fmt.Sprintf("%+v", creds),
 	}

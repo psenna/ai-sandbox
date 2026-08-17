@@ -142,7 +142,7 @@ func realSleep(ctx context.Context, d time.Duration) error {
 
 // realRand is retryDo's production jitter source: math/rand/v2's top-level
 // Float64, safe for concurrent use with no seeding required.
-func realRand() float64 { return rand.Float64() }
+func realRand() float64 { return rand.Float64() } //nolint:gosec // G404: retry-backoff jitter, not a security-sensitive use of randomness
 
 // classifyS3Error maps an S3 client error to an error Kind. NoSuchKey/
 // NotFound/NoSuchBucket (as typed errors or by API error code) and an HTTP
@@ -179,10 +179,10 @@ func classifyS3Error(op, key string, err error) error {
 
 	var respErr *smithyhttp.ResponseError
 	if errors.As(err, &respErr) {
-		switch code := respErr.HTTPStatusCode(); {
-		case code == http.StatusNotFound:
+		switch respErr.HTTPStatusCode() {
+		case http.StatusNotFound:
 			return &Error{Op: op, Backend: "s3", Key: key, Kind: ErrNotFound, Err: err}
-		case code == http.StatusForbidden:
+		case http.StatusForbidden:
 			return &Error{Op: op, Backend: "s3", Key: key, Kind: ErrPermission, Err: err}
 		}
 	}
@@ -199,6 +199,10 @@ func classifyS3Error(op, key string, err error) error {
 // retry.go's doc comment.
 func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, opts PutOptions) (ObjectInfo, error) {
 	vr := newVerifyingReader(r)
+	//nolint:staticcheck // SA1019: feature/s3/manager is deprecated in favor of feature/s3/transfermanager,
+	// which is still pre-1.0 on this environment's module proxy (see operator/README.md's dependency-pinning
+	// notes) -- manager.Uploader remains the correct streaming multipart-upload choice for a plain io.Reader
+	// until that replacement stabilizes.
 	uploader := manager.NewUploader(b.client, func(u *manager.Uploader) {
 		u.PartSize = b.partSize
 		u.Concurrency = b.concurrency
@@ -213,7 +217,7 @@ func (b *S3Backend) Put(ctx context.Context, key string, r io.Reader, opts PutOp
 		input.ContentType = aws.String(opts.ContentType)
 	}
 
-	if _, err := uploader.Upload(ctx, input); err != nil {
+	if _, err := uploader.Upload(ctx, input); err != nil { //nolint:staticcheck // SA1019: see manager.NewUploader's nolint above
 		return ObjectInfo{}, classifyS3Error("Put", key, err)
 	}
 	return ObjectInfo{Key: key, Size: vr.Size(), SHA256: vr.SHA256(), ModTime: time.Now().UTC()}, nil

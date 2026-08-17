@@ -19,10 +19,10 @@ import (
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	full := filepath.Join(root, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil { //nolint:gosec // G301: test fixture directory inside t.TempDir(), not security-sensitive
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o600); err != nil { //nolint:gosec // G306: test fixture file inside t.TempDir(), not security-sensitive
 		t.Fatalf("WriteFile(%s): %v", rel, err)
 	}
 }
@@ -50,7 +50,7 @@ func TestArchiveRoundTrip_AwkwardNamesAndSymlinks(t *testing.T) {
 		".hidden":                         "d",
 		"empty-dir/.keep":                 "keep-file-so-dir-is-created",
 	})
-	if err := os.MkdirAll(filepath.Join(src, "truly-empty-dir"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, "truly-empty-dir"), 0o750); err != nil { //nolint:gosec // G301: test fixture directory inside t.TempDir(), not security-sensitive
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	if err := os.Symlink("with spaces.txt", filepath.Join(src, "a-symlink")); err != nil {
