@@ -1,0 +1,28 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: sandbox-environment
+    app.kubernetes.io/instance: issue-task-env
+    app.kubernetes.io/managed-by: ai-sandbox-operator
+    app.kubernetes.io/name: ai-sandbox
+    app.kubernetes.io/part-of: ai-sandbox
+    sandbox.psenna.dev/class: default
+    sandbox.psenna.dev/environment: issue-task-env
+  name: issue-task-env-sidecar
+  namespace: default
+  ownerReferences:
+  - apiVersion: sandbox.psenna.dev/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SandboxEnvironment
+    name: issue-task-env
+    uid: 11111111-1111-1111-1111-111111111111
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: issue-task-env-sidecar
+subjects:
+- kind: ServiceAccount
+  name: issue-task-env-agent
+  namespace: default

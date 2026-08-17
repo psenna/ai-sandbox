@@ -12,5 +12,9 @@ import (
 // starts a manager against a fake host; a registered controller's informer
 // would never sync there).
 func SetupControllers(mgr manager.Manager, cfg config.Config) error {
-	return (&controller.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr)
+	return (&controller.Reconciler{
+		Client:               mgr.GetClient(),
+		ClassSecretNamespace: cfg.ClassSecretNamespace,
+		ClusterID:            cfg.ClusterID,
+	}).SetupWithManager(mgr)
 }

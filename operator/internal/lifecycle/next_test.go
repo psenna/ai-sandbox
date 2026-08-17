@@ -62,6 +62,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          func() ClusterFacts { f := baseFacts(); f.ResourcesReady = true; return f }(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionScheduled: {metav1.ConditionFalse, ReasonQueued}},
 		},
 		{
@@ -90,6 +91,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionReady: {metav1.ConditionFalse, ReasonSuspended}},
 		},
 		{
@@ -98,7 +100,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          func() ClusterFacts { f := baseFacts(); f.SlotGranted = true; return f }(),
 			wantPhase:      v1alpha1.PhaseRestoring,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionEnsurePod},
+			wantActions:    []Action{ActionEnsureResources, ActionEnsurePod},
 		},
 		{
 			name:           "R3 queued, no slot",
@@ -106,6 +108,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionScheduled: {metav1.ConditionFalse, ReasonQueued}},
 		},
 
@@ -116,7 +119,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          func() ClusterFacts { f := baseFacts(); f.SlotGranted = true; return f }(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: false,
-			wantActions:    []Action{ActionDeletePod},
+			wantActions:    []Action{ActionEnsureResources, ActionDeletePod},
 		},
 		{
 			name:           "S2 slot revoked mid-restore",
@@ -124,7 +127,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionDeletePod},
+			wantActions:    []Action{ActionEnsureResources, ActionDeletePod},
 		},
 		{
 			name: "S3 pod not observed self-loops",
@@ -137,7 +140,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseRestoring,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionEnsurePod},
+			wantActions:    []Action{ActionEnsureResources, ActionEnsurePod},
 			wantConds:      map[string]wantCond{ConditionPodReady: {metav1.ConditionUnknown, ReasonPodNotObserved}},
 		},
 		{
@@ -153,6 +156,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseRunning,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionPodReady: {metav1.ConditionTrue, ReasonPodRunning}},
 		},
 		{
@@ -167,7 +171,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseRestoring,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionEnsurePod},
+			wantActions:    []Action{ActionEnsureResources, ActionEnsurePod},
 			wantConds:      map[string]wantCond{ConditionPodReady: {metav1.ConditionFalse, ReasonPodPending}},
 		},
 		{
@@ -180,7 +184,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseRestoring,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionEnsurePod},
+			wantActions:    []Action{ActionEnsureResources, ActionEnsurePod},
 			wantConds:      map[string]wantCond{ConditionPodReady: {metav1.ConditionFalse, ReasonPodNotCreated}},
 		},
 
@@ -195,7 +199,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseFreezing,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionFreezePod},
+			wantActions:    []Action{ActionEnsureResources, ActionFreezePod},
 		},
 		{
 			name:           "N2 suspend triggers freeze",
@@ -203,7 +207,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseFreezing,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionFreezePod},
+			wantActions:    []Action{ActionEnsureResources, ActionFreezePod},
 		},
 		{
 			name: "N3 pod not observed keeps Ready True",
@@ -215,6 +219,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseRunning,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds: map[string]wantCond{
 				ConditionPodReady: {metav1.ConditionUnknown, ReasonPodNotObserved},
 				ConditionReady:    {metav1.ConditionTrue, ReasonRunning},
@@ -226,6 +231,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseRunning,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds: map[string]wantCond{
 				ConditionPodReady: {metav1.ConditionTrue, ReasonPodRunning},
 				ConditionReady:    {metav1.ConditionTrue, ReasonRunning},
@@ -244,6 +250,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseFreezing,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionFalse, ReasonSnapshotFailed}},
 		},
 		{
@@ -252,7 +259,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseFreezing,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionFreezePod},
+			wantActions:    []Action{ActionEnsureResources, ActionFreezePod},
 			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionFalse, ReasonSnapshotInProgress}},
 		},
 		{
@@ -266,7 +273,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseFreezing,
 			wantSlotWanted: true,
-			wantActions:    []Action{ActionDeletePod},
+			wantActions:    []Action{ActionEnsureResources, ActionDeletePod},
 			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionFalse, ReasonPodTerminating}},
 		},
 		{
@@ -279,6 +286,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseWaiting,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionTrue, ReasonWaitDeclared}},
 		},
 		{
@@ -291,6 +299,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseWaiting,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionTrue, ReasonSuspended}},
 		},
 
@@ -313,6 +322,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseWaiting,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionReady: {metav1.ConditionFalse, ReasonSuspended}},
 		},
 		{
@@ -321,6 +331,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 		},
 		{
 			name: "W4 probe not observed",
@@ -332,6 +343,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseWaiting,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionWaitSatisfied: {metav1.ConditionUnknown, ReasonProbeNotEvaluated}},
 		},
 		{
@@ -344,6 +356,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseReady,
 			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionWaitSatisfied: {metav1.ConditionTrue, ReasonProbeSatisfied}},
 		},
 		{
@@ -352,6 +365,7 @@ func TestNext_Transitions(t *testing.T) {
 			facts:          baseFacts(),
 			wantPhase:      v1alpha1.PhaseWaiting,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionWaitSatisfied: {metav1.ConditionFalse, ReasonProbePending}},
 		},
 
