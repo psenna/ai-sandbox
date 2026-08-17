@@ -8,7 +8,16 @@ kubebuilder v4 project layout, CI, and a manager that starts, serves health
 probes, and exits cleanly. [Issue #17](https://github.com/psenna/ai-sandbox/issues/17)
 added the `sandbox.psenna.dev/v1alpha1` API types (`SandboxClass`,
 `SandboxEnvironment`), their CRDs, and envtest-backed validation/round-trip
-tests. Controllers land in [#18](https://github.com/psenna/ai-sandbox/issues/18).
+tests. [Issue #18](https://github.com/psenna/ai-sandbox/issues/18) added the
+`SandboxEnvironment` phase state machine as a pure function
+(`internal/lifecycle`), the reconciler that drives it against a real cluster
+(`internal/controller`), and the RBAC generated from its
+`+kubebuilder:rbac` markers. The reconciler's `Observe` seam is deliberately
+a stub today (`ObserveStub`): no child resources, pods, snapshots, or probes
+exist yet, so a new environment settles in `Pending` and stays there. Those
+subsystems land incrementally in #19, #20, #21, #24, #27, #28, #29, #30 and
+#32, each replacing one piece of `ObserveStub` and one `notImplemented`
+action without touching the state machine or the reconcile loop itself.
 
 ## Layout
 
@@ -18,6 +27,8 @@ operator/
 ├── api/v1alpha1/            SandboxClass / SandboxEnvironment API types
 ├── internal/config/         flag/env configuration surface
 ├── internal/operator/       manager construction (scheme, options, probes)
+├── internal/lifecycle/      pure SandboxEnvironment phase state machine (no controller-runtime import)
+├── internal/controller/     the reconciler: Observe -> lifecycle.Next -> actions -> status write
 ├── internal/apitest/        envtest-backed API validation/round-trip tests
 ├── config/                  kustomize bases (CRDs, manager Deployment, RBAC)
 ├── config/samples/          example SandboxClass/SandboxEnvironment YAML
@@ -45,10 +56,10 @@ own `docker run` against `$DOCKER_HOST`.
 | `lint` | `golangci-lint run` |
 | `vuln` | `govulncheck` |
 | `tidy` | `go mod tidy` |
-| `manifests` | CRD manifests (`config/crd/bases/*.yaml`) via `controller-gen`, built from `hack/tools` |
+| `manifests` | CRD manifests (`config/crd/bases/*.yaml`) and RBAC (`config/rbac/role.yaml`) via `controller-gen`, built from `hack/tools` |
 | `generate` | deepcopy generation (`api/v1alpha1/zz_generated.deepcopy.go`) via `controller-gen` |
 | `envtest-assets` | download and checksum-verify real kube-apiserver/etcd/kubectl binaries for envtest |
-| `test-envtest` | `go test -race` against `internal/apitest`, using the envtest binaries above |
+| `test-envtest` | `go test -race` against `internal/apitest` and `internal/controller`, using the envtest binaries above |
 | `kustomize-build` | render `config/default` |
 | `cross` | cross-compile linux/amd64 and linux/arm64 |
 | `docker-build` | build the operator image |
@@ -149,3 +160,11 @@ API server (not against controller code), and checks the printer columns
 and short names/categories via discovery. It's skipped (not failed) when
 `KUBEBUILDER_ASSETS` isn't set, so `make test` still passes without the
 envtest binaries present.
+
+`internal/controller/` mirrors the same `TestMain` skip-guard pattern for its
+own envtest-backed suite: it exercises the real reconcile loop (`Reconcile`,
+`writeStatus`'s conflict-retry and staleness guard, and the one
+manager-based watch test) against a real `kube-apiserver`, with an injectable
+clock and an injectable `ObserveFunc` so timeout- and facts-driven
+transitions are deterministic without a real cluster clock or real
+subsystems.

@@ -1,0 +1,41 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - sandbox.psenna.dev
+  resources:
+  - sandboxclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sandbox.psenna.dev
+  resources:
+  - sandboxclasses/status
+  - sandboxenvironments/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - sandbox.psenna.dev
+  resources:
+  - sandboxenvironments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sandbox.psenna.dev
+  resources:
+  - sandboxenvironments/finalizers
+  verbs:
+  - update

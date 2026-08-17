@@ -40,6 +40,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := operator.SetupControllers(mgr, cfg); err != nil {
+		log.Error(err, "unable to set up controllers")
+		os.Exit(1)
+	}
+
 	log.Info("starting operator",
 		"slotCapacity", cfg.SlotCapacity,
 		"clusterID", cfg.ClusterID,
