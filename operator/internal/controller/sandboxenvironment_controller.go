@@ -10,6 +10,7 @@ package controller
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
 //
 // The sandboxenvironments{,/status} grants above are what makes it legal
@@ -21,8 +22,16 @@ package controller
 // reads bypass the informer cache entirely (see manager.go's
 // Cache.DisableFor) so this grant never causes a cluster-wide Secret cache.
 //
-// Markers for pods, events, leases are deliberately NOT added here -- they
-// belong to the issues that actually touch those objects (#21, #33). #20's
+// The pods marker lands with this issue (#21): ensurePod/deletePod/observePod
+// need get/list/watch/create/update/patch/delete on pods in the environment's
+// own namespace. delete is required (not just get/create/update/patch)
+// because terminalOutcome/nextFreezing issue ActionDeletePod. pods/log and
+// pods/exec are deliberately NOT granted -- log retrieval belongs to a later
+// issue, and pods/exec (a shell into a running agent pod) must never be
+// granted to the operator at all.
+//
+// Markers for events, leases are deliberately NOT added here -- they belong
+// to the issues that actually touch those objects (#33). #20's
 // SlotScheduler needed no new grants: it only lists sandboxenvironments and
 // updates sandboxenvironments/status, both already covered above, and
 // LeaseName is deliberately left unset (see slotscheduler.go), so no
@@ -99,6 +108,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	facts.Timeouts = lifecycle.ResolveTimeouts(class)
 
 	d := lifecycle.Next(env, facts, r.now())
+	d.Conditions = append(d.Conditions, engineSecurityCondition(&env, class, r.now()))
 
 	if err := r.performActions(ctx, &env, class, d); err != nil {
 		return ctrl.Result{}, err
@@ -136,6 +146,13 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.ServiceAccount{}).
+		// Pods are watched (not just polled): a pod's phase transitions
+		// (Pending->Running, Running->Succeeded/Failed) are exactly what
+		// drives Restoring->Running and Running->Done/Failed. Without this
+		// watch, those transitions would only be picked up on the
+		// RequeueAfter timer -- up to lifecycle.MaxRequeueAfter (5 minutes)
+		// late.
+		Owns(&corev1.Pod{}).
 		Named("sandboxenvironment").
 		Complete(r)
 }

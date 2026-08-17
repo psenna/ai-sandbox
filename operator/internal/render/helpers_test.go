@@ -1,6 +1,8 @@
 package render
 
 import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -102,5 +104,21 @@ func fullClass() *v1alpha1.SandboxClass {
 		Size:             "50Gi",
 		StorageClassName: &scn,
 	}
+	c.Spec.Agent.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+	}
 	return c
+}
+
+// withEngine sets class.Spec.Engine.Type to t, returning class for chaining.
+func withEngine(class *v1alpha1.SandboxClass, t v1alpha1.EngineType) *v1alpha1.SandboxClass {
+	class.Spec.Engine.Type = t
+	return class
 }

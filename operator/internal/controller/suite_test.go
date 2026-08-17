@@ -220,6 +220,66 @@ func mustCreateClass(t *testing.T) *sandboxv1alpha1.SandboxClass {
 	return class
 }
 
+// mustCreateClassWithEngine creates a minimal valid SandboxClass named
+// "default" with spec.engine.type set to engineType.
+func mustCreateClassWithEngine(t *testing.T, engineType sandboxv1alpha1.EngineType) *sandboxv1alpha1.SandboxClass {
+	t.Helper()
+	class := &sandboxv1alpha1.SandboxClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: sandboxv1alpha1.SandboxClassSpec{
+			Agent: sandboxv1alpha1.AgentSpec{Image: "ghcr.io/psenna/ai-sandbox-agent:v1"},
+			Engine: sandboxv1alpha1.EngineSpec{
+				Type: engineType,
+			},
+			Storage: sandboxv1alpha1.StorageSpec{
+				Backend: sandboxv1alpha1.BackendSpec{
+					Type: sandboxv1alpha1.StorageBackendTypeS3,
+					S3: &sandboxv1alpha1.S3Backend{
+						Endpoint: "https://s3.example.com",
+						Bucket:   "sandbox-snapshots",
+						CredentialsSecretRef: sandboxv1alpha1.SecretKeyRef{
+							Name: "s3-creds",
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := k8s.Create(ctx, class); err != nil {
+		t.Fatalf("creating SandboxClass: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8s.Delete(ctx, class)
+	})
+	return class
+}
+
+// getPod fetches the Pod at key, failing the test if it does not exist.
+func getPod(t *testing.T, key types.NamespacedName) *corev1.Pod {
+	t.Helper()
+	pod := &corev1.Pod{}
+	if err := k8s.Get(ctx, key, pod); err != nil {
+		t.Fatalf("Get pod %s: %v", key, err)
+	}
+	return pod
+}
+
+// mustSetPodStatus forces the Pod at key's status via a direct
+// Status().Update, bypassing everything else -- envtest runs no kubelet, so
+// nothing else ever advances a Pod's phase. mutate is applied to the
+// current status fetched fresh from the server.
+func mustSetPodStatus(t *testing.T, key types.NamespacedName, mutate func(*corev1.PodStatus)) {
+	t.Helper()
+	pod := &corev1.Pod{}
+	if err := k8s.Get(ctx, key, pod); err != nil {
+		t.Fatalf("Get pod %s before mustSetPodStatus: %v", key, err)
+	}
+	mutate(&pod.Status)
+	if err := k8s.Status().Update(ctx, pod); err != nil {
+		t.Fatalf("mustSetPodStatus Status().Update(%s): %v", key, err)
+	}
+}
+
 // mustCreateClassWithGitProxy creates a minimal valid SandboxClass named
 // "default" whose services.gitProxy.tokenSecretRef points at secretName/key
 // in secretNamespace -- the class-referenced Secret D3 describes.
