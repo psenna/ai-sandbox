@@ -35,6 +35,14 @@ cp /opt/agent-context/CLAUDE.md /workspace/CLAUDE.md
 mkdir -p /workspace/.claude/skills/use-docker
 cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 
+# use-sandbox: the ai-sandbox operator's sidecar control API (declare a
+# wait, report a result, leave a progress breadcrumb) -- only relevant when
+# this container is running inside an operator-managed SandboxEnvironment
+# pod, but harmless to always drop in (on-demand skill, only loaded when
+# needed).
+mkdir -p /workspace/.claude/skills/use-sandbox
+cp /opt/skills/use-sandbox/SKILL.md /workspace/.claude/skills/use-sandbox/SKILL.md
+
 # implement-issue: drive a GitHub issue from spec to merged PR with a tiered
 # model pipeline (Opus plans, Sonnet implements, Opus validates & fixes).
 mkdir -p /workspace/.claude/skills/implement-issue

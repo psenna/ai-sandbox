@@ -12,7 +12,7 @@ import (
 
 func TestRenderPod_RootlessPodmanIsNotImplemented(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeRootlessPodman)
-	in := Inputs{Env: baseEnv("engine-podman"), Class: class, ClusterID: "test-cluster"}
+	in := Inputs{Env: baseEnv("engine-podman"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
 
 	_, err := RenderPod(in)
 	if err == nil {
@@ -28,7 +28,7 @@ func TestRenderPod_RootlessPodmanIsNotImplemented(t *testing.T) {
 
 func TestRenderPod_EmptyEngineTypeDefaultsToRootlessPodman(t *testing.T) {
 	class := minimalClass() // Spec.Engine.Type left as the zero value ""
-	in := Inputs{Env: baseEnv("engine-default"), Class: class, ClusterID: "test-cluster"}
+	in := Inputs{Env: baseEnv("engine-default"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
 
 	_, err := RenderPod(in)
 	if err == nil {
@@ -41,7 +41,7 @@ func TestRenderPod_EmptyEngineTypeDefaultsToRootlessPodman(t *testing.T) {
 
 func TestRenderPod_UnknownEngineType(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineType("docker"))
-	in := Inputs{Env: baseEnv("engine-unknown"), Class: class, ClusterID: "test-cluster"}
+	in := Inputs{Env: baseEnv("engine-unknown"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
 
 	_, err := RenderPod(in)
 	if err == nil {
@@ -131,7 +131,7 @@ func TestRenderPod_AppliesEveryRelaxationKind(t *testing.T) {
 	defer withFakeEngine(t, fakeType, fakeRelaxingEngine{relaxations: relaxations})()
 
 	class := withEngine(minimalClass(), fakeType)
-	pod, err := RenderPod(Inputs{Env: baseEnv("engine-relax"), Class: class, ClusterID: "test-cluster"})
+	pod, err := RenderPod(Inputs{Env: baseEnv("engine-relax"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestRenderPod_RelaxationErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			defer withFakeEngine(t, fakeType, fakeRelaxingEngine{relaxations: tc.relaxations})()
 			class := withEngine(minimalClass(), fakeType)
-			_, err := RenderPod(Inputs{Env: baseEnv("engine-relax-err"), Class: class, ClusterID: "test-cluster"})
+			_, err := RenderPod(Inputs{Env: baseEnv("engine-relax-err"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 			if err == nil {
 				t.Fatal("RenderPod: expected error, got nil")
 			}

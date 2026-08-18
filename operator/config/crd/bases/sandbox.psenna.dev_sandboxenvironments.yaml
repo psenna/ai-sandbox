@@ -153,6 +153,42 @@ spec:
             default: {}
             description: Status is the most recently observed state of the environment.
             properties:
+              agentResult:
+                description: |-
+                  AgentResult records the agent's own report of how its run ended, as
+                  declared through the sandboxctl sidecar's POST /v1/done.
+                properties:
+                  exitCode:
+                    description: |-
+                      ExitCode is the process exit code the agent intends to exit with.
+                      Advisory only: the pod's real exit code is what
+                      internal/controller/podstatus.go observes.
+                    format: int32
+                    maximum: 255
+                    minimum: 0
+                    type: integer
+                  message:
+                    description: |-
+                      Message is the agent's own explanation, truncated to 512 bytes by the
+                      sidecar before it is written. Surfaced verbatim in the Ready
+                      condition message via lifecycle.ClusterFacts.AgentMessage.
+                    maxLength: 512
+                    type: string
+                  outcome:
+                    description: AgentOutcome is how the agent reported its run ended.
+                    enum:
+                    - Succeeded
+                    - Failed
+                    type: string
+                  reportedAt:
+                    description: |-
+                      ReportedAt is when this result was reported. Stamped by the sidecar,
+                      never supplied by the agent.
+                    format: date-time
+                    type: string
+                required:
+                - outcome
+                type: object
               archiveURI:
                 description: |-
                   ArchiveURI is the location of this environment's final workspace
@@ -319,30 +355,37 @@ spec:
                   sandbox from being restored.
                 properties:
                   declaredAt:
-                    description: DeclaredAt is when this wait condition was declared.
+                    description: |-
+                      DeclaredAt is when this wait condition was declared. Stamped by the
+                      sidecar, never supplied by the agent.
                     format: date-time
                     type: string
                   params:
                     additionalProperties:
                       type: string
                     description: |-
-                      Params carries type-specific parameters for the wait condition (for
-                      example a pull request number or a duration string).
+                      Params carries type-specific parameters for the wait condition. Which
+                      keys are required/permitted per Type is enforced fail-closed by
+                      internal/sandboxctl/probe.go; see that file for the per-type table.
+                    maxProperties: 16
                     type: object
                   reason:
                     description: |-
                       Reason is a human-readable explanation of why this wait was
                       declared.
+                    maxLength: 512
                     type: string
                   type:
-                    description: Type identifies the kind of condition being waited
-                      on.
+                    description: |-
+                      Type identifies the kind of condition being waited on. The enum IS
+                      the allowlist: the API server rejects anything else, and
+                      internal/sandboxctl rejects it earlier with an actionable error.
+                      The members are exactly the probe types issue #30 will evaluate.
                     enum:
-                    - PullRequestMerged
-                    - PullRequestChecks
-                    - IssueClosed
-                    - Duration
-                    - Manual
+                    - GitProxyCheck
+                    - HTTPGet
+                    - S3ObjectExists
+                    - NotBefore
                     type: string
                 required:
                 - type

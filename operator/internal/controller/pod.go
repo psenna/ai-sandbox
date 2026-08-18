@@ -27,7 +27,7 @@ func (r *Reconciler) ensurePod(ctx context.Context, env *v1alpha1.SandboxEnviron
 	if class == nil {
 		return nil
 	}
-	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID})
+	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID, SidecarImage: r.SidecarImage})
 	if err != nil {
 		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable", "reason", err.Error())
 		return nil

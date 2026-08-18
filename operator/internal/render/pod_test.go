@@ -22,17 +22,18 @@ func assertGoldenPod(t *testing.T, caseName string, in Inputs) {
 
 func TestRenderPod_NoneMinimal(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeNone)
-	in := Inputs{Env: baseEnv("none-minimal"), Class: class, ClusterID: "test-cluster"}
+	in := Inputs{Env: baseEnv("none-minimal"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
 	assertGoldenPod(t, "none-minimal", in)
 }
 
 func TestRenderPod_NoneFull(t *testing.T) {
 	class := withEngine(fullClass(), v1alpha1.EngineTypeNone)
 	in := Inputs{
-		Env:         baseEnv("none-full", withPrompt("do the full thing")),
-		Class:       class,
-		Credentials: Credentials{GitProxyToken: "fake-git-proxy-token-pod"}, //nolint:gosec // G101: deliberately fake test fixture value, not a real credential
-		ClusterID:   "test-cluster",
+		Env:          baseEnv("none-full", withPrompt("do the full thing")),
+		Class:        class,
+		Credentials:  Credentials{GitProxyToken: "fake-git-proxy-token-pod"}, //nolint:gosec // G101: deliberately fake test fixture value, not a real credential
+		ClusterID:    "test-cluster",
+		SidecarImage: "test-sidecar:test",
 	}
 	assertGoldenPod(t, "none-full", in)
 }
@@ -40,7 +41,7 @@ func TestRenderPod_NoneFull(t *testing.T) {
 func TestRenderPod_NoneLongName(t *testing.T) {
 	longName := strings.Repeat("p", 190) + "-" + strings.Repeat("q", 9) // 200 chars
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeNone)
-	in := Inputs{Env: baseEnv(longName), Class: class, ClusterID: "test-cluster"}
+	in := Inputs{Env: baseEnv(longName), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
 	assertGoldenPod(t, "none-long-name", in)
 
 	pod, err := RenderPod(in)
@@ -99,7 +100,7 @@ func TestRenderPod_NoneLongName(t *testing.T) {
 
 func TestRenderPod_RestartPolicyNever(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeNone)
-	pod, err := RenderPod(Inputs{Env: baseEnv("pod-restart"), Class: class, ClusterID: "test-cluster"})
+	pod, err := RenderPod(Inputs{Env: baseEnv("pod-restart"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestRenderPod_RestartPolicyNever(t *testing.T) {
 
 func TestRenderPod_TerminationGracePeriod(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeNone)
-	pod, err := RenderPod(Inputs{Env: baseEnv("pod-grace"), Class: class, ClusterID: "test-cluster"})
+	pod, err := RenderPod(Inputs{Env: baseEnv("pod-grace"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestRenderPod_TerminationGracePeriod(t *testing.T) {
 
 func TestRenderPod_NoCommandOnlyArgs(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeNone)
-	pod, err := RenderPod(Inputs{Env: baseEnv("pod-cmd"), Class: class, ClusterID: "test-cluster"})
+	pod, err := RenderPod(Inputs{Env: baseEnv("pod-cmd"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestRenderPod_NoCommandOnlyArgs(t *testing.T) {
 
 func TestRenderPod_ResourcesOmittedWhenZero(t *testing.T) {
 	class := withEngine(minimalClass(), v1alpha1.EngineTypeNone) // no Resources set
-	pod, err := RenderPod(Inputs{Env: baseEnv("pod-no-resources"), Class: class, ClusterID: "test-cluster"})
+	pod, err := RenderPod(Inputs{Env: baseEnv("pod-no-resources"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestRenderPod_ResourcesOmittedWhenZero(t *testing.T) {
 
 func TestRenderPod_ResourcesSetWhenPresent(t *testing.T) {
 	class := withEngine(fullClass(), v1alpha1.EngineTypeNone) // fullClass sets Resources
-	pod, err := RenderPod(Inputs{Env: baseEnv("pod-resources"), Class: class, ClusterID: "test-cluster"})
+	pod, err := RenderPod(Inputs{Env: baseEnv("pod-resources"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}

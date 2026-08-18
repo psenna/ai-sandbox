@@ -10,6 +10,18 @@ import (
 // FULL metadata.name (never the truncated/hashed child name -- the
 // SandboxEnvironment object itself is never renamed). No list/watch/
 // create/update/delete, no secrets, nothing cluster-scoped.
+//
+// Honest limitation, recorded rather than silently relied upon: RBAC is
+// per-subresource, not per-field. This Role technically permits the sidecar
+// to write ANY field on its own environment's status, not just waitFor/
+// agentResult. The field-level restriction -- sandboxctl (#27) only ever
+// touches those two fields -- is enforced by sandboxctl's own code
+// (internal/sandboxctl/store.go's patchStatus mutators) and asserted by its
+// unit tests checking the exact merge-patch body
+// (internal/sandboxctl/store_test.go), not by RBAC. What RBAC DOES prove,
+// and what internal/controller/sidecarpatch_test.go and rbac_test.go assert
+// against a real authorizer, is the environment-scoping: this identity can
+// never patch a DIFFERENT environment's status at all.
 func renderRole(in Inputs) *acrbacv1.RoleApplyConfiguration {
 	names := ChildNames(in.Env.Name)
 	return acrbacv1.Role(names.Role, in.Env.Namespace).

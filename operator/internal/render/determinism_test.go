@@ -41,10 +41,11 @@ func TestRender_Deterministic(t *testing.T) {
 // (rootless-podman) is deliberately unimplemented and errors (#24).
 func TestRenderPod_Deterministic(t *testing.T) {
 	in := Inputs{
-		Env:         baseEnv("determinism-pod-env"),
-		Class:       withEngine(fullClass(), v1alpha1.EngineTypeNone),
-		Credentials: Credentials{GitProxyToken: "fake-token-determinism-pod"}, //nolint:gosec // G101: deliberately fake test fixture value, not a real credential
-		ClusterID:   "test-cluster",
+		Env:          baseEnv("determinism-pod-env"),
+		Class:        withEngine(fullClass(), v1alpha1.EngineTypeNone),
+		Credentials:  Credentials{GitProxyToken: "fake-token-determinism-pod"}, //nolint:gosec // G101: deliberately fake test fixture value, not a real credential
+		ClusterID:    "test-cluster",
+		SidecarImage: "test-sidecar:test",
 	}
 
 	first, err := RenderPod(in)

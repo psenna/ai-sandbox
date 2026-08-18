@@ -343,6 +343,7 @@ claude plugin install code-simplifier@claude-plugins-official
 - `claude-code/agent-context/CLAUDE.md` — always-loaded agent context (two execution surfaces, rules).
 - `claude-code/use-git-proxy/SKILL.md` — git-protocol + broker REST skill (sourced from the git-proxy repo).
 - `claude-code/use-docker/SKILL.md` — rootless DinD skill with mysql/minio/postgres recipes + mandatory npm/pip/go → DependaProxy.
+- `claude-code/use-sandbox/SKILL.md` — ai-sandbox operator sidecar control API (`/v1/wait`, `/v1/done`, `/v1/progress`, `/v1/status`) — only relevant inside an operator-managed SandboxEnvironment pod.
 - `claude-code/implement-issue/SKILL.md` — tiered-model issue pipeline (Opus plans, Sonnet implements, Opus validates & fixes → PR).
 - `config.yaml` — git-proxy config (github upstream, broker, policy, audit).
 - `credentials.yaml` — GitHub PAT profile (PLACEHOLDERS ONLY — never commit a real PAT).

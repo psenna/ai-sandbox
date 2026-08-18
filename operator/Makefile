@@ -214,6 +214,7 @@ all: vet fmt-check lint test
 
 build:
 	$(DOCKER_RUN) go build -trimpath -o bin/manager ./cmd
+	$(DOCKER_RUN) go build -trimpath -o bin/sandboxctl ./cmd/sandboxctl
 
 test:
 	$(DOCKER_RUN) sh -c 'CGO_ENABLED=1 go test -race -count=1 -coverprofile=cover.out ./...'
@@ -274,7 +275,8 @@ kustomize-build:
 
 cross:
 	$(DOCKER_RUN) sh -c 'for a in amd64 arm64; do echo "==> linux/$$a"; \
-		CGO_ENABLED=0 GOOS=linux GOARCH=$$a go build -trimpath -o bin/manager-linux-$$a ./cmd; done'
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$a go build -trimpath -o bin/manager-linux-$$a ./cmd; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$a go build -trimpath -o bin/sandboxctl-linux-$$a ./cmd/sandboxctl; done'
 
 docker-build:
 	$(DOCKER) build --add-host=dependaproxy:$(DEPENDAPROXY_IP) \

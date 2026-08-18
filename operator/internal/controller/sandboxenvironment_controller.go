@@ -67,6 +67,9 @@ type Reconciler struct {
 	// namespaces). Used by observeQueuePosition to scope its cached List
 	// consistently with SlotScheduler's own scope.
 	WatchNamespace string
+	// SidecarImage mirrors internal/config.Config.SidecarImage; passed into
+	// render.Inputs by ensurePod.
+	SidecarImage string
 }
 
 func (r *Reconciler) now() time.Time {
