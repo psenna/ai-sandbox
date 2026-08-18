@@ -17,6 +17,7 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 		ClassSecretNamespace: cfg.ClassSecretNamespace,
 		ClusterID:            cfg.ClusterID,
 		WatchNamespace:       cfg.WatchNamespace,
+		SidecarImage:         cfg.SidecarImage,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

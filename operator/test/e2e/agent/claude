@@ -7,19 +7,28 @@
 # code) without needing a real agent or model.
 #
 # Directives (one per line):
-#   SCRIPT:echo <text>            print <text> to stdout
-#   SCRIPT:log <text>             print <text> to stderr
-#   SCRIPT:sleep <seconds>        sleep (makes phase Running observable)
-#   SCRIPT:write <relpath> <text> write <text> under $WORKDIR/<relpath>          (exit 14 on failure)
-#   SCRIPT:require-env <NAME>     fail unless env var NAME is non-empty         (exit 10)
-#   SCRIPT:require-file <path>    fail unless <path> is readable               (exit 11)
-#   SCRIPT:http-get <url>         `curl -fsS --max-time 5 <url>` must succeed  (exit 12)
-#   SCRIPT:http-expect-fail <url> same GET must FAIL                           (exit 13)
-#   SCRIPT:exit <code>            exit immediately with <code>
+#   SCRIPT:echo <text>                      print <text> to stdout
+#   SCRIPT:log <text>                       print <text> to stderr
+#   SCRIPT:sleep <seconds>                  sleep (makes phase Running observable)
+#   SCRIPT:write <relpath> <text>           write <text> under $WORKDIR/<relpath>          (exit 14 on failure)
+#   SCRIPT:require-env <NAME>               fail unless env var NAME is non-empty          (exit 10)
+#   SCRIPT:require-file <path>              fail unless <path> is readable                (exit 11)
+#   SCRIPT:http-get <url>                   `curl -fsS --max-time 5 <url>` must succeed    (exit 12)
+#   SCRIPT:http-expect-fail <url>           same GET must FAIL                             (exit 13)
+#   SCRIPT:exit <code>                      exit immediately with <code>
+#   SCRIPT:sandbox-wait <json>              POST $SIDECAR/v1/wait, must return 2xx         (exit 30)
+#   SCRIPT:sandbox-wait-expect-fail <json>  same POST must return 4xx                      (exit 31)
+#   SCRIPT:sandbox-done <outcome> <message> POST $SIDECAR/v1/done                          (exit 32)
+#   SCRIPT:sandbox-progress <message>       POST $SIDECAR/v1/progress                      (exit 33)
+#   SCRIPT:sandbox-status                   GET  $SIDECAR/v1/status, echo to stdout        (exit 34)
+#   SCRIPT:sandbox-expect-loopback-only     GET on the pod's own non-loopback IP must FAIL
+#                                            while GET on localhost succeeds               (exit 35)
+#   SCRIPT:require-no-file <path>           inverse of require-file: fail if readable      (exit 36)
 # An empty prompt, or a prompt with no directives, exits 0. An unrecognised
 # `SCRIPT:` line exits 20.
 
 WORKDIR="${PWD:-/workspace}"
+SIDECAR="${SANDBOX_SIDECAR_URL:-http://localhost:9099}"
 prompt=""
 
 while [ $# -gt 0 ]; do
@@ -75,6 +84,77 @@ while IFS= read -r line || [ -n "$line" ]; do
 		url="${line#SCRIPT:http-expect-fail }"
 		if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
 			exit 13
+		fi
+		;;
+	"SCRIPT:sandbox-wait "*)
+		payload="${line#SCRIPT:sandbox-wait }"
+		code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$SIDECAR/v1/wait" -H 'Content-Type: application/json' -d "$payload")"
+		case "$code" in
+		2??) ;;
+		*)
+			echo "claude: sandbox-wait got HTTP $code, want 2xx" >&2
+			exit 30
+			;;
+		esac
+		;;
+	"SCRIPT:sandbox-wait-expect-fail "*)
+		payload="${line#SCRIPT:sandbox-wait-expect-fail }"
+		code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$SIDECAR/v1/wait" -H 'Content-Type: application/json' -d "$payload")"
+		case "$code" in
+		4??) ;;
+		*)
+			echo "claude: sandbox-wait-expect-fail got HTTP $code, want 4xx" >&2
+			exit 31
+			;;
+		esac
+		;;
+	"SCRIPT:sandbox-done "*)
+		rest="${line#SCRIPT:sandbox-done }"
+		outcome="${rest%% *}"
+		message="${rest#* }"
+		payload="$(printf '{"outcome":"%s","message":"%s"}' "$outcome" "$message")"
+		code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$SIDECAR/v1/done" -H 'Content-Type: application/json' -d "$payload")"
+		case "$code" in
+		2??) ;;
+		*)
+			echo "claude: sandbox-done got HTTP $code, want 2xx" >&2
+			exit 32
+			;;
+		esac
+		;;
+	"SCRIPT:sandbox-progress "*)
+		message="${line#SCRIPT:sandbox-progress }"
+		payload="$(printf '{"message":"%s"}' "$message")"
+		code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$SIDECAR/v1/progress" -H 'Content-Type: application/json' -d "$payload")"
+		case "$code" in
+		2??) ;;
+		*)
+			echo "claude: sandbox-progress got HTTP $code, want 2xx" >&2
+			exit 33
+			;;
+		esac
+		;;
+	"SCRIPT:sandbox-status")
+		curl -fsS --max-time 5 "$SIDECAR/v1/status" || exit 34
+		;;
+	"SCRIPT:sandbox-expect-loopback-only")
+		podip="$(hostname -i 2>/dev/null || true)"
+		if [ -z "$podip" ]; then
+			podip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+		fi
+		if [ -n "$podip" ] && curl -fsS --max-time 3 "http://$podip:9099/healthz" >/dev/null 2>&1; then
+			echo "claude: sandbox control API unexpectedly reachable via pod IP $podip" >&2
+			exit 35
+		fi
+		curl -fsS --max-time 5 "$SIDECAR/healthz" >/dev/null 2>&1 || {
+			echo "claude: sandbox control API unreachable via loopback" >&2
+			exit 35
+		}
+		;;
+	"SCRIPT:require-no-file "*)
+		path="${line#SCRIPT:require-no-file }"
+		if [ -r "$path" ]; then
+			exit 36
 		fi
 		;;
 	"SCRIPT:exit "*)

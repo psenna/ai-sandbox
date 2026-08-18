@@ -232,7 +232,7 @@ func TestEnvStatusSubresource(t *testing.T) {
 			LeaseName: "slot-lease-1",
 		},
 		WaitFor: &sandboxv1alpha1.WaitForStatus{
-			Type:   "PullRequestMerged",
+			Type:   "NotBefore",
 			Reason: "waiting on PR #42",
 			Params: map[string]string{"pr": "42"},
 		},
@@ -270,7 +270,7 @@ func TestEnvStatusSubresource(t *testing.T) {
 	if !final.Status.Slot.Granted || final.Status.Slot.GrantedAt == nil || final.Status.Slot.LeaseName != "slot-lease-1" {
 		t.Errorf("Status.Slot = %+v", final.Status.Slot)
 	}
-	if final.Status.WaitFor == nil || final.Status.WaitFor.Type != "PullRequestMerged" || final.Status.WaitFor.Params["pr"] != "42" {
+	if final.Status.WaitFor == nil || final.Status.WaitFor.Type != "NotBefore" || final.Status.WaitFor.Params["pr"] != "42" {
 		t.Errorf("Status.WaitFor = %+v", final.Status.WaitFor)
 	}
 	if final.Status.Snapshot == nil || final.Status.Snapshot.Seq != 3 || final.Status.Snapshot.SHA256 != sha256 ||

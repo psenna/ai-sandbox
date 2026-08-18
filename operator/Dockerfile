@@ -15,9 +15,18 @@ COPY api/ api/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/manager ./cmd
+# sandboxctl (#27): the always-present control-channel sidecar binary,
+# shipped in the SAME image as the manager (see internal/render/pod.go's
+# SidecarImage doc comment -- the sidecar is operator machinery, versioned
+# with the operator, never with the workload). The image's ENTRYPOINT stays
+# /manager; RenderPod's sidecarContainer overrides `command` to
+# SidecarBinaryPath (/sandboxctl) for that one container only.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/sandboxctl ./cmd/sandboxctl
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=build /out/manager /manager
+COPY --from=build /out/sandboxctl /sandboxctl
 USER 65532:65532
 ENTRYPOINT ["/manager"]

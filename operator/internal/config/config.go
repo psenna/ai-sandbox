@@ -38,6 +38,14 @@ type Config struct {
 	// the watch scope, so this trades admission latency against API-server
 	// load.
 	SchedulerInterval time.Duration
+
+	// SidecarImage is the container image for the always-present
+	// sandboxctl control-channel sidecar (#27). It is the operator's OWN
+	// image (the sandboxctl binary ships alongside the manager binary --
+	// see operator/Dockerfile), never taken from a SandboxClass. Must be
+	// kept in sync with the deployed operator image tag -- see
+	// operator/README.md.
+	SidecarImage string
 }
 
 // dns1123LabelRE matches a valid DNS-1123 label: lowercase alphanumeric
@@ -76,6 +84,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.DurationVar(&c.SchedulerInterval, "scheduler-interval",
 		envOrDuration(getenv, "SCHEDULER_INTERVAL", 5*time.Second),
 		"how often the slot scheduler runs an admission pass")
+	fs.StringVar(&c.SidecarImage, "sidecar-image",
+		envOr(getenv, "SIDECAR_IMAGE", "ghcr.io/psenna/ai-sandbox-operator:dev"),
+		"container image for the always-present sandboxctl control-channel sidecar; must match the deployed operator image tag")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -107,6 +118,9 @@ func (c Config) Validate() error {
 	}
 	if c.SchedulerInterval < 100*time.Millisecond || c.SchedulerInterval > 5*time.Minute {
 		return fmt.Errorf("scheduler-interval: must be between 100ms and 5m, got %s", c.SchedulerInterval)
+	}
+	if c.SidecarImage == "" {
+		return fmt.Errorf("sidecar-image: must not be empty")
 	}
 	return nil
 }

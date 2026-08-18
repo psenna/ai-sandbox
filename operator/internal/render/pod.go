@@ -5,6 +5,7 @@ import (
 	"path"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	acorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 )
 
@@ -12,6 +13,40 @@ const (
 	// AgentContainerName is the name of the agent container in the rendered
 	// pod.
 	AgentContainerName = "agent"
+
+	// SidecarContainerName is the always-present sandboxctl control-channel
+	// sidecar (#27). Engine-independent by construction: rendered directly
+	// here, never through Engine.Contribute, because the agent must be able
+	// to declare a wait and report a result regardless of which container
+	// engine (if any) the class selected.
+	SidecarContainerName = "sandboxctl"
+
+	// SidecarPort is the loopback port the control API binds. Matches
+	// SidecarBaseURL (inputs.go), already projected into the rendered
+	// ConfigMap's sandbox.json since #19.
+	SidecarPort int32 = 9099
+
+	// SidecarBinaryPath is where the operator image places the sandboxctl
+	// binary -- see operator/Dockerfile.
+	SidecarBinaryPath = "/sandboxctl"
+
+	sidecarTokenVolumeName = "sandboxctl-token"
+
+	// SidecarTokenMountPath is deliberately the STANDARD in-cluster
+	// credential path, so sandboxctl can use rest.InClusterConfig()
+	// unmodified (and get client-go's automatic bound-token reload for
+	// free). automountServiceAccountToken is false at both the SA and pod
+	// level; this projected volume is mounted into the sandboxctl
+	// container ONLY, never the agent container.
+	SidecarTokenMountPath = "/var/run/secrets/kubernetes.io/serviceaccount" //nolint:gosec // G101: a mount PATH, not a credential value
+
+	sidecarTokenExpirationSeconds int64 = 3600
+
+	// rootCAConfigMapName is the per-namespace ConfigMap kube-controller-
+	// manager's root-ca-cert-publisher writes into every namespace (GA
+	// since 1.21). Projecting it reproduces what the kubelet's own
+	// automount would have provided.
+	rootCAConfigMapName = "kube-root-ca.crt"
 
 	workspaceVolumeName = "workspace"
 	agentHomeVolumeName = "agent-home"
@@ -64,6 +99,9 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 	if err := validateInputs(in); err != nil {
 		return nil, err
 	}
+	if in.SidecarImage == "" {
+		return nil, fmt.Errorf("render: SidecarImage is required (set the operator's --sidecar-image flag)")
+	}
 	names := ChildNames(in.Env.Name)
 
 	engine, err := engineFor(in.Class.Spec.Engine.Type)
@@ -74,9 +112,21 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("render: engine contribution: %w", err)
 	}
+	if err := validateNoReservedContainerNames(contribution); err != nil {
+		return nil, err
+	}
 
 	agent := agentContainer(in, names)
 	containers := append([]*acorev1.ContainerApplyConfiguration{agent}, contribution.Containers...)
+
+	// sandboxctl is ALWAYS first among init containers: a restartable
+	// (native) sidecar that must be running for the whole pod lifetime,
+	// including during a future restore init container (#29), so the agent
+	// never observes a pod without a control channel.
+	initContainers := append(
+		[]*acorev1.ContainerApplyConfiguration{sidecarContainer(in, names)},
+		contribution.InitContainers...,
+	)
 
 	pod := acorev1.Pod(names.Pod, in.Env.Namespace).
 		WithLabels(Labels(in.Env)).
@@ -88,13 +138,42 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 			WithTerminationGracePeriodSeconds(DefaultTerminationGracePeriodSeconds).
 			WithSecurityContext(podSecurityContext()).
 			WithVolumes(append(podVolumes(names), contribution.Volumes...)...).
-			WithInitContainers(contribution.InitContainers...).
+			WithInitContainers(initContainers...).
 			WithContainers(containers...))
 
 	if err := applyRelaxations(pod, contribution.Relaxations); err != nil {
 		return nil, fmt.Errorf("render: applying engine relaxations: %w", err)
 	}
 	return pod, nil
+}
+
+// validateNoReservedContainerNames errors if an engine Contribution names a
+// container AgentContainerName or SidecarContainerName -- a collision would
+// produce an invalid Pod (duplicate container names), or worse, silently
+// let an engine contribution shadow the always-present sidecar. Fail at
+// render time with a clear message naming the offending container.
+func validateNoReservedContainerNames(c Contribution) error {
+	check := func(name string) error {
+		if name == AgentContainerName || name == SidecarContainerName {
+			return fmt.Errorf("render: engine contribution container name %q collides with a reserved container name", name)
+		}
+		return nil
+	}
+	for _, cc := range c.Containers {
+		if cc.Name != nil {
+			if err := check(*cc.Name); err != nil {
+				return err
+			}
+		}
+	}
+	for _, cc := range c.InitContainers {
+		if cc.Name != nil {
+			if err := check(*cc.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func podSecurityContext() *acorev1.PodSecurityContextApplyConfiguration {
@@ -115,6 +194,30 @@ func podVolumes(names Names) []*acorev1.VolumeApplyConfiguration {
 			WithEmptyDir(acorev1.EmptyDirVolumeSource()),
 		acorev1.Volume().WithName(configVolumeName).
 			WithConfigMap(acorev1.ConfigMapVolumeSource().WithName(names.ConfigMap).WithDefaultMode(0o444)),
+		// sidecarTokenVolumeName: a projected ServiceAccount token, reproducing
+		// what the kubelet's own automount would have provided, mounted into
+		// the sandboxctl container ONLY (never the agent container) at the
+		// standard in-cluster credential path so rest.InClusterConfig() works
+		// unmodified. automountServiceAccountToken is false at both the SA
+		// (renderServiceAccount) and pod (RenderPod) level.
+		acorev1.Volume().WithName(sidecarTokenVolumeName).
+			WithProjected(acorev1.ProjectedVolumeSource().
+				WithDefaultMode(0o444).
+				WithSources(
+					acorev1.VolumeProjection().WithServiceAccountToken(
+						acorev1.ServiceAccountTokenProjection().
+							WithPath("token").
+							WithExpirationSeconds(sidecarTokenExpirationSeconds)),
+					acorev1.VolumeProjection().WithConfigMap(
+						acorev1.ConfigMapProjection().
+							WithName(rootCAConfigMapName).
+							WithItems(acorev1.KeyToPath().WithKey("ca.crt").WithPath("ca.crt"))),
+					acorev1.VolumeProjection().WithDownwardAPI(
+						acorev1.DownwardAPIProjection().WithItems(
+							acorev1.DownwardAPIVolumeFile().
+								WithPath("namespace").
+								WithFieldRef(acorev1.ObjectFieldSelector().WithFieldPath("metadata.namespace")))),
+				)),
 	}
 }
 
@@ -156,6 +259,100 @@ func agentSecurityContext() *acorev1.SecurityContextApplyConfiguration {
 		WithRunAsNonRoot(true).
 		WithRunAsUser(agentUID).
 		WithReadOnlyRootFilesystem(false)
+}
+
+// sidecarContainer renders the always-present sandboxctl control-channel
+// sidecar as a native sidecar (KEP-753): an init container with
+// restartPolicy Always. See RenderPod's doc comment for why a REGULAR
+// container here would keep the pod out of Succeeded forever under
+// restartPolicy: Never, breaking lifecycle.agentOrPodTerminal.
+//
+// Probes: exec, not httpGet. The sidecar binds 127.0.0.1:SidecarPort; a
+// kubelet httpGet probe dials the pod IP, not loopback, so it would never
+// reach a loopback-bound listener. Only a startupProbe is set -- no
+// readinessProbe, no livenessProbe: the startupProbe gates the AGENT
+// container's start (so the control API exists before the agent's first
+// curl) while omitting a readinessProbe keeps the sidecar container
+// immediately Ready, preserving today's single-container pod Ready
+// semantics (nextRestoring's Restoring->Running gates on facts.PodReady).
+//
+// Explicitly rejected, not implemented here:
+//   - A NetworkPolicy for "unreachable from outside the pod": the loopback
+//     bind is already sufficient (no containerPort, no Service, no
+//     Ingress; a packet from any other pod/node arrives on eth0, not lo,
+//     and is refused by the kernel before userspace ever runs). A
+//     NetworkPolicy would be security theatre implying the bind is
+//     insufficient.
+//   - A Unix domain socket instead of TCP loopback: would need a shared
+//     volume the agent container could write to, and would break the
+//     documented `curl http://localhost:9099/...` interface the epic and
+//     the use-sandbox skill specify.
+func sidecarContainer(in Inputs, names Names) *acorev1.ContainerApplyConfiguration {
+	return acorev1.Container().
+		WithName(SidecarContainerName).
+		WithImage(in.SidecarImage).
+		WithRestartPolicy(corev1.ContainerRestartPolicyAlways).
+		// The image's ENTRYPOINT is the operator manager binary; the
+		// sidecar container must override command, not just args -- this
+		// is the one place in this repo where that is correct (agentContainer's
+		// "no command, only args" rule is specifically about the AGENT
+		// image's own entrypoint doing its setup work; it does not apply
+		// to this container).
+		WithCommand(SidecarBinaryPath).
+		WithArgs(
+			"serve",
+			"--environment="+in.Env.Name,
+			"--namespace="+in.Env.Namespace,
+			fmt.Sprintf("--listen=127.0.0.1:%d", SidecarPort),
+		).
+		WithVolumeMounts(
+			acorev1.VolumeMount().WithName(sidecarTokenVolumeName).
+				WithMountPath(SidecarTokenMountPath).WithReadOnly(true),
+			acorev1.VolumeMount().WithName(workspaceVolumeName).WithMountPath(WorkspaceMountPath),
+			acorev1.VolumeMount().WithName(agentHomeVolumeName).WithMountPath(AgentHomePath),
+		).
+		WithStartupProbe(acorev1.Probe().
+			WithExec(acorev1.ExecAction().WithCommand(SidecarBinaryPath, "healthcheck")).
+			WithPeriodSeconds(1).
+			WithFailureThreshold(30)).
+		WithResources(acorev1.ResourceRequirements().
+			WithRequests(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			}).
+			WithLimits(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			})).
+		WithSecurityContext(sidecarSecurityContext())
+}
+
+// sidecarSecurityContext is the agent's posture plus readOnlyRootFilesystem:
+// true. sandboxctl is a static Go binary in a distroless image writing
+// nothing outside its mounted volumes, so unlike the agent container (whose
+// entrypoint writes ~/.npmrc and ~/.gitconfig) it needs no writable rootfs.
+//
+// Note the deliberate QoS trade-off: requests != limits here means a pod
+// whose agent container would otherwise be Guaranteed becomes Burstable.
+// Chosen because a future freeze snapshot (#28) running in this container
+// needs burst headroom; nothing in this repo asserts pod QoS today.
+//
+// shareProcessNamespace is explicitly REJECTED: it would let the sidecar
+// signal the agent's PID, but would also expose
+// /proc/<sidecar-pid>/root/var/run/secrets/.../token to the agent container
+// (same UID 1000) -- destroying this issue's central security property.
+// "Stop the agent process" is achieved cooperatively (the skill tells the
+// agent to exit right after /v1/wait or /v1/done) and, for the
+// non-cooperative case, by the kubelet's own SIGTERM within
+// DefaultTerminationGracePeriodSeconds.
+func sidecarSecurityContext() *acorev1.SecurityContextApplyConfiguration {
+	return acorev1.SecurityContext().
+		WithAllowPrivilegeEscalation(false).
+		WithCapabilities(acorev1.Capabilities().WithDrop(corev1.Capability("ALL"))).
+		WithSeccompProfile(acorev1.SeccompProfile().WithType(corev1.SeccompProfileTypeRuntimeDefault)).
+		WithRunAsNonRoot(true).
+		WithRunAsUser(agentUID).
+		WithReadOnlyRootFilesystem(true)
 }
 
 // isZeroResources reports whether r has neither Limits nor Requests set.

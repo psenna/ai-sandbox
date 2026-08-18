@@ -76,6 +76,13 @@ func renderSecret(in Inputs) *acorev1.SecretApplyConfiguration {
 	data["CLAUDE_CONFIG_DIR"] = []byte(AgentHomePath)
 	data["CLAUDE_CODE_ATTRIBUTION_HEADER"] = []byte("0")
 
+	// SANDBOX_SIDECAR_URL: the agent-facing base URL of the sandboxctl
+	// control API (#27), loopback-only, reachable only from inside this
+	// pod. Not a secret, but rendered here (alongside the rest of the
+	// agent's process environment) rather than the ConfigMap, matching
+	// where every other envFrom-consumed value already lives.
+	data["SANDBOX_SIDECAR_URL"] = []byte(SidecarBaseURL)
+
 	return acorev1.Secret(names.Secret, in.Env.Namespace).
 		WithLabels(Labels(in.Env)).
 		WithOwnerReferences(ownerReference(in.Env)).

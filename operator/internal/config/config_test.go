@@ -32,6 +32,7 @@ func TestLoad_Defaults(t *testing.T) {
 		LeaderElectionID:        "sandbox-operator.sandbox.psenna.dev",
 		LeaderElectionNamespace: "",
 		SchedulerInterval:       5 * time.Second,
+		SidecarImage:            "ghcr.io/psenna/ai-sandbox-operator:dev",
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -151,6 +152,46 @@ func TestValidate_EmptyDefaultSandboxClassErrors(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("Validate() with empty default-sandbox-class: expected error, got nil")
+	}
+}
+
+func TestSidecarImage_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SidecarImage != "ghcr.io/psenna/ai-sandbox-operator:dev" {
+		t.Errorf("SidecarImage = %q, want the default operator image", c.SidecarImage)
+	}
+}
+
+func TestSidecarImage_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_SIDECAR_IMAGE": "example.com/custom:v1"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SidecarImage != "example.com/custom:v1" {
+		t.Errorf("SidecarImage = %q, want env override", c.SidecarImage)
+	}
+}
+
+func TestSidecarImage_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--sidecar-image=example.com/flag:v1"}, envFrom(map[string]string{"SANDBOX_OPERATOR_SIDECAR_IMAGE": "example.com/env:v1"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.SidecarImage != "example.com/flag:v1" {
+		t.Errorf("SidecarImage = %q, want flag to beat env", c.SidecarImage)
+	}
+}
+
+func TestValidate_EmptySidecarImageErrors(t *testing.T) {
+	c, err := Load([]string{"--sidecar-image="}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() with empty sidecar-image: expected error, got nil")
 	}
 }
 

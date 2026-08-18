@@ -49,6 +49,7 @@ func TestRender_Minimal(t *testing.T) {
 		"ANTHROPIC_API_KEY":              true,
 		"CLAUDE_CONFIG_DIR":              true,
 		"CLAUDE_CODE_ATTRIBUTION_HEADER": true,
+		"SANDBOX_SIDECAR_URL":            true,
 	}
 	if len(objs.Secret.Data) != len(wantKeys) {
 		t.Errorf("minimal Secret has %d keys, want %d: got %v", len(objs.Secret.Data), len(wantKeys), keysOf(objs.Secret.Data))

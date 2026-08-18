@@ -52,6 +52,11 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		SlotGranted:       env.Status.Slot.Granted,
 		AgentWaitDeclared: env.Status.WaitFor != nil,
 	}
+	if ar := env.Status.AgentResult; ar != nil {
+		f.AgentDone = ar.Outcome == v1alpha1.AgentOutcomeSucceeded
+		f.AgentFailed = ar.Outcome == v1alpha1.AgentOutcomeFailed
+		f.AgentMessage = ar.Message
+	}
 	if scheduler.IsCandidate(env) {
 		r.observeQueuePosition(ctx, env, &f)
 	}

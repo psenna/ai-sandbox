@@ -145,6 +145,11 @@ type SandboxEnvironmentStatus struct {
 	// +optional
 	WaitFor *WaitForStatus `json:"waitFor,omitempty"`
 
+	// AgentResult records the agent's own report of how its run ended, as
+	// declared through the sandboxctl sidecar's POST /v1/done.
+	// +optional
+	AgentResult *AgentResultStatus `json:"agentResult,omitempty"`
+
 	// Snapshot records the most recent workspace snapshot taken for this
 	// environment.
 	// +optional
@@ -207,25 +212,87 @@ type SlotStatus struct {
 }
 
 // WaitForStatus records the external condition blocking a frozen sandbox
-// from being restored.
+// from being restored. It is written ONLY by the sandboxctl sidecar
+// (internal/sandboxctl), which validates every declaration against the
+// allowlist below before patching it here; the agent container itself holds
+// no Kubernetes credential and can never write this field directly.
+//
+// This type is the SHAPE contract only. Deciding when a declared probe is
+// SATISFIED is #30's job: it reads this field and sets
+// lifecycle.ClusterFacts.{ProbeObserved,WaitProbeSatisfied,WaitProbeFailure}.
+// Nothing evaluates probes today, so a declared wait holds the environment
+// in Freezing/Waiting with the operator's own facts unpopulated -- the
+// documented, honest reading (see internal/lifecycle/next.go's nextWaiting).
 type WaitForStatus struct {
-	// Type identifies the kind of condition being waited on.
-	// +kubebuilder:validation:Enum=PullRequestMerged;PullRequestChecks;IssueClosed;Duration;Manual
+	// Type identifies the kind of condition being waited on. The enum IS
+	// the allowlist: the API server rejects anything else, and
+	// internal/sandboxctl rejects it earlier with an actionable error.
+	// The members are exactly the probe types issue #30 will evaluate.
+	// +kubebuilder:validation:Enum=GitProxyCheck;HTTPGet;S3ObjectExists;NotBefore
 	Type string `json:"type"`
 
 	// Reason is a human-readable explanation of why this wait was
 	// declared.
+	// +kubebuilder:validation:MaxLength=512
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// DeclaredAt is when this wait condition was declared.
+	// DeclaredAt is when this wait condition was declared. Stamped by the
+	// sidecar, never supplied by the agent.
 	// +optional
 	DeclaredAt *metav1.Time `json:"declaredAt,omitempty"`
 
-	// Params carries type-specific parameters for the wait condition (for
-	// example a pull request number or a duration string).
+	// Params carries type-specific parameters for the wait condition. Which
+	// keys are required/permitted per Type is enforced fail-closed by
+	// internal/sandboxctl/probe.go; see that file for the per-type table.
+	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	Params map[string]string `json:"params,omitempty"`
+}
+
+// Allowlisted WaitForStatus.Type values. Adding a member here requires a
+// matching entry in internal/sandboxctl/probe.go's paramSchema and, once
+// #30 lands, an evaluator -- see that package's allowlist round-trip test.
+const (
+	WaitTypeGitProxyCheck  = "GitProxyCheck"
+	WaitTypeHTTPGet        = "HTTPGet"
+	WaitTypeS3ObjectExists = "S3ObjectExists"
+	WaitTypeNotBefore      = "NotBefore"
+)
+
+// AgentOutcome is how the agent reported its run ended.
+// +kubebuilder:validation:Enum=Succeeded;Failed
+type AgentOutcome string
+
+const (
+	AgentOutcomeSucceeded AgentOutcome = "Succeeded"
+	AgentOutcomeFailed    AgentOutcome = "Failed"
+)
+
+// AgentResultStatus records the agent's own report of how its run ended,
+// written by the sandboxctl sidecar on POST /v1/done. This and
+// status.waitFor are the ONLY two fields the agent can influence, and it
+// influences them only through the sidecar's validated, rate-limited,
+// localhost-only API -- the agent container holds no Kubernetes credential.
+type AgentResultStatus struct {
+	Outcome AgentOutcome `json:"outcome"`
+	// Message is the agent's own explanation, truncated to 512 bytes by the
+	// sidecar before it is written. Surfaced verbatim in the Ready
+	// condition message via lifecycle.ClusterFacts.AgentMessage.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	Message string `json:"message,omitempty"`
+	// ExitCode is the process exit code the agent intends to exit with.
+	// Advisory only: the pod's real exit code is what
+	// internal/controller/podstatus.go observes.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=255
+	// +optional
+	ExitCode *int32 `json:"exitCode,omitempty"`
+	// ReportedAt is when this result was reported. Stamped by the sidecar,
+	// never supplied by the agent.
+	// +optional
+	ReportedAt *metav1.Time `json:"reportedAt,omitempty"`
 }
 
 // SnapshotStatus records a single workspace snapshot taken for an

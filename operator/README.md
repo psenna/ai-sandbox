@@ -22,12 +22,21 @@ readiness. [Issue #26](https://github.com/psenna/ai-sandbox/issues/26) added
 `internal/storage`: the two snapshot/archive storage backends
 (`s3`/`aws-sdk-go-v2` and `pvc`/mounted-filesystem), the object-key path
 layout, and the snapshot manifest format -- a pure Go library, not yet
-wired into the reconciler. Still stubbed/not-implemented: the agent pod
-itself and pod observation (#21/#24), the sidecar control channel (#27),
-freeze/wake using `internal/storage` (#28/#29), wait probes (#30), and the
-terminal archive (#32) -- each lands incrementally, replacing one
-`notImplemented` action and one piece of `observeCluster` without touching
-the state machine or the reconcile loop itself.
+wired into the reconciler. [Issue #27](https://github.com/psenna/ai-sandbox/issues/27)
+added the agent pod (`internal/render.RenderPod`, `#21/#24`'s engine seam
+still stubbed) and the `sandboxctl` sidecar (`cmd/sandboxctl`,
+`internal/sandboxctl`): an always-present native-sidecar init container
+(KEP-753) that holds the environment's Kubernetes credential and exposes a
+localhost-only control API (`/v1/wait`, `/v1/done`, `/v1/progress`,
+`/v1/status`) so the agent container -- which holds no credential at all --
+can declare a wait condition or report its result. See
+`claude-code/use-sandbox/SKILL.md` for the agent-facing contract. Still
+stubbed/not-implemented: freeze/wake using `internal/storage` (#28/#29), wait
+probe *evaluation* (#30 -- #27 only validates and records a declared probe;
+nothing decides when one is satisfied yet), and the terminal archive (#32)
+-- each lands incrementally, replacing one `notImplemented` action and one
+piece of `observeCluster` without touching the state machine or the
+reconcile loop itself.
 
 ### Child resources (#19)
 
@@ -56,6 +65,17 @@ falling back to the downward-API `POD_NAMESPACE`, then
 `Secret` -- the operator never mints or logs a credential, and Secret reads
 always bypass the client cache (see `internal/operator/manager.go`'s
 `Client.Cache.DisableFor`).
+
+The `sandboxctl` sidecar container is rendered from `--sidecar-image` /
+`SANDBOX_OPERATOR_SIDECAR_IMAGE` (default `ghcr.io/psenna/ai-sandbox-operator:dev`),
+**not** from the SandboxClass -- it is operator machinery, versioned with the
+operator, never with the workload. This must be kept in sync with whatever
+image tag the operator Deployment itself runs: `operator/Dockerfile` builds
+both `/manager` and `/sandboxctl` into the same image, so in practice
+`--sidecar-image` should simply repeat the operator's own image reference
+(see `config/default/kustomization.yaml`'s `images:` transform, and
+`test/e2e/manifests/operator/kustomization.yaml` for how the e2e overlay
+keeps the two in lockstep).
 
 Rendering (`internal/render`) is covered by golden-file tests under
 `internal/render/testdata/`; run `go test ./internal/render/... -update` to

@@ -90,6 +90,10 @@ func TestSidecarServiceAccountAuthorization(t *testing.T) {
 		{"pods create", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "create", Group: "", Resource: "pods"}, false},
 		{"sandboxclasses get, cluster-scoped", authorizationv1.ResourceAttributes{Verb: "get", Group: "sandbox.psenna.dev", Resource: "sandboxclasses", Name: "default"}, false},
 		{"configmaps get", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "get", Group: "", Resource: "configmaps", Name: names.ConfigMap}, false},
+		{"own env status update is forbidden", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "update", Group: "sandbox.psenna.dev", Resource: "sandboxenvironments", Subresource: "status", Name: env.Name}, false},
+		{"own env delete is forbidden", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "delete", Group: "sandbox.psenna.dev", Resource: "sandboxenvironments", Name: env.Name}, false},
+		{"own env spec patch is forbidden", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "patch", Group: "sandbox.psenna.dev", Resource: "sandboxenvironments", Name: env.Name}, false},
+		{"tokenreviews create is forbidden", authorizationv1.ResourceAttributes{Verb: "create", Group: "authentication.k8s.io", Resource: "tokenreviews"}, false},
 	}
 
 	for _, tc := range cases {

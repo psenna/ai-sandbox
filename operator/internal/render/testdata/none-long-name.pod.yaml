@@ -51,6 +51,49 @@ spec:
       name: config
       readOnly: true
     workingDir: /workspace
+  initContainers:
+  - args:
+    - serve
+    - --environment=pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp-qqqqqqqqq
+    - --namespace=default
+    - --listen=127.0.0.1:9099
+    command:
+    - /sandboxctl
+    image: test-sidecar:test
+    name: sandboxctl
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    restartPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    startupProbe:
+      exec:
+        command:
+        - /sandboxctl
+        - healthcheck
+      failureThreshold: 30
+      periodSeconds: 1
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: sandboxctl-token
+      readOnly: true
+    - mountPath: /workspace
+      name: workspace
+    - mountPath: /home/node/.claude-sandbox
+      name: agent-home
   restartPolicy: Never
   securityContext:
     fsGroup: 1000
@@ -72,3 +115,20 @@ spec:
       defaultMode: 292
       name: ppppppppppppppppppppppppppppppppppppppppppppppp-4405172c-config
     name: config
+  - name: sandboxctl-token
+    projected:
+      defaultMode: 292
+      sources:
+      - serviceAccountToken:
+          expirationSeconds: 3600
+          path: token
+      - configMap:
+          items:
+          - key: ca.crt
+            path: ca.crt
+          name: kube-root-ca.crt
+      - downwardAPI:
+          items:
+          - fieldRef:
+              fieldPath: metadata.namespace
+            path: namespace

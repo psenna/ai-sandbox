@@ -96,4 +96,83 @@ var _ = Describe("sandbox lifecycle", func() {
 			return h.getAgentPodOrNil(ctx, key) == nil
 		}, 15*time.Second, h.Cfg.Poll).Should(BeTrue(), "no agent pod should ever be created for an unimplemented engine")
 	})
+
+	// ---- #27: sandboxctl sidecar control API ----
+
+	It("records an agent-declared wait on status.waitFor and freezes", func() {
+		// Freezing -> Waiting requires ClusterFacts.SnapshotComplete, which
+		// is #28's to populate and is false today -- so the honest
+		// assertion here is Freezing plus a correctly-populated
+		// status.waitFor, NOT Waiting.
+		class := h.CreateClass(ctx)
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			"SCRIPT:sleep 2",
+			`SCRIPT:sandbox-wait {"type":"NotBefore","reason":"e2e wait","params":{"duration":"1h"}}`,
+			"SCRIPT:sleep 300",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseFreezing, h.Cfg.PhaseTimeout)
+
+		got := h.GetEnv(ctx, key)
+		Expect(got.Status.WaitFor).NotTo(BeNil(), "status.waitFor should be populated")
+		Expect(got.Status.WaitFor.Type).To(Equal("NotBefore"))
+		Expect(got.Status.WaitFor.Reason).To(Equal("e2e wait"))
+		Expect(got.Status.WaitFor.Params).To(HaveKeyWithValue("duration", "1h"))
+		Expect(got.Status.WaitFor.DeclaredAt).NotTo(BeNil())
+	})
+
+	It("rejects a non-allowlisted probe and leaves status.waitFor unset", func() {
+		class := h.CreateClass(ctx)
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			`SCRIPT:sandbox-wait-expect-fail {"type":"SolarEclipse","reason":"nope"}`,
+			`SCRIPT:sandbox-wait-expect-fail {"type":"HTTPGet","reason":"x","params":{"nope":"1"}}`,
+			"SCRIPT:sandbox-done success rejections-handled",
+			"SCRIPT:sleep 2",
+			"SCRIPT:exit 0",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+
+		Expect(h.GetEnv(ctx, key).Status.WaitFor).To(BeNil(), "a rejected probe must never land in status.waitFor")
+	})
+
+	It("reaches Done via /v1/done with no Kubernetes credential in the agent container", func() {
+		// The headline acceptance criterion, end to end: the agent
+		// container has no ServiceAccount token at all (automount is
+		// disabled at both SA and pod level, and the projected token
+		// volume is mounted into the sandboxctl container only), yet the
+		// environment still reaches Done purely through the sidecar's
+		// control API.
+		class := h.CreateClass(ctx)
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			"SCRIPT:require-file /etc/ai-sandbox/sandbox.json",
+			"SCRIPT:require-no-file /var/run/secrets/kubernetes.io/serviceaccount/token",
+			"SCRIPT:sandbox-progress starting",
+			"SCRIPT:sandbox-done success e2e-complete",
+			"SCRIPT:sleep 2",
+			"SCRIPT:exit 0",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+		h.ExpectCondition(ctx, key, "Ready", metav1.ConditionFalse, "AgentReportedSuccess")
+
+		got := h.GetEnv(ctx, key)
+		Expect(got.Status.AgentResult).NotTo(BeNil())
+		Expect(got.Status.AgentResult.Outcome).To(Equal(sandboxv1alpha1.AgentOutcomeSucceeded))
+		Expect(got.Status.AgentResult.Message).To(Equal("e2e-complete"))
+	})
+
+	It("does not expose the control API outside the pod", func() {
+		class := h.CreateClass(ctx)
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			"SCRIPT:sandbox-expect-loopback-only",
+			"SCRIPT:exit 0",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+	})
 })

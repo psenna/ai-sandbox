@@ -141,6 +141,7 @@ func newReconciler(t *testing.T, clk *fakeClock, fs *factsStore) *Reconciler {
 		Observe:              fs.observe,
 		ClassSecretNamespace: "default",
 		ClusterID:            "test",
+		SidecarImage:         "ai-sandbox-operator:test",
 	}
 	return r
 }
@@ -159,6 +160,7 @@ func newResourceReconciler(t *testing.T, clk *fakeClock) *Reconciler {
 		Clock:                clk.Now,
 		ClassSecretNamespace: "default",
 		ClusterID:            "test",
+		SidecarImage:         "ai-sandbox-operator:test",
 	}
 	r.Observe = r.observeCluster
 	return r

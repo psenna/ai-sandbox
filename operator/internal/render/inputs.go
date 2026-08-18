@@ -18,7 +18,7 @@ const (
 	ConfigMountPath    = "/etc/ai-sandbox"
 	TaskFileName       = "task.md"
 	RunConfigFileName  = "sandbox.json"
-	SidecarBaseURL     = "http://localhost:9099" // reserved for #27
+	SidecarBaseURL     = "http://localhost:9099" // sandboxctl's control API (#27); loopback-only
 
 	// FieldManager is the stable field manager name used for every
 	// server-side apply this operator performs.
@@ -33,7 +33,11 @@ type Credentials struct {
 	GitProxyToken string
 }
 
-// SkillFile is a reserved seam for #27's sidecar skill files. Empty today.
+// SkillFile is a reserved seam for future image-independent skill delivery
+// via the rendered ConfigMap. #27 delivers the use-sandbox skill through the
+// agent image's own entrypoint instead (mirroring how use-git-proxy and
+// use-docker are delivered), so nothing populates or reads this today; kept
+// as a documented, empty seam for a future issue that needs it.
 type SkillFile struct {
 	Name    string
 	Content string
@@ -47,6 +51,16 @@ type Inputs struct {
 	Credentials Credentials
 	ClusterID   string
 	Skills      []SkillFile
+
+	// SidecarImage is the container image for the always-present sandboxctl
+	// control-channel sidecar (#27). It is the OPERATOR's own image (the
+	// sandboxctl binary ships alongside the manager -- see
+	// operator/Dockerfile), supplied by internal/config's --sidecar-image
+	// flag, NOT taken from the SandboxClass: the sidecar is operator
+	// machinery, versioned with the operator, never with the workload. Only
+	// required by RenderPod, not by Render (validateInputs is shared by
+	// both and does not check it).
+	SidecarImage string
 }
 
 // Objects holds every rendered child object for one environment.
