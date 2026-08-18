@@ -11,12 +11,18 @@
 # header.
 #
 # extraPortMappings expose the in-cluster NodePort services (MinIO, the fake
-# git-proxy broker, the stub model endpoint) at fixed host ports so the
-# Ginkgo suite -- which, on a real GitHub Actions runner, is a plain host
-# process talking to 127.0.0.1, not a container on the kind docker network
-# -- can reach them without depending on the `<cluster>-control-plane`
-# container-name DNS trick this sandbox's own DinD nesting allows. See
-# E2E_HOST in hack/e2e-up.sh / harness.go's LoadConfig.
+# git-proxy broker, the stub model endpoint, the #28 s3proxy fault-injection
+# double) at fixed host ports so the Ginkgo suite -- which, on a real GitHub
+# Actions runner, is a plain host process talking to 127.0.0.1, not a
+# container on the kind docker network -- can reach them without depending
+# on the `<cluster>-control-plane` container-name DNS trick this sandbox's
+# own DinD nesting allows. See E2E_HOST in hack/e2e-up.sh / harness.go's
+# LoadConfig. 30903 (s3proxy) was missing here for a while: it is only
+# reachable from this sandbox's own dev/CI-repro loop via the
+# `<cluster>-control-plane` DNS route (E2E_HOST override), which never
+# exercises this extraPortMappings path at all -- so the gap went
+# undetected locally and only surfaced as a real GitHub Actions CI failure
+# ("connection refused" on 127.0.0.1:30903).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
@@ -34,4 +40,7 @@ nodes:
         protocol: TCP
       - containerPort: 30902
         hostPort: 30902
+        protocol: TCP
+      - containerPort: 30903
+        hostPort: 30903
         protocol: TCP
