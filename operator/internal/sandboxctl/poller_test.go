@@ -39,6 +39,12 @@ func (s *sequenceStore) DeclareWait(context.Context, WaitProbe, time.Time) error
 func (s *sequenceStore) ReportDone(context.Context, Result, time.Time) (bool, error) {
 	return false, nil
 }
+func (s *sequenceStore) RecordSnapshotAttempt(context.Context, SnapshotAttempt, time.Time) error {
+	return nil
+}
+func (s *sequenceStore) RecordSnapshot(context.Context, SnapshotRecord, time.Time) error {
+	return nil
+}
 
 type countingHook struct {
 	mu    sync.Mutex

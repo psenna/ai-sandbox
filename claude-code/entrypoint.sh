@@ -43,6 +43,12 @@ cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 mkdir -p /workspace/.claude/skills/use-sandbox
 cp /opt/skills/use-sandbox/SKILL.md /workspace/.claude/skills/use-sandbox/SKILL.md
 
+# freeze: what actually happens when the agent declares a wait (snapshot,
+# teardown, slot release) and what to check on resume -- same on-demand,
+# harmless-if-irrelevant rationale as use-sandbox above.
+mkdir -p /workspace/.claude/skills/freeze
+cp /opt/skills/freeze/SKILL.md /workspace/.claude/skills/freeze/SKILL.md
+
 # implement-issue: drive a GitHub issue from spec to merged PR with a tiered
 # model pipeline (Opus plans, Sonnet implements, Opus validates & fixes).
 mkdir -p /workspace/.claude/skills/implement-issue

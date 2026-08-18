@@ -117,6 +117,24 @@ func fullClass() *v1alpha1.SandboxClass {
 	return c
 }
 
+// pvcBackendClass mirrors minimalClass but with a PVC snapshot storage
+// backend, used to prove no S3/snapshot-credentials wiring is rendered for
+// a non-S3 backend (#28).
+func pvcBackendClass() *v1alpha1.SandboxClass {
+	return &v1alpha1.SandboxClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: v1alpha1.SandboxClassSpec{
+			Agent: v1alpha1.AgentSpec{Image: "ghcr.io/psenna/ai-sandbox-agent:v1"},
+			Storage: v1alpha1.StorageSpec{
+				Backend: v1alpha1.BackendSpec{
+					Type: v1alpha1.StorageBackendTypePVC,
+					PVC:  &v1alpha1.PVCBackend{ClaimName: "snapshots-pvc"},
+				},
+			},
+		},
+	}
+}
+
 // withEngine sets class.Spec.Engine.Type to t, returning class for chaining.
 func withEngine(class *v1alpha1.SandboxClass, t v1alpha1.EngineType) *v1alpha1.SandboxClass {
 	class.Spec.Engine.Type = t

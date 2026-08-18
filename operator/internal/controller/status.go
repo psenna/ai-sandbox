@@ -24,13 +24,29 @@ func (r *Reconciler) writeStatus(ctx context.Context, env *v1alpha1.SandboxEnvir
 	key := client.ObjectKeyFromObject(env)
 	decidedFrom := env.Status.Phase
 	decidedGen := env.Generation
+	// decidedWaitFor guards against a narrower race than Generation/Phase
+	// alone can catch: lifecycle.Next branches directly on
+	// env.Status.WaitFor (nextWaiting's WaitFor==nil -> Ready transition,
+	// nextRunning's WaitFor!=nil -> Freezing transition), and an external
+	// writer (e.g. a future wake API, or -- today -- a test harness driving
+	// the freeze/wake contract directly) can clear or set WaitFor without
+	// changing Phase at all (the phase the stale Decision computed happens
+	// to match the phase already on the server). Without this check, such
+	// a write is silently absorbed by the DeepEqual no-op below: fresh
+	// already reflects the external change, but desired.Phase is forced
+	// back to the stale Decision's phase, and since that matches fresh's
+	// current (also-stale) phase, nothing appears to differ and no write
+	// -- and so no further watch event -- is ever issued, leaving the
+	// object stuck with no other trigger to re-reconcile it.
+	decidedWaitFor := env.Status.WaitFor
 
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := &v1alpha1.SandboxEnvironment{}
 		if err := r.Get(ctx, key, fresh); err != nil {
 			return err
 		}
-		if fresh.Generation != decidedGen || fresh.Status.Phase != decidedFrom {
+		if fresh.Generation != decidedGen || fresh.Status.Phase != decidedFrom ||
+			!apiequality.Semantic.DeepEqual(fresh.Status.WaitFor, decidedWaitFor) {
 			return errStaleDecision
 		}
 		desired := lifecycle.Apply(fresh, d)

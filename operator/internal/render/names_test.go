@@ -10,7 +10,7 @@ import (
 var dns1123LabelRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 func TestChildName_LengthBoundaries(t *testing.T) {
-	suffixes := []string{SuffixWorkspace, SuffixServiceAccount, SuffixSecret, SuffixConfigMap, SuffixSidecarRBAC}
+	suffixes := []string{SuffixWorkspace, SuffixServiceAccount, SuffixSecret, SuffixConfigMap, SuffixSidecarRBAC, SuffixSnapshotSecret, SuffixSnapshotJob}
 	lengths := []int{62, 63, 64, 100, 253}
 
 	for _, suffix := range suffixes {
@@ -61,7 +61,7 @@ func TestChildNames_SixDistinctStrings(t *testing.T) {
 	for _, name := range cases {
 		t.Run(name[:min(20, len(name))], func(t *testing.T) {
 			n := ChildNames(name)
-			all := []string{n.PVC, n.ServiceAccount, n.Secret, n.ConfigMap, n.Role, n.RoleBinding}
+			all := []string{n.PVC, n.ServiceAccount, n.Secret, n.ConfigMap, n.Role, n.RoleBinding, n.SnapshotSecret, n.SnapshotJob}
 			seen := map[string]int{}
 			for _, s := range all {
 				seen[s]++
@@ -77,6 +77,8 @@ func TestChildNames_SixDistinctStrings(t *testing.T) {
 				"Secret":           n.Secret,
 				"ConfigMap":        n.ConfigMap,
 				"Role/RoleBinding": n.Role,
+				"SnapshotSecret":   n.SnapshotSecret,
+				"SnapshotJob":      n.SnapshotJob,
 			}
 			byValue := map[string][]string{}
 			for k, v := range distinctKinds {

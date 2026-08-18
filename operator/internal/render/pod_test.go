@@ -26,6 +26,50 @@ func TestRenderPod_NoneMinimal(t *testing.T) {
 	assertGoldenPod(t, "none-minimal", in)
 }
 
+// TestRenderPod_PVCBackendHasNoSnapshotWiring proves that a non-S3 storage
+// backend renders NO snapshot-credentials volume, NO snapshot-credentials
+// mount, and NO --s3-* flags -- only --snapshot-backend=pvc (which
+// snapshot.go's SnapshotHook fails closed on at freeze time, naming gap
+// G5).
+func TestRenderPod_PVCBackendHasNoSnapshotWiring(t *testing.T) {
+	class := withEngine(pvcBackendClass(), v1alpha1.EngineTypeNone)
+	in := Inputs{Env: baseEnv("pvc-minimal"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
+	assertGoldenPod(t, "pvc-minimal", in)
+
+	pod, err := RenderPod(in)
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.Name != nil && *v.Name == snapshotCredentialsVolumeName {
+			t.Errorf("pvc backend must not render a %q volume", snapshotCredentialsVolumeName)
+		}
+	}
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name == nil || *c.Name != SidecarContainerName {
+			continue
+		}
+		for _, m := range c.VolumeMounts {
+			if m.Name != nil && *m.Name == snapshotCredentialsVolumeName {
+				t.Errorf("pvc backend must not mount %q into the sidecar", snapshotCredentialsVolumeName)
+			}
+		}
+		for _, a := range c.Args {
+			if strings.HasPrefix(a, "--s3-") {
+				t.Errorf("pvc backend must not render an --s3-* flag, got %q", a)
+			}
+		}
+	}
+
+	objs, err := Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if objs.SnapshotSecret != nil {
+		t.Error("pvc backend must not render a SnapshotSecret")
+	}
+}
+
 func TestRenderPod_NoneFull(t *testing.T) {
 	class := withEngine(fullClass(), v1alpha1.EngineTypeNone)
 	in := Inputs{

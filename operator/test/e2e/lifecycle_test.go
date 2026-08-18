@@ -100,10 +100,16 @@ var _ = Describe("sandbox lifecycle", func() {
 	// ---- #27: sandboxctl sidecar control API ----
 
 	It("records an agent-declared wait on status.waitFor and freezes", func() {
-		// Freezing -> Waiting requires ClusterFacts.SnapshotComplete, which
-		// is #28's to populate and is false today -- so the honest
-		// assertion here is Freezing plus a correctly-populated
-		// status.waitFor, NOT Waiting.
+		// This spec only asserts the environment PASSES THROUGH Freezing
+		// with a correctly-populated status.waitFor -- it does not assert
+		// Freezing is where it stays. Since #28, a real snapshot completes
+		// and the environment proceeds on to Waiting; status.waitFor is
+		// never cleared by freezing itself (only nextWaiting's
+		// probe-satisfied branch clears it, and no probe evaluator exists
+		// yet -- #30), so the assertions below hold regardless of how far
+		// past Freezing the environment has already progressed by the time
+		// GetEnv runs. See freeze_test.go for the dedicated #28 snapshot
+		// verification specs.
 		class := h.CreateClass(ctx)
 		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
 			"SCRIPT:sleep 2",

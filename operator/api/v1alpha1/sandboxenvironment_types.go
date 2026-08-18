@@ -155,6 +155,16 @@ type SandboxEnvironmentStatus struct {
 	// +optional
 	Snapshot *SnapshotStatus `json:"snapshot,omitempty"`
 
+	// SnapshotAttempt records the freeze snapshot currently in flight, or
+	// the last one that failed. Written ONLY by the sandboxctl sidecar (or
+	// the recovery Job running the same binary). It is how the operator, and
+	// a human, distinguish "still retrying" from "permanently failed": on
+	// permanent failure the environment HOLDS in Freezing with
+	// Frozen=False/SnapshotFailed and the pod is never deleted, so the
+	// agent's context is never silently dropped.
+	// +optional
+	SnapshotAttempt *SnapshotAttemptStatus `json:"snapshotAttempt,omitempty"`
+
 	// QueuedSince is when the environment started waiting for a slot.
 	// +optional
 	QueuedSince *metav1.Time `json:"queuedSince,omitempty"`
@@ -319,6 +329,61 @@ type SnapshotStatus struct {
 	// TakenAt is when the snapshot was taken.
 	// +optional
 	TakenAt *metav1.Time `json:"takenAt,omitempty"`
+
+	// DurationMillis is how long the snapshot took, from the start of the
+	// freeze hook to the successful latest.json write. Milliseconds, not
+	// seconds: a small workspace snapshots in well under a second and a
+	// whole-second field would record a meaningless 0.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	DurationMillis int64 `json:"durationMillis,omitempty"`
+}
+
+// SnapshotAttemptPhase is the state of the freeze snapshot being attempted.
+// +kubebuilder:validation:Enum=InProgress;Succeeded;Failed
+type SnapshotAttemptPhase string
+
+const (
+	SnapshotAttemptInProgress SnapshotAttemptPhase = "InProgress"
+	SnapshotAttemptSucceeded  SnapshotAttemptPhase = "Succeeded"
+	SnapshotAttemptFailed     SnapshotAttemptPhase = "Failed"
+)
+
+// SnapshotAttemptStatus records one freeze's snapshot attempt.
+type SnapshotAttemptStatus struct {
+	// Seq is the snapshot sequence number this attempt is producing. It
+	// always equals status.freezeCount for the freeze in flight.
+	// +kubebuilder:validation:Minimum=0
+	Seq int32 `json:"seq"`
+
+	Phase SnapshotAttemptPhase `json:"phase"`
+
+	// Attempts is how many upload attempts have been made so far.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempts int32 `json:"attempts,omitempty"`
+
+	// Reason is a short, stable machine reason. See
+	// internal/sandboxctl/snapshot.go's SnapshotReason* constants.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is a human explanation. Never contains a credential -- see
+	// internal/storage/doc.go's no-logging rule and credentials.go's
+	// Secret redaction.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// StartedAt is when this attempt (this Seq) was first recorded.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// UpdatedAt is when this attempt was last patched (a retry, a phase
+	// change).
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true

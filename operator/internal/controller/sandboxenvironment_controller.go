@@ -12,6 +12,18 @@ package controller
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;patch;delete
+//
+// The batch/jobs marker lands with #28: freezePod creates a one-shot
+// snapshot Job when the pod that should have taken the snapshot is gone but
+// its workspace PVC survives, applied through the same applyOne/
+// server-side-apply helper every other child resource uses. patch (not
+// update) is what SSA's PATCH-verb apply actually needs -- including for
+// the FIRST apply that creates the object, there is no special case for
+// "doesn't exist yet" in the API server's RBAC check on an apply-patch
+// request. No update: the Job's spec is effectively immutable after
+// creation, so nothing in this codebase ever needs a plain update. delete
+// so a superseded recovery Job can be reclaimed.
 //
 // The sandboxenvironments{,/status} grants above are what makes it legal
 // under the RBAC escalation/bind check to create the per-environment Role
@@ -156,6 +168,13 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// RequeueAfter timer -- up to lifecycle.MaxRequeueAfter (5 minutes)
 		// late.
 		Owns(&corev1.Pod{}).
+		// Deliberately NOT .Owns(&batchv1.Job{}): the recovery snapshot Job's
+		// (#28) completion arrives as a status.snapshot patch on the
+		// SandboxEnvironment itself (written by the sandboxctl binary running
+		// inside the Job), which already triggers a reconcile through the
+		// primary watch above. A Job informer would cache every Job in the
+		// watch scope for no gain -- ensureSnapshotJob creates the Job once
+		// per freeze and never watches it back.
 		Named("sandboxenvironment").
 		Complete(r)
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -85,6 +86,7 @@ func TestSidecarServiceAccountAuthorization(t *testing.T) {
 		{"different env status patch", authorizationv1.ResourceAttributes{Namespace: otherEnv.Namespace, Verb: "patch", Group: "sandbox.psenna.dev", Resource: "sandboxenvironments", Subresource: "status", Name: otherEnv.Name}, false},
 		{"sandboxenvironments list, no name", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "list", Group: "sandbox.psenna.dev", Resource: "sandboxenvironments"}, false},
 		{"secrets get, own rendered secret", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "get", Group: "", Resource: "secrets", Name: names.Secret}, false},
+		{"secrets get, own rendered snapshot-credentials secret", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "get", Group: "", Resource: "secrets", Name: names.SnapshotSecret}, false},
 		{"secrets get, any secret", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "get", Group: "", Resource: "secrets"}, false},
 		{"secrets list", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "list", Group: "", Resource: "secrets"}, false},
 		{"pods create", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "create", Group: "", Resource: "pods"}, false},
@@ -217,6 +219,27 @@ func TestOperatorRBACIsSufficient(t *testing.T) {
 	modified.Status.ObservedGeneration = got.Generation
 	if err := imp.Status().Patch(ctx, modified, patch); err != nil {
 		t.Errorf("Status().Patch SandboxEnvironment under operator ClusterRole: %v", err)
+	}
+
+	// The batch/jobs marker (#28): freezePod's ensureSnapshotJob needs
+	// get/list/watch/create/delete on Job -- exercised here directly,
+	// exactly like the objs.All() loop above, so a missing/insufficient
+	// marker fails this test rather than being silently swallowed by
+	// applyOne's Forbidden-is-permanent handling.
+	job, err := render.RenderSnapshotJob(render.Inputs{Env: env, Class: class, ClusterID: "test", SidecarImage: "test-sidecar:test"})
+	if err != nil {
+		t.Fatalf("RenderSnapshotJob: %v", err)
+	}
+	if err := imp.Apply(ctx, job, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
+		t.Errorf("apply Job forbidden under operator ClusterRole: %v", err)
+	}
+	names := render.ChildNames(env.Name)
+	var gotJob batchv1.Job
+	if err := imp.Get(ctx, types.NamespacedName{Namespace: env.Namespace, Name: names.SnapshotJob}, &gotJob); err != nil {
+		t.Errorf("Get Job under operator ClusterRole: %v", err)
+	}
+	if err := imp.Delete(ctx, &gotJob); err != nil {
+		t.Errorf("Delete Job under operator ClusterRole: %v", err)
 	}
 }
 

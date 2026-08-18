@@ -14,6 +14,7 @@ import (
 	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +28,7 @@ import (
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
 
 var (
@@ -57,6 +59,7 @@ func TestMain(m *testing.M) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 	_ = rbacv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
 	_ = authorizationv1.AddToScheme(scheme)
 	_ = sandboxv1alpha1.AddToScheme(scheme)
 
@@ -190,11 +193,42 @@ func mustCreateSourceSecret(t *testing.T, ns, name, key, value string) *corev1.S
 	return secret
 }
 
+// mustCreateS3CredsSecret creates (or reuses) namespace ns, then creates a
+// Secret named name with FAKE, deliberately non-real S3 credentials, using
+// internal/storage's fixed data keys (#28's resolveCredentials reads these,
+// not CredentialsSecretRef.Key -- see storage/doc.go's gap G1). Every test
+// class in this suite references a Secret named "s3-creds" in "default"
+// (the reconciler's ClassSecretNamespace in these tests), so
+// mustCreateClass/mustCreateClassWithEngine/mustCreateClassWithGitProxy all
+// call this so resolveCredentials succeeds for their S3 backend.
+func mustCreateS3CredsSecret(t *testing.T, ns, name string) *corev1.Secret { //nolint:unparam // ns is always "default" today; kept as a parameter for the same reason mustCreateSourceSecret takes one
+	t.Helper()
+	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+	if err := k8s.Create(ctx, nsObj); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("creating namespace %s: %v", ns, err)
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Data: map[string][]byte{ //nolint:gosec // G101: deliberately fake test fixture values, not real credentials
+			storage.SecretKeyAccessKeyID:     []byte("fake-access-key-id"),
+			storage.SecretKeySecretAccessKey: []byte("fake-secret-access-key"),
+		},
+	}
+	if err := k8s.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("creating s3 creds secret %s/%s: %v", ns, name, err)
+	}
+	t.Cleanup(func() {
+		_ = k8s.Delete(ctx, secret)
+	})
+	return secret
+}
+
 // mustCreateClass creates a minimal valid SandboxClass named "default" with
 // default timeouts. SandboxClass is cluster-scoped, so name must be unique
 // per test; callers that need more than one class should build their own.
 func mustCreateClass(t *testing.T) *sandboxv1alpha1.SandboxClass {
 	t.Helper()
+	mustCreateS3CredsSecret(t, "default", "s3-creds")
 	class := &sandboxv1alpha1.SandboxClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: sandboxv1alpha1.SandboxClassSpec{
@@ -226,6 +260,7 @@ func mustCreateClass(t *testing.T) *sandboxv1alpha1.SandboxClass {
 // "default" with spec.engine.type set to engineType.
 func mustCreateClassWithEngine(t *testing.T, engineType sandboxv1alpha1.EngineType) *sandboxv1alpha1.SandboxClass {
 	t.Helper()
+	mustCreateS3CredsSecret(t, "default", "s3-creds")
 	class := &sandboxv1alpha1.SandboxClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: sandboxv1alpha1.SandboxClassSpec{
@@ -287,6 +322,7 @@ func mustSetPodStatus(t *testing.T, key types.NamespacedName, mutate func(*corev
 // in secretNamespace -- the class-referenced Secret D3 describes.
 func mustCreateClassWithGitProxy(t *testing.T, secretNamespace, secretName, key string) *sandboxv1alpha1.SandboxClass {
 	t.Helper()
+	mustCreateS3CredsSecret(t, "default", "s3-creds")
 	class := &sandboxv1alpha1.SandboxClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: sandboxv1alpha1.SandboxClassSpec{

@@ -35,10 +35,11 @@ import (
 // has an env var (E2E_*) with a sane default so `make e2e-run` works
 // out-of-the-box after `make e2e-up`; see LoadConfig.
 type Config struct {
-	Host       string
-	MinIOPort  int
-	BrokerPort int
-	ModelPort  int
+	Host        string
+	MinIOPort   int
+	BrokerPort  int
+	ModelPort   int
+	S3ProxyPort int
 
 	OperatorNamespace string
 	ServicesNamespace string
@@ -64,6 +65,7 @@ func LoadConfig() Config {
 		MinIOPort:         envOrInt("E2E_MINIO_PORT", 30900),
 		BrokerPort:        envOrInt("E2E_BROKER_PORT", 30901),
 		ModelPort:         envOrInt("E2E_MODEL_PORT", 30902),
+		S3ProxyPort:       envOrInt("E2E_S3PROXY_PORT", 30903),
 		OperatorNamespace: envOr("E2E_OPERATOR_NS", "ai-sandbox-operator-system"),
 		ServicesNamespace: envOr("E2E_SERVICES_NS", "ai-sandbox-e2e"),
 		AgentImage:        envOr("E2E_AGENT_IMAGE", "ai-sandbox-e2e-agent:test"),
@@ -202,6 +204,19 @@ func WithS3Backend(endpoint, bucket, secretName string) ClassOption {
 				Bucket:               bucket,
 				CredentialsSecretRef: sandboxv1alpha1.SecretKeyRef{Name: secretName, Key: "token"},
 			},
+		}
+	}
+}
+
+// WithS3Endpoint overrides the class's default in-cluster MinIO endpoint
+// (from CreateClass) with a different one -- used by freeze_test.go to
+// route S3 traffic through the s3proxy fault-injection double instead
+// (S3ProxyInClusterEndpoint) while leaving the bucket and credentials
+// Secret reference untouched.
+func WithS3Endpoint(endpoint string) ClassOption {
+	return func(c *sandboxv1alpha1.SandboxClass) {
+		if c.Spec.Storage.Backend.S3 != nil {
+			c.Spec.Storage.Backend.S3.Endpoint = endpoint
 		}
 	}
 }

@@ -31,6 +31,31 @@ var ErrResultAlreadyReported = errors.New("result already reported with a differ
 // latched freezing (see poller.go).
 var ErrFreezing = errors.New("environment is freezing")
 
+// ErrSnapshotSeqRegression is returned by RecordSnapshot when r.Seq is lower
+// than the sequence number already recorded in status.snapshot -- the
+// monotonicity acceptance criterion enforced structurally, not by
+// convention.
+var ErrSnapshotSeqRegression = errors.New("snapshot sequence number would regress")
+
+// SnapshotAttempt is the value form of a status.snapshotAttempt patch.
+type SnapshotAttempt struct {
+	Seq      int
+	Phase    v1alpha1.SnapshotAttemptPhase
+	Attempts int
+	Reason   string
+	Message  string
+}
+
+// SnapshotRecord is the value form of a status.snapshot patch.
+type SnapshotRecord struct {
+	Seq            int
+	URI            string
+	SizeBytes      int64
+	SHA256         string
+	TakenAt        time.Time
+	DurationMillis int64
+}
+
 // Result is the store's form of a /v1/done report.
 type Result struct {
 	Outcome  v1alpha1.AgentOutcome
@@ -49,7 +74,10 @@ type Snapshot struct {
 	Result      *v1alpha1.AgentResultStatus
 	FreezeCount int32
 	WakeCount   int32
-	ObservedAt  time.Time
+	// Generation is env.Generation, populated by Refresh, for
+	// storage.Manifest.Source.Generation.
+	Generation int64
+	ObservedAt time.Time
 	// Fresh is true once at least one poll has succeeded.
 	Fresh bool
 }
@@ -70,6 +98,13 @@ type Store interface {
 	// an IDENTICAL result was already reported (no patch issued, not an
 	// error); a DIFFERING repeat returns ErrResultAlreadyReported.
 	ReportDone(ctx context.Context, r Result, at time.Time) (idempotent bool, err error)
+	// RecordSnapshotAttempt patches status.snapshotAttempt. Idempotent.
+	RecordSnapshotAttempt(ctx context.Context, a SnapshotAttempt, at time.Time) error
+	// RecordSnapshot patches status.snapshot AND flips status.snapshotAttempt
+	// to Succeeded in the SAME patch, so the two can never disagree. REFUSES
+	// a lower sequence number than the one already recorded
+	// (ErrSnapshotSeqRegression).
+	RecordSnapshot(ctx context.Context, r SnapshotRecord, at time.Time) error
 }
 
 // envStore is the real Store, backed by a direct (uncached) client.Client
@@ -123,10 +158,64 @@ func (s *envStore) Refresh(ctx context.Context) error {
 		Result:      env.Status.AgentResult,
 		FreezeCount: env.Status.FreezeCount,
 		WakeCount:   env.Status.WakeCount,
+		Generation:  env.Generation,
 		ObservedAt:  time.Now(),
 		Fresh:       true,
 	})
 	return nil
+}
+
+// RecordSnapshotAttempt patches status.snapshotAttempt.
+func (s *envStore) RecordSnapshotAttempt(ctx context.Context, a SnapshotAttempt, at time.Time) error {
+	ts := metav1.NewTime(at)
+	return s.patchStatus(ctx, func(env *v1alpha1.SandboxEnvironment) error {
+		started := &ts
+		if existing := env.Status.SnapshotAttempt; existing != nil && int(existing.Seq) == a.Seq && existing.StartedAt != nil {
+			started = existing.StartedAt
+		}
+		env.Status.SnapshotAttempt = &v1alpha1.SnapshotAttemptStatus{
+			Seq:       int32(a.Seq), //nolint:gosec // G115: seq is an internal, small, monotonically increasing counter
+			Phase:     a.Phase,
+			Attempts:  int32(a.Attempts), //nolint:gosec // G115: bounded retry counter
+			Reason:    a.Reason,
+			Message:   a.Message,
+			StartedAt: started,
+			UpdatedAt: &ts,
+		}
+		return nil
+	})
+}
+
+// RecordSnapshot patches status.snapshot and flips status.snapshotAttempt to
+// Succeeded in the same patch. Refuses a regression against the currently
+// recorded status.snapshot.Seq.
+func (s *envStore) RecordSnapshot(ctx context.Context, r SnapshotRecord, at time.Time) error {
+	takenAt := metav1.NewTime(r.TakenAt)
+	ts := metav1.NewTime(at)
+	return s.patchStatus(ctx, func(env *v1alpha1.SandboxEnvironment) error {
+		if existing := env.Status.Snapshot; existing != nil && int(existing.Seq) > r.Seq {
+			return ErrSnapshotSeqRegression
+		}
+		env.Status.Snapshot = &v1alpha1.SnapshotStatus{
+			Seq:            int32(r.Seq), //nolint:gosec // G115: seq is an internal, small, monotonically increasing counter
+			URI:            r.URI,
+			SizeBytes:      r.SizeBytes,
+			SHA256:         r.SHA256,
+			TakenAt:        &takenAt,
+			DurationMillis: r.DurationMillis,
+		}
+		var startedAt *metav1.Time
+		if existing := env.Status.SnapshotAttempt; existing != nil {
+			startedAt = existing.StartedAt
+		}
+		env.Status.SnapshotAttempt = &v1alpha1.SnapshotAttemptStatus{
+			Seq:       int32(r.Seq), //nolint:gosec // G115: seq is an internal, small, monotonically increasing counter
+			Phase:     v1alpha1.SnapshotAttemptSucceeded,
+			StartedAt: startedAt,
+			UpdatedAt: &ts,
+		}
+		return nil
+	})
 }
 
 // DeclareWait refuses if status.waitFor is already non-nil (ErrWaitAlreadyDeclared),

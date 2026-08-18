@@ -13,6 +13,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
+	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
 
 // fieldManager is the stable field manager name used for every server-side
@@ -25,28 +26,55 @@ const fieldManager = render.FieldManager
 // valid configuration, not a problem. Any returned error names
 // namespace/name/key only -- NEVER a value, so it is always safe to surface
 // verbatim in a condition message or a log line.
+//
+// It also resolves the S3 snapshot credentials (storage/doc.go's gap G1):
+// CredentialsSecretRef is a single-key SecretKeyRef, but S3 needs two or
+// three values, so .Key is IGNORED for S3 and the FIXED data keys
+// internal/storage exports are read instead. A class declaring
+// backend.type: s3 whose credentials Secret is missing or malformed is a
+// REAL error here (unlike the gitProxy case above) -- it blocks the
+// environment at Pending with a clear ResourcesProblem instead of silently
+// proceeding toward a freeze that could never work.
 func (r *Reconciler) resolveCredentials(ctx context.Context, class *v1alpha1.SandboxClass) (render.Credentials, error) {
-	gp := class.Spec.Services.GitProxy
-	if gp == nil {
-		return render.Credentials{}, nil
+	var creds render.Credentials
+
+	if gp := class.Spec.Services.GitProxy; gp != nil {
+		key := gp.TokenSecretRef.Key
+		if key == "" {
+			key = "token" // matches SecretKeyRef's CRD default
+		}
+
+		var secret corev1.Secret
+		if err := r.Get(ctx, client.ObjectKey{Namespace: r.ClassSecretNamespace, Name: gp.TokenSecretRef.Name}, &secret); err != nil {
+			return render.Credentials{}, fmt.Errorf("reading class-referenced secret %s/%s (key %q): %w", r.ClassSecretNamespace, gp.TokenSecretRef.Name, key, err)
+		}
+
+		val, ok := secret.Data[key]
+		if !ok || len(val) == 0 {
+			return render.Credentials{}, fmt.Errorf("secret %s/%s has no non-empty key %q", r.ClassSecretNamespace, gp.TokenSecretRef.Name, key)
+		}
+
+		creds.GitProxyToken = string(val)
 	}
 
-	key := gp.TokenSecretRef.Key
-	if key == "" {
-		key = "token" // matches SecretKeyRef's CRD default
+	if b := class.Spec.Storage.Backend; b.Type == v1alpha1.StorageBackendTypeS3 && b.S3 != nil {
+		var sec corev1.Secret
+		ref := b.S3.CredentialsSecretRef
+		if err := r.Get(ctx, client.ObjectKey{Namespace: r.ClassSecretNamespace, Name: ref.Name}, &sec); err != nil {
+			return render.Credentials{}, fmt.Errorf("reading class-referenced s3 credentials secret %s/%s: %w", r.ClassSecretNamespace, ref.Name, err)
+		}
+		ak := sec.Data[storage.SecretKeyAccessKeyID]
+		sk := sec.Data[storage.SecretKeySecretAccessKey]
+		if len(ak) == 0 || len(sk) == 0 {
+			return render.Credentials{}, fmt.Errorf("secret %s/%s must have non-empty keys %q and %q",
+				r.ClassSecretNamespace, ref.Name, storage.SecretKeyAccessKeyID, storage.SecretKeySecretAccessKey)
+		}
+		creds.SnapshotAccessKeyID = string(ak)
+		creds.SnapshotSecretAccessKey = string(sk)
+		creds.SnapshotSessionToken = string(sec.Data[storage.SecretKeySessionToken]) // optional
 	}
 
-	var secret corev1.Secret
-	if err := r.Get(ctx, client.ObjectKey{Namespace: r.ClassSecretNamespace, Name: gp.TokenSecretRef.Name}, &secret); err != nil {
-		return render.Credentials{}, fmt.Errorf("reading class-referenced secret %s/%s (key %q): %w", r.ClassSecretNamespace, gp.TokenSecretRef.Name, key, err)
-	}
-
-	val, ok := secret.Data[key]
-	if !ok || len(val) == 0 {
-		return render.Credentials{}, fmt.Errorf("secret %s/%s has no non-empty key %q", r.ClassSecretNamespace, gp.TokenSecretRef.Name, key)
-	}
-
-	return render.Credentials{GitProxyToken: string(val)}, nil
+	return creds, nil
 }
 
 // renderFor resolves credentials and renders every child object for env
@@ -59,11 +87,16 @@ func (r *Reconciler) renderFor(ctx context.Context, env *v1alpha1.SandboxEnviron
 	if err != nil {
 		return render.Objects{}, err
 	}
+	specHash, err := storage.SpecHash(&class.Spec, &env.Spec)
+	if err != nil {
+		return render.Objects{}, fmt.Errorf("computing spec hash: %w", err)
+	}
 	return render.Render(render.Inputs{
 		Env:         env,
 		Class:       class,
 		Credentials: creds,
 		ClusterID:   r.ClusterID,
+		SpecHash:    specHash,
 	})
 }
 
@@ -106,6 +139,11 @@ func (r *Reconciler) ensureResources(ctx context.Context, env *v1alpha1.SandboxE
 	}
 	if err := r.applyOne(ctx, env, "Secret", client.ObjectKey{Namespace: env.Namespace, Name: names.Secret}, &corev1.Secret{}, objs.Secret); err != nil {
 		return err
+	}
+	if objs.SnapshotSecret != nil {
+		if err := r.applyOne(ctx, env, "Secret", client.ObjectKey{Namespace: env.Namespace, Name: names.SnapshotSecret}, &corev1.Secret{}, objs.SnapshotSecret); err != nil {
+			return err
+		}
 	}
 	return nil
 }

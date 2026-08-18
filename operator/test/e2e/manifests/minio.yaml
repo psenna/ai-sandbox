@@ -2,14 +2,16 @@
 # storage.backend.s3 (test/e2e/harness.go's WithS3Backend / CreateClass
 # default) and by test/e2e/s3.go's SDK-free reader/writer.
 #
-# Note: nothing in the operator itself reads storage.backend.s3's
-# credentialsSecretRef yet (freeze/wake/snapshot land in #28/#29, out of
-# scope for #22 -- see the epic's non-goals). The minio-creds Secret below
-# exists so a SandboxClass can reference *something* shaped like the CRD
-# expects (SecretKeyRef defaults Key to "token"), and so the bootstrap Job
-# below can authenticate `mc` to MinIO. The e2e suite's own S3 reads/writes
-# never use these credentials at all -- see minio-bootstrap's `mc anonymous
-# set download/public`, which makes plain unsigned GETs/ListObjectsV2 work.
+# #28 lands the operator's real resolveCredentials read of
+# storage.backend.s3.credentialsSecretRef (internal/storage's fixed data
+# keys accessKeyID/secretAccessKey/sessionToken, resolved from
+# r.ClassSecretNamespace -- the OPERATOR's own namespace, NOT this e2e
+# services namespace). So minio-creds now needs to exist in BOTH places:
+# here (ai-sandbox-e2e), used by minio-bootstrap and any Secret a class in
+# THIS namespace might reference, and a SECOND copy in
+# ai-sandbox-operator-system below, which is what every e2e SandboxClass's
+# credentialsSecretRef actually resolves against once #28 is live. Before
+# #28 this credential was unread; it is now load-bearing.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -27,9 +29,35 @@ stringData:
   accessKeyID: e2e-minio-user
   secretAccessKey: e2e-minio-password
   # SecretKeyRef.Key defaults to "token" (api/v1alpha1/sandboxenvironment_types.go);
-  # not read by the operator today (see header comment), provided only so a
-  # class's s3.credentialsSecretRef resolves to a real key.
+  # not read by the operator's S3 credential resolution (which uses fixed
+  # keys, see the header comment), provided only so a class's
+  # s3.credentialsSecretRef resolves to a real key for callers that DO read
+  # .Key (e.g. services.gitProxy.tokenSecretRef fixtures reusing this Secret).
   token: e2e-minio-password
+---
+# The operator's OWN namespace copy: resolveCredentials (#28) reads
+# S3Backend.CredentialsSecretRef.Name from r.ClassSecretNamespace, which the
+# e2e overlay defaults to "ai-sandbox-operator-system" (config/default's
+# namespace; internal/config's classSecretNamespaceDefault falls back to
+# POD_NAMESPACE, set by config/manager/manager.yaml's downward API). Same
+# values as the e2e-namespace copy above, kept in sync by hand (this file is
+# static test fixture data, not templated).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-sandbox-operator-system
+  labels:
+    app.kubernetes.io/part-of: ai-sandbox-e2e
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-creds
+  namespace: ai-sandbox-operator-system
+type: Opaque
+stringData:
+  accessKeyID: e2e-minio-user
+  secretAccessKey: e2e-minio-password
 ---
 apiVersion: apps/v1
 kind: Deployment

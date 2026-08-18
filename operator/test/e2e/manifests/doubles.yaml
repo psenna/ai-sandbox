@@ -1,9 +1,11 @@
-# platform-doubles: the fake git-proxy broker + stub model endpoint
-# (test/e2e/doubles), run as two containers in one pod (one image, one
-# build, one `kind load`). Neither is consumed by the operator today (see
-# #22's non-goals) -- they exist as controllable HTTP fixtures for this
-# suite's doubles_test.go and for later issues (#30 wait-probes, agent
-# PR/issue workflows) to build on.
+# platform-doubles: the fake git-proxy broker + stub model endpoint + (#28)
+# s3proxy fault-injection reverse proxy (test/e2e/doubles), run as three
+# containers in one pod (one image, one build, one `kind load`). The broker
+# and model doubles are not consumed by the operator today (see #22's
+# non-goals) -- they exist as controllable HTTP fixtures for this suite's
+# doubles_test.go and for later issues (#30 wait-probes, agent PR/issue
+# workflows) to build on. s3proxy IS consumed today by freeze_test.go's
+# backend-outage spec.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,6 +53,22 @@ spec:
               port: 8081
             periodSeconds: 2
             failureThreshold: 30
+        - name: s3proxy
+          image: ai-sandbox-e2e-doubles:test
+          imagePullPolicy: IfNotPresent
+          args: ["s3proxy"]
+          env:
+            - name: S3_UPSTREAM
+              value: http://minio.ai-sandbox-e2e.svc.cluster.local:9000
+          ports:
+            - name: s3proxy
+              containerPort: 8082
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            periodSeconds: 2
+            failureThreshold: 30
 ---
 apiVersion: v1
 kind: Service
@@ -70,6 +88,10 @@ spec:
       port: 8081
       targetPort: 8081
       nodePort: 30902
+    - name: s3proxy
+      port: 8082
+      targetPort: 8082
+      nodePort: 30903
 ---
 # The only secret the controller actually reads for
 # services.gitProxy.tokenSecretRef (internal/controller/resources.go's

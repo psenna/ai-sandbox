@@ -199,6 +199,21 @@ func TestEnvImmutability(t *testing.T) {
 	})
 }
 
+// assertSnapshotStatus checks status.snapshot and status.snapshotAttempt
+// against the fixed values TestEnvStatusSubresource wrote. Factored out to
+// keep that test's own cyclomatic complexity under gocyclo's threshold.
+func assertSnapshotStatus(t *testing.T, status sandboxv1alpha1.SandboxEnvironmentStatus, wantSHA256 string) {
+	t.Helper()
+	if status.Snapshot == nil || status.Snapshot.Seq != 3 || status.Snapshot.SHA256 != wantSHA256 ||
+		status.Snapshot.SizeBytes != 123456 || status.Snapshot.TakenAt == nil || status.Snapshot.DurationMillis != 4200 {
+		t.Errorf("Status.Snapshot = %+v", status.Snapshot)
+	}
+	if status.SnapshotAttempt == nil || status.SnapshotAttempt.Seq != 3 ||
+		status.SnapshotAttempt.Phase != sandboxv1alpha1.SnapshotAttemptInProgress || status.SnapshotAttempt.Attempts != 2 {
+		t.Errorf("Status.SnapshotAttempt = %+v", status.SnapshotAttempt)
+	}
+}
+
 func TestEnvStatusSubresource(t *testing.T) {
 	obj := validEnv("status-env")
 	if err := k8s.Create(ctx, obj); err != nil {
@@ -237,11 +252,19 @@ func TestEnvStatusSubresource(t *testing.T) {
 			Params: map[string]string{"pr": "42"},
 		},
 		Snapshot: &sandboxv1alpha1.SnapshotStatus{
-			Seq:       3,
-			URI:       "s3://sandbox-snapshots/prod/status-env/3",
-			SizeBytes: 123456,
-			SHA256:    sha256,
-			TakenAt:   &takenAt,
+			Seq:            3,
+			URI:            "s3://sandbox-snapshots/prod/status-env/3",
+			SizeBytes:      123456,
+			SHA256:         sha256,
+			TakenAt:        &takenAt,
+			DurationMillis: 4200,
+		},
+		SnapshotAttempt: &sandboxv1alpha1.SnapshotAttemptStatus{
+			Seq:      3,
+			Phase:    sandboxv1alpha1.SnapshotAttemptInProgress,
+			Attempts: 2,
+			Reason:   "BackendUnreachable",
+			Message:  "retrying after a transient S3 5xx",
 		},
 		FreezeCount:        2,
 		WakeCount:          1,
@@ -273,10 +296,7 @@ func TestEnvStatusSubresource(t *testing.T) {
 	if final.Status.WaitFor == nil || final.Status.WaitFor.Type != "NotBefore" || final.Status.WaitFor.Params["pr"] != "42" {
 		t.Errorf("Status.WaitFor = %+v", final.Status.WaitFor)
 	}
-	if final.Status.Snapshot == nil || final.Status.Snapshot.Seq != 3 || final.Status.Snapshot.SHA256 != sha256 ||
-		final.Status.Snapshot.SizeBytes != 123456 || final.Status.Snapshot.TakenAt == nil {
-		t.Errorf("Status.Snapshot = %+v", final.Status.Snapshot)
-	}
+	assertSnapshotStatus(t, final.Status, sha256)
 	if final.Status.FreezeCount != 2 || final.Status.WakeCount != 1 {
 		t.Errorf("FreezeCount/WakeCount = %d/%d, want 2/1", final.Status.FreezeCount, final.Status.WakeCount)
 	}
@@ -308,6 +328,27 @@ func TestEnvStatusSubresource(t *testing.T) {
 				name: "bad-snapshot-sha256",
 				mutate: func(s *sandboxv1alpha1.SandboxEnvironmentStatus) {
 					s.Snapshot = &sandboxv1alpha1.SnapshotStatus{Seq: 1, SHA256: "not-hex"}
+				},
+			},
+			{
+				name: "bad-snapshot-attempt-phase-enum",
+				mutate: func(s *sandboxv1alpha1.SandboxEnvironmentStatus) {
+					s.SnapshotAttempt = &sandboxv1alpha1.SnapshotAttemptStatus{Seq: 1, Phase: "Retrying"}
+				},
+			},
+			{
+				name: "snapshot-attempt-message-too-long",
+				mutate: func(s *sandboxv1alpha1.SandboxEnvironmentStatus) {
+					s.SnapshotAttempt = &sandboxv1alpha1.SnapshotAttemptStatus{
+						Seq: 1, Phase: sandboxv1alpha1.SnapshotAttemptFailed,
+						Message: strings.Repeat("x", 513),
+					}
+				},
+			},
+			{
+				name: "snapshot-attempt-negative-seq",
+				mutate: func(s *sandboxv1alpha1.SandboxEnvironmentStatus) {
+					s.SnapshotAttempt = &sandboxv1alpha1.SnapshotAttemptStatus{Seq: -1, Phase: sandboxv1alpha1.SnapshotAttemptInProgress}
 				},
 			},
 		}

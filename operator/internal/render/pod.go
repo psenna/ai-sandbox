@@ -7,6 +7,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	acorev1 "k8s.io/client-go/applyconfigurations/core/v1"
+
+	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
 
 const (
@@ -52,16 +54,46 @@ const (
 	agentHomeVolumeName = "agent-home"
 	configVolumeName    = "config"
 
+	// snapshotCredentialsVolumeName is the projected S3 snapshot-credentials
+	// Secret (#28, snapshotsecret.go), mounted into the sandboxctl container
+	// ONLY, never the agent container -- resolving storage/doc.go's gap G1
+	// without granting the sidecar's ServiceAccount any new RBAC (see
+	// rbac.go's renderRole doc comment).
+	snapshotCredentialsVolumeName = "snapshot-credentials"
+	// SnapshotCredentialsMountPath matches sandboxctl's
+	// defaultSnapshotCredentialsDir and the --snapshot-credentials-dir flag
+	// default (internal/sandboxctl/snapshotconfig.go) -- kept in sync by
+	// convention/tests, not by import: render must stay free of
+	// internal/sandboxctl (which pulls in controller-runtime and the AWS
+	// SDK transitively via internal/storage).
+	SnapshotCredentialsMountPath = "/var/run/secrets/ai-sandbox/snapshot" //nolint:gosec // G101: a mount PATH, not a credential value
+
+	// defaultQuiesceDelayFlag/defaultSnapshotRetriesFlag/
+	// defaultSnapshotStepTimeoutFlag mirror sandboxctl's own SnapshotConfig
+	// defaults (snapshotconfig.go). Emitted
+	// explicitly on the sidecar's args (rather than left to sandboxctl's
+	// own flag default) so the full freeze configuration is visible and
+	// reviewable in the rendered/golden pod, per this issue's RBAC-gap
+	// resolution: "no new sidecar RBAC, everything projected via CLI
+	// flags."
+	defaultQuiesceDelayFlag        = "2s"
+	defaultSnapshotRetriesFlag     = "4"
+	defaultSnapshotStepTimeoutFlag = "2m"
+
 	// DefaultTerminationGracePeriodSeconds is how long the kubelet waits
 	// between SIGTERM and SIGKILL on the agent pod. It must be long enough
-	// for #28's sidecar to quiesce the agent, tar+zstd /workspace and the
-	// agent home, and upload the result. #28 does not exist yet, so no
-	// snapshot has been measured: 120s is a documented, conservative
-	// ballpark for a moderate workspace over a cluster-local S3 endpoint --
-	// deliberately NOT a SandboxClass field, since there is no evidence
-	// behind any specific value yet. When #28 can measure a real snapshot
-	// it either confirms this constant or justifies making it configurable
-	// with real data behind the change.
+	// for the sidecar to quiesce the agent, tar+zstd /workspace and the
+	// agent home, and upload the result. What actually BOUNDS a
+	// SIGTERM-path snapshot inside this window is the sidecar's own
+	// ShutdownTimeout (internal/sandboxctl/config.go, default 100s,
+	// enforced <=110s by Validate): run.go wraps poll.LatchFreezing in a
+	// context bounded by ShutdownTimeout, so a snapshot that would overrun
+	// it is aborted by context cancellation (leaving no manifest, and
+	// therefore no snapshot a restore would ever accept) well before the
+	// kubelet's SIGKILL at 120s. 120s itself remains a documented,
+	// conservative ballpark for a moderate workspace over a cluster-local
+	// S3 endpoint -- deliberately NOT a SandboxClass field, since there is
+	// no evidence yet justifying a configurable value.
 	DefaultTerminationGracePeriodSeconds int64 = 120
 
 	agentUID int64 = 1000 // node:22-alpine's built-in `node` user
@@ -137,7 +169,7 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 			WithAutomountServiceAccountToken(false).
 			WithTerminationGracePeriodSeconds(DefaultTerminationGracePeriodSeconds).
 			WithSecurityContext(podSecurityContext()).
-			WithVolumes(append(podVolumes(names), contribution.Volumes...)...).
+			WithVolumes(append(podVolumes(in, names), contribution.Volumes...)...).
 			WithInitContainers(initContainers...).
 			WithContainers(containers...))
 
@@ -186,39 +218,69 @@ func podSecurityContext() *acorev1.PodSecurityContextApplyConfiguration {
 		WithSeccompProfile(acorev1.SeccompProfile().WithType(corev1.SeccompProfileTypeRuntimeDefault))
 }
 
-func podVolumes(names Names) []*acorev1.VolumeApplyConfiguration {
-	return []*acorev1.VolumeApplyConfiguration{
+// sidecarTokenVolume builds the projected ServiceAccount token volume,
+// reproducing what the kubelet's own automount would have provided, at the
+// standard in-cluster credential path so rest.InClusterConfig() works
+// unmodified. Factored out of podVolumes so RenderSnapshotJob
+// (snapshotjob.go) can build the IDENTICAL volume without the two
+// definitions drifting -- the recovery Job runs the same sandboxctl binary
+// and needs the same in-cluster client.
+func sidecarTokenVolume() *acorev1.VolumeApplyConfiguration {
+	return acorev1.Volume().WithName(sidecarTokenVolumeName).
+		WithProjected(acorev1.ProjectedVolumeSource().
+			WithDefaultMode(0o444).
+			WithSources(
+				acorev1.VolumeProjection().WithServiceAccountToken(
+					acorev1.ServiceAccountTokenProjection().
+						WithPath("token").
+						WithExpirationSeconds(sidecarTokenExpirationSeconds)),
+				acorev1.VolumeProjection().WithConfigMap(
+					acorev1.ConfigMapProjection().
+						WithName(rootCAConfigMapName).
+						WithItems(acorev1.KeyToPath().WithKey("ca.crt").WithPath("ca.crt"))),
+				acorev1.VolumeProjection().WithDownwardAPI(
+					acorev1.DownwardAPIProjection().WithItems(
+						acorev1.DownwardAPIVolumeFile().
+							WithPath("namespace").
+							WithFieldRef(acorev1.ObjectFieldSelector().WithFieldPath("metadata.namespace")))),
+			))
+}
+
+// snapshotCredentialsVolume builds the projected snapshot-credentials
+// Secret volume (#28), mounted into the sandboxctl container ONLY. Shared
+// by RenderPod and RenderSnapshotJob so the two definitions cannot drift.
+func snapshotCredentialsVolume(names Names) *acorev1.VolumeApplyConfiguration {
+	return acorev1.Volume().WithName(snapshotCredentialsVolumeName).
+		WithSecret(acorev1.SecretVolumeSource().
+			WithSecretName(names.SnapshotSecret).
+			WithDefaultMode(0o400).
+			WithOptional(false))
+}
+
+func podVolumes(in Inputs, names Names) []*acorev1.VolumeApplyConfiguration {
+	vols := []*acorev1.VolumeApplyConfiguration{
 		acorev1.Volume().WithName(workspaceVolumeName).
 			WithPersistentVolumeClaim(acorev1.PersistentVolumeClaimVolumeSource().WithClaimName(names.PVC)),
 		acorev1.Volume().WithName(agentHomeVolumeName).
 			WithEmptyDir(acorev1.EmptyDirVolumeSource()),
 		acorev1.Volume().WithName(configVolumeName).
 			WithConfigMap(acorev1.ConfigMapVolumeSource().WithName(names.ConfigMap).WithDefaultMode(0o444)),
-		// sidecarTokenVolumeName: a projected ServiceAccount token, reproducing
-		// what the kubelet's own automount would have provided, mounted into
-		// the sandboxctl container ONLY (never the agent container) at the
-		// standard in-cluster credential path so rest.InClusterConfig() works
-		// unmodified. automountServiceAccountToken is false at both the SA
-		// (renderServiceAccount) and pod (RenderPod) level.
-		acorev1.Volume().WithName(sidecarTokenVolumeName).
-			WithProjected(acorev1.ProjectedVolumeSource().
-				WithDefaultMode(0o444).
-				WithSources(
-					acorev1.VolumeProjection().WithServiceAccountToken(
-						acorev1.ServiceAccountTokenProjection().
-							WithPath("token").
-							WithExpirationSeconds(sidecarTokenExpirationSeconds)),
-					acorev1.VolumeProjection().WithConfigMap(
-						acorev1.ConfigMapProjection().
-							WithName(rootCAConfigMapName).
-							WithItems(acorev1.KeyToPath().WithKey("ca.crt").WithPath("ca.crt"))),
-					acorev1.VolumeProjection().WithDownwardAPI(
-						acorev1.DownwardAPIProjection().WithItems(
-							acorev1.DownwardAPIVolumeFile().
-								WithPath("namespace").
-								WithFieldRef(acorev1.ObjectFieldSelector().WithFieldPath("metadata.namespace")))),
-				)),
+		// sidecarTokenVolumeName: mounted into the sandboxctl container ONLY
+		// (never the agent container). automountServiceAccountToken is false
+		// at both the SA (renderServiceAccount) and pod (RenderPod) level.
+		sidecarTokenVolume(),
 	}
+	if isS3Backend(in) {
+		vols = append(vols, snapshotCredentialsVolume(names))
+	}
+	return vols
+}
+
+// isS3Backend reports whether in.Class configures an S3 snapshot storage
+// backend.
+func isS3Backend(in Inputs) bool {
+	b := in.Class.Spec.Storage.Backend
+	return b.Type == v1alpha1.StorageBackendTypeS3 && b.S3 != nil
 }
 
 func agentContainer(in Inputs, names Names) *acorev1.ContainerApplyConfiguration {
@@ -288,6 +350,24 @@ func agentSecurityContext() *acorev1.SecurityContextApplyConfiguration {
 //     documented `curl http://localhost:9099/...` interface the epic and
 //     the use-sandbox skill specify.
 func sidecarContainer(in Inputs, names Names) *acorev1.ContainerApplyConfiguration {
+	args := append([]string{
+		"serve",
+		"--environment=" + in.Env.Name,
+		"--namespace=" + in.Env.Namespace,
+		fmt.Sprintf("--listen=127.0.0.1:%d", SidecarPort),
+	}, sidecarSnapshotArgs(in)...)
+
+	mounts := []*acorev1.VolumeMountApplyConfiguration{
+		acorev1.VolumeMount().WithName(sidecarTokenVolumeName).
+			WithMountPath(SidecarTokenMountPath).WithReadOnly(true),
+		acorev1.VolumeMount().WithName(workspaceVolumeName).WithMountPath(WorkspaceMountPath),
+		acorev1.VolumeMount().WithName(agentHomeVolumeName).WithMountPath(AgentHomePath),
+	}
+	if isS3Backend(in) {
+		mounts = append(mounts, acorev1.VolumeMount().WithName(snapshotCredentialsVolumeName).
+			WithMountPath(SnapshotCredentialsMountPath).WithReadOnly(true))
+	}
+
 	return acorev1.Container().
 		WithName(SidecarContainerName).
 		WithImage(in.SidecarImage).
@@ -299,18 +379,8 @@ func sidecarContainer(in Inputs, names Names) *acorev1.ContainerApplyConfigurati
 		// image's own entrypoint doing its setup work; it does not apply
 		// to this container).
 		WithCommand(SidecarBinaryPath).
-		WithArgs(
-			"serve",
-			"--environment="+in.Env.Name,
-			"--namespace="+in.Env.Namespace,
-			fmt.Sprintf("--listen=127.0.0.1:%d", SidecarPort),
-		).
-		WithVolumeMounts(
-			acorev1.VolumeMount().WithName(sidecarTokenVolumeName).
-				WithMountPath(SidecarTokenMountPath).WithReadOnly(true),
-			acorev1.VolumeMount().WithName(workspaceVolumeName).WithMountPath(WorkspaceMountPath),
-			acorev1.VolumeMount().WithName(agentHomeVolumeName).WithMountPath(AgentHomePath),
-		).
+		WithArgs(args...).
+		WithVolumeMounts(mounts...).
 		WithStartupProbe(acorev1.Probe().
 			WithExec(acorev1.ExecAction().WithCommand(SidecarBinaryPath, "healthcheck")).
 			WithPeriodSeconds(1).
@@ -325,6 +395,52 @@ func sidecarContainer(in Inputs, names Names) *acorev1.ContainerApplyConfigurati
 				corev1.ResourceMemory: resource.MustParse("256Mi"),
 			})).
 		WithSecurityContext(sidecarSecurityContext())
+}
+
+// sidecarSnapshotArgs builds the #28 freeze-configuration flags for the
+// sandboxctl sidecar. The sidecar has no RBAC to read the cluster-scoped
+// SandboxClass and does not mount the <env>-config ConfigMap (see
+// sidecarContainer's own volume mounts), so this is the ONLY way it learns
+// its snapshot backend configuration -- deliberately visible/reviewable in
+// the rendered/golden pod. Deterministic order; empty-valued flags are
+// omitted entirely (never emitted as e.g. "--s3-region=").
+func sidecarSnapshotArgs(in Inputs) []string {
+	var args []string
+	add := func(flag, value string) {
+		if value != "" {
+			args = append(args, "--"+flag+"="+value)
+		}
+	}
+
+	add("engine", string(in.Class.Spec.Engine.Type))
+	add("cluster-id", in.ClusterID)
+	add("spec-hash", in.SpecHash)
+	add("agent-image", in.Class.Spec.Agent.Image)
+	add("workspace-path", WorkspaceMountPath)
+	add("agent-home-path", AgentHomePath)
+
+	backend := in.Class.Spec.Storage.Backend
+	add("snapshot-backend", string(backend.Type))
+	if backend.Type == v1alpha1.StorageBackendTypeS3 && backend.S3 != nil {
+		s3 := backend.S3
+		add("s3-endpoint", s3.Endpoint)
+		add("s3-bucket", s3.Bucket)
+		add("s3-region", s3.Region)
+		add("s3-prefix", s3.Prefix)
+		forcePathStyle := true
+		if s3.ForcePathStyle != nil {
+			forcePathStyle = *s3.ForcePathStyle
+		}
+		args = append(args, fmt.Sprintf("--s3-force-path-style=%t", forcePathStyle))
+		add("snapshot-credentials-dir", SnapshotCredentialsMountPath)
+	}
+
+	args = append(args,
+		"--quiesce-delay="+defaultQuiesceDelayFlag,
+		"--snapshot-retries="+defaultSnapshotRetriesFlag,
+		"--snapshot-step-timeout="+defaultSnapshotStepTimeoutFlag,
+	)
+	return args
 }
 
 // sidecarSecurityContext is the agent's posture plus readOnlyRootFilesystem:

@@ -245,3 +245,80 @@ func TestWriteStatus_ConcurrentReconciles(t *testing.T) {
 		t.Errorf("FreezeCount = %d, want exactly 1 (double-increment regression)", final.Status.FreezeCount)
 	}
 }
+
+// TestWriteStatus_ExternalWaitForClearRace is the regression test for #28's
+// e2e-discovered stuck-at-Waiting bug: an external status-only write that
+// clears status.waitFor (the shape a real wake API, or this repo's own
+// "sequence numbers" e2e spec, performs) without touching Phase or
+// Generation must NOT be silently absorbed by a reconcile whose Decision
+// was computed from the pre-clear object. Before the fix, the staleness
+// check in writeStatus compared only Generation and Phase -- both of which
+// are unchanged by a WaitFor-only clear -- so the stale Decision (still
+// "Waiting", the same phase already on the server) sailed through the
+// DeepEqual no-op check and Apply's unconditional `s.Phase = d.Phase`
+// permanently overwrote what should have become Ready, with no further
+// write (and so no further watch event) to ever correct it.
+func TestWriteStatus_ExternalWaitForClearRace(t *testing.T) {
+	mustCreateClass(t)
+	env := mustCreateEnv(t, "waitfor-clear-race")
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
+
+	// Settle the environment in Waiting with a real WaitFor declared, as if
+	// a freeze had just completed (see nextFreezing's default branch).
+	settled := getEnv(t, key)
+	settled.Status.Phase = sandboxv1alpha1.PhaseWaiting
+	settled.Status.WaitFor = &sandboxv1alpha1.WaitForStatus{Type: sandboxv1alpha1.WaitTypeNotBefore}
+	if err := k8s.Status().Update(ctx, settled); err != nil {
+		t.Fatalf("settling Waiting with WaitFor: %v", err)
+	}
+
+	// The reconcile under test reads the object HERE, while WaitFor is still
+	// set -- so its Decision (computed below) reflects the pre-clear state.
+	decidedFrom := getEnv(t, key)
+	d := lifecycle.Next(*decidedFrom, lifecycle.ClusterFacts{ClassResolved: true, ProbeObserved: true}, fixedStart)
+	if d.Phase != sandboxv1alpha1.PhaseWaiting {
+		t.Fatalf("setup: d.Phase = %s, want Waiting (probe not yet satisfied)", d.Phase)
+	}
+
+	// An external actor (a wake API in production; the e2e harness's direct
+	// admin-client patch today) clears WaitFor AFTER the read above but
+	// BEFORE writeStatus runs -- the exact interleaving a real reconcile
+	// loop cannot prevent.
+	external := getEnv(t, key)
+	external.Status.WaitFor = nil
+	if err := k8s.Status().Update(ctx, external); err != nil {
+		t.Fatalf("external WaitFor clear: %v", err)
+	}
+
+	r := &Reconciler{Client: k8s}
+	err := r.writeStatus(ctx, decidedFrom, d)
+	if !errors.Is(err, errStaleDecision) {
+		t.Fatalf("writeStatus with a stale WaitFor read: err = %v, want errStaleDecision", err)
+	}
+
+	// The stale write must not have clobbered the external clear.
+	afterStale := getEnv(t, key)
+	if afterStale.Status.WaitFor != nil {
+		t.Fatalf("stale writeStatus clobbered the external WaitFor clear: %+v", afterStale.Status.WaitFor)
+	}
+	if afterStale.Status.Phase != sandboxv1alpha1.PhaseWaiting {
+		t.Fatalf("stale writeStatus changed Phase to %s, want it untouched (Waiting)", afterStale.Status.Phase)
+	}
+
+	// The follow-up reconcile (as would be triggered by the external
+	// write's own watch event) now reads truly fresh state and correctly
+	// advances to Ready.
+	fresh := getEnv(t, key)
+	d2 := lifecycle.Next(*fresh, lifecycle.ClusterFacts{ClassResolved: true, ProbeObserved: true}, fixedStart)
+	if d2.Phase != sandboxv1alpha1.PhaseReady {
+		t.Fatalf("follow-up Decision.Phase = %s, want Ready", d2.Phase)
+	}
+	if err := r.writeStatus(ctx, fresh, d2); err != nil {
+		t.Fatalf("follow-up writeStatus: %v", err)
+	}
+
+	final := getEnv(t, key)
+	if final.Status.Phase != sandboxv1alpha1.PhaseReady {
+		t.Errorf("final Phase = %s, want Ready", final.Status.Phase)
+	}
+}
