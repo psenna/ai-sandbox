@@ -22,15 +22,23 @@ func assertGoldenObjects(t *testing.T, caseName string, in Inputs) Objects {
 	assertGolden(t, caseName+".pvc.yaml", marshalForGolden(t, objs.PVC))
 	assertGolden(t, caseName+".configmap.yaml", marshalForGolden(t, objs.ConfigMap))
 	assertGolden(t, caseName+".secret.yaml", marshalForGolden(t, redactSecretData(objs.Secret)))
+	if objs.SnapshotSecret != nil {
+		assertGolden(t, caseName+".snapshotsecret.yaml", marshalForGolden(t, redactSecretData(objs.SnapshotSecret)))
+	}
 	return objs
 }
 
 func TestRender_Full(t *testing.T) {
 	in := Inputs{
-		Env:         baseEnv("full-env", withPrompt("do the full thing")),
-		Class:       fullClass(),
-		Credentials: Credentials{GitProxyToken: "fake-git-proxy-token-full"}, //nolint:gosec // G101: deliberately fake test fixture value, not a real credential
-		ClusterID:   "test-cluster",
+		Env:   baseEnv("full-env", withPrompt("do the full thing")),
+		Class: fullClass(),
+		Credentials: Credentials{ //nolint:gosec // G101: deliberately fake test fixture values, not real credentials
+			GitProxyToken:           "fake-git-proxy-token-full",
+			SnapshotAccessKeyID:     "fake-snapshot-access-key-full",
+			SnapshotSecretAccessKey: "fake-snapshot-secret-key-full",
+		},
+		ClusterID: "test-cluster",
+		SpecHash:  "sha256:fakespechashfull",
 	}
 	assertGoldenObjects(t, "full", in)
 }

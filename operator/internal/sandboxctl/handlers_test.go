@@ -57,6 +57,14 @@ func (f *fakeStore) ReportDone(_ context.Context, r Result, _ time.Time) (bool, 
 	return f.idempotent, nil
 }
 
+func (f *fakeStore) RecordSnapshotAttempt(context.Context, SnapshotAttempt, time.Time) error {
+	return nil
+}
+
+func (f *fakeStore) RecordSnapshot(context.Context, SnapshotRecord, time.Time) error {
+	return nil
+}
+
 func newTestServer(t *testing.T, store *fakeStore, poll *Poller) *httptest.Server {
 	t.Helper()
 	if poll == nil {

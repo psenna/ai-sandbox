@@ -45,8 +45,8 @@ type resourceCheck struct {
 // forever on any normal cluster. Lost (the bound PV was destroyed) is a
 // real terminal fault and DOES flip readiness false.
 //
-// Still stubbed, unchanged from before this issue: SnapshotComplete (#28),
-// ProbeObserved (#30), ArchiveWritten (#32).
+// Still stubbed: ProbeObserved (#30), ArchiveWritten (#32). SnapshotComplete
+// is no longer stubbed -- see observeSnapshot in freeze.go.
 func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) (lifecycle.ClusterFacts, error) {
 	f := lifecycle.ClusterFacts{
 		SlotGranted:       env.Status.Slot.Granted,
@@ -57,6 +57,7 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		f.AgentFailed = ar.Outcome == v1alpha1.AgentOutcomeFailed
 		f.AgentMessage = ar.Message
 	}
+	r.observeSnapshot(&env.Status, &f)
 	if scheduler.IsCandidate(env) {
 		r.observeQueuePosition(ctx, env, &f)
 	}
@@ -79,6 +80,9 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		{"PersistentVolumeClaim", names.PVC, &corev1.PersistentVolumeClaim{}},
 		{"ConfigMap", names.ConfigMap, &corev1.ConfigMap{}},
 		{"Secret", names.Secret, &corev1.Secret{}},
+	}
+	if class.Spec.Storage.Backend.Type == v1alpha1.StorageBackendTypeS3 {
+		checks = append(checks, resourceCheck{"Secret", names.SnapshotSecret, &corev1.Secret{}})
 	}
 
 	pvc, ok, err := r.observeResources(ctx, env, checks, &f)

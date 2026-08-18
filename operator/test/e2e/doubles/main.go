@@ -1,14 +1,17 @@
-// Command doubles runs one of two fixture HTTP services used by the
+// Command doubles runs one of three fixture HTTP services used by the
 // operator's kind-based e2e suite (operator/test/e2e): a fake git-proxy
-// broker (agent-facing REST API: PRs, checks, issues) or a stub model
-// endpoint (Anthropic Messages API shape). Both are dependency-free
-// (stdlib only, see go.mod) so this module builds fully offline
-// (GOPROXY=off) -- no DependaProxy involvement.
+// broker (agent-facing REST API: PRs, checks, issues), a stub model
+// endpoint (Anthropic Messages API shape), or a programmable reverse proxy
+// in front of the e2e MinIO (#28's fault-injection double, s3proxy.go). All
+// three are dependency-free (stdlib only, see go.mod) so this module builds
+// fully offline (GOPROXY=off) -- no DependaProxy involvement.
 //
-// Nothing in the operator consumes either service today (see #22's
-// non-goals); they exist so the e2e suite has real, controllable HTTP
+// The broker and model doubles are not consumed by the operator today (see
+// #22's non-goals); they exist so the e2e suite has real, controllable HTTP
 // endpoints to program and assert against, in front of future issues
-// (#30 wait-probes, agent PR/issue workflows) that will.
+// (#30 wait-probes, agent PR/issue workflows) that will. s3proxy IS
+// consumed today: freeze_test.go points a SandboxClass's storage.backend.s3
+// endpoint at it to inject a mid-upload backend failure.
 package main
 
 import (
@@ -18,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: doubles <broker|model>")
+		fmt.Fprintln(os.Stderr, "usage: doubles <broker|model|s3proxy>")
 		os.Exit(2)
 	}
 
@@ -28,8 +31,10 @@ func main() {
 		err = runBroker()
 	case "model":
 		err = runModel()
+	case "s3proxy":
+		err = runS3Proxy()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown mode %q: usage: doubles <broker|model>\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown mode %q: usage: doubles <broker|model|s3proxy>\n", os.Args[1])
 		os.Exit(2)
 	}
 	if err != nil {

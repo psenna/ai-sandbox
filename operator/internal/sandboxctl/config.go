@@ -19,6 +19,10 @@ type Config struct {
 
 	PollInterval    time.Duration
 	ShutdownTimeout time.Duration
+
+	// Snapshot is the freeze-snapshot backend configuration. See
+	// snapshotconfig.go.
+	Snapshot SnapshotConfig
 }
 
 // Load parses args into a Config, falling back to the environment (via
@@ -37,6 +41,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 		"how often the sidecar polls its own SandboxEnvironment (the Role grants no watch)")
 	fs.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", envOrDuration(getenv, "SHUTDOWN_TIMEOUT", 100*time.Second),
 		"bounded deadline for graceful HTTP shutdown after SIGTERM/SIGINT; must sit inside the pod's terminationGracePeriodSeconds with headroom")
+	registerSnapshotFlags(fs, &c.Snapshot, getenv)
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -64,6 +69,9 @@ func (c Config) Validate() error {
 	}
 	if c.ShutdownTimeout <= 0 || c.ShutdownTimeout > 110*time.Second {
 		return fmt.Errorf("shutdown-timeout: must be between 0 and 110s (leave headroom inside the pod's terminationGracePeriodSeconds), got %s", c.ShutdownTimeout)
+	}
+	if err := c.Snapshot.Validate(); err != nil {
+		return fmt.Errorf("snapshot config: %w", err)
 	}
 	return nil
 }

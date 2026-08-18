@@ -39,8 +39,14 @@
 //   - detect its own environment entering Freezing (by periodic poll, since
 //     the Role grants no watch) and quiesce the API (poller.go, freeze.go).
 //
-// Deciding when a declared probe is SATISFIED is issue #30's job, and the
-// snapshot itself (workload-container teardown, tar+zstd, upload via
-// internal/storage, manifest.json/latest.json, the resume marker) is issue
-// #28's job in full. This package does not import internal/storage at all.
+// Deciding when a declared probe is SATISFIED is issue #30's job. The
+// snapshot itself -- workload-container teardown, tar+zstd, upload via
+// internal/storage, manifest.json/latest.json, the resume marker, and the
+// status.snapshot(+snapshotAttempt) write -- is issue #28's job, implemented
+// in snapshot.go/snapshotconfig.go/snapcreds.go/marker.go/exclusions.go/
+// engine.go. This package now DOES import internal/storage (only from those
+// #28 files): building an S3 storage.Backend from CLI-flag-projected
+// configuration and streaming the actual archive/upload is unavoidably this
+// package's job, since the sidecar is the only process running inside the
+// pod with the workspace and agent-home volumes mounted.
 package sandboxctl

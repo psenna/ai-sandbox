@@ -12,7 +12,7 @@ import (
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
 
-func TestNoopFreezeHook_ReturnsNilAndLogsIssue28(t *testing.T) {
+func TestNoopFreezeHook_ReturnsNilAndLogsNoBackendConfigured(t *testing.T) {
 	var buf bytes.Buffer
 	log := logr.FromSlogHandler(slog.NewJSONHandler(&buf, nil))
 	hook := NewNoopFreezeHook(log)
@@ -29,7 +29,7 @@ func TestNoopFreezeHook_ReturnsNilAndLogsIssue28(t *testing.T) {
 	if !strings.Contains(out, "env-a") {
 		t.Errorf("log output does not mention the environment name: %s", out)
 	}
-	if !strings.Contains(out, "28") {
-		t.Errorf("log output does not name issue #28: %s", out)
+	if !strings.Contains(out, "no snapshot backend configured") {
+		t.Errorf("log output does not explain that no snapshot backend is configured: %s", out)
 	}
 }

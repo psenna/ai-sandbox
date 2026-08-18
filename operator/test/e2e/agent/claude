@@ -24,6 +24,8 @@
 #   SCRIPT:sandbox-expect-loopback-only     GET on the pod's own non-loopback IP must FAIL
 #                                            while GET on localhost succeeds               (exit 35)
 #   SCRIPT:require-no-file <path>           inverse of require-file: fail if readable      (exit 36)
+#   SCRIPT:write-tree <relpath> <bytes>     write <bytes> of /dev/urandom under
+#                                            $WORKDIR/<relpath>                             (exit 37 on failure)
 # An empty prompt, or a prompt with no directives, exits 0. An unrecognised
 # `SCRIPT:` line exits 20.
 
@@ -156,6 +158,14 @@ while IFS= read -r line || [ -n "$line" ]; do
 		if [ -r "$path" ]; then
 			exit 36
 		fi
+		;;
+	"SCRIPT:write-tree "*)
+		rest="${line#SCRIPT:write-tree }"
+		relpath="${rest%% *}"
+		nbytes="${rest#* }"
+		target="$WORKDIR/$relpath"
+		mkdir -p "$(dirname "$target")" || exit 37
+		head -c "$nbytes" /dev/urandom >"$target" || exit 37
 		;;
 	"SCRIPT:exit "*)
 		exit "${line#SCRIPT:exit }"

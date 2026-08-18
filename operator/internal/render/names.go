@@ -18,6 +18,8 @@ const (
 	SuffixConfigMap      = "-config"    // ConfigMap
 	SuffixSidecarRBAC    = "-sidecar"   // Role AND RoleBinding (different kinds, same name is legal)
 	SuffixPod            = "-run"       // Pod -- NOT "-agent", already taken by SuffixServiceAccount
+	SuffixSnapshotSecret = "-snapshot"  // Secret (S3 snapshot credentials projection, #28)
+	SuffixSnapshotJob    = "-freeze"    // Job (recovery snapshot Job, #28)
 )
 
 // Names holds every child object name deterministically derived from one
@@ -30,6 +32,8 @@ type Names struct {
 	Role           string
 	RoleBinding    string
 	Pod            string
+	SnapshotSecret string
+	SnapshotJob    string
 }
 
 // ChildNames computes every child object name for envName.
@@ -42,6 +46,8 @@ func ChildNames(envName string) Names {
 		Role:           childName(envName, SuffixSidecarRBAC),
 		RoleBinding:    childName(envName, SuffixSidecarRBAC),
 		Pod:            childName(envName, SuffixPod),
+		SnapshotSecret: childName(envName, SuffixSnapshotSecret),
+		SnapshotJob:    childName(envName, SuffixSnapshotJob),
 	}
 }
 

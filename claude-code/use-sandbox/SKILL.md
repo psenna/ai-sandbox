@@ -109,11 +109,16 @@ silently declaring a wait and stopping.
 
 ## Freezing has a real cost
 
-Freezing is not free or instant — it involves snapshotting your workspace and
-tearing down the running container. That machinery is also still being built
-out; for now, treat freezing as a one-way trip for the remainder of this
-skill's scope. A future `freeze` skill will cover what to expect in more
-detail once that machinery lands.
+Freezing is not free or instant — it involves stopping every container you
+started, snapshotting your workspace and agent home, and tearing down the
+running pod. **See the `freeze` skill for the full detail**: what gets
+destroyed, what survives, what to do before you declare a wait, and what to
+check first if you're reading this after a resume.
+
+Honest state of things: freeze itself (snapshot, teardown, slot release) is
+implemented and works today. Wake/restore does **not** exist yet — nothing
+currently reads a snapshot back or recreates a pod from one. A frozen
+environment does not currently come back; don't plan around being resumed.
 
 ## Errors
 

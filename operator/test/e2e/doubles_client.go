@@ -76,6 +76,22 @@ func (h *Harness) modelBaseURL() string {
 	return fmt.Sprintf("http://%s:%d", h.Cfg.Host, h.Cfg.ModelPort)
 }
 
+// S3ProxyBaseURL is the s3proxy double's own control API, reachable from
+// the TEST process (outside the cluster) via the NodePort. Not to be
+// confused with S3ProxyInClusterEndpoint, which is the S3-shaped address a
+// SandboxClass running INSIDE the cluster is pointed at.
+func (h *Harness) S3ProxyBaseURL() string {
+	return fmt.Sprintf("http://%s:%d", h.Cfg.Host, h.Cfg.S3ProxyPort)
+}
+
+// S3ProxyInClusterEndpoint is the address a SandboxClass's
+// storage.backend.s3.endpoint must use to route S3 traffic through the
+// fault-injecting proxy instead of talking to MinIO directly -- see
+// WithS3Endpoint.
+func (h *Harness) S3ProxyInClusterEndpoint() string {
+	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8082", h.Cfg.ServicesNamespace)
+}
+
 type controlPutBody struct {
 	Path   string `json:"path"`
 	Status int    `json:"status"`
@@ -139,6 +155,34 @@ func (h *Harness) ModelSetReply(ctx context.Context, text string) {
 func (h *Harness) ModelRequests(ctx context.Context) []RecordedRequest {
 	var out []RecordedRequest
 	h.doJSON(ctx, http.MethodGet, h.modelBaseURL()+"/_control/requests", nil, &out)
+	return out
+}
+
+type s3ProxyFaultBody struct {
+	Mode       string `json:"mode"`
+	Status     int    `json:"status"`
+	AfterBytes int64  `json:"afterBytes"`
+}
+
+// S3ProxySetFault programs the s3proxy double to fail every PUT/POST once
+// afterBytes of the request body have been drained, answering with status
+// (an S3-shaped XML error body) instead of forwarding to MinIO. GET/HEAD/
+// DELETE are never affected.
+func (h *Harness) S3ProxySetFault(ctx context.Context, mode string, status int, afterBytes int64) {
+	h.doJSON(ctx, http.MethodPut, h.S3ProxyBaseURL()+"/_control/fault", s3ProxyFaultBody{
+		Mode: mode, Status: status, AfterBytes: afterBytes,
+	}, nil)
+}
+
+// S3ProxyClearFault restores normal (pass-through) proxying.
+func (h *Harness) S3ProxyClearFault(ctx context.Context) {
+	h.doJSON(ctx, http.MethodDelete, h.S3ProxyBaseURL()+"/_control/fault", nil, nil)
+}
+
+// S3ProxyRequests returns the s3proxy double's request log.
+func (h *Harness) S3ProxyRequests(ctx context.Context) []RecordedRequest {
+	var out []RecordedRequest
+	h.doJSON(ctx, http.MethodGet, h.S3ProxyBaseURL()+"/_control/requests", nil, &out)
 	return out
 }
 

@@ -242,3 +242,75 @@ func TestStore_RefreshAndSnapshot(t *testing.T) {
 		t.Errorf("Snapshot() = %+v, want Fresh Running/FreezeCount=2", snap)
 	}
 }
+
+func TestRecordSnapshotAttempt_PatchesStatus(t *testing.T) {
+	scheme := testScheme(t)
+	env := &v1alpha1.SandboxEnvironment{ObjectMeta: metav1.ObjectMeta{Name: "env-g", Namespace: "ns-g"}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(env).WithStatusSubresource(&v1alpha1.SandboxEnvironment{}).Build()
+
+	store := newEnvStore(c, "ns-g", "env-g")
+	now := time.Now()
+	if err := store.RecordSnapshotAttempt(context.Background(), SnapshotAttempt{
+		Seq: 3, Phase: v1alpha1.SnapshotAttemptInProgress, Attempts: 1,
+	}, now); err != nil {
+		t.Fatalf("RecordSnapshotAttempt: %v", err)
+	}
+
+	var got v1alpha1.SandboxEnvironment
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns-g", Name: "env-g"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.SnapshotAttempt == nil {
+		t.Fatal("Status.SnapshotAttempt is nil")
+	}
+	if got.Status.SnapshotAttempt.Seq != 3 || got.Status.SnapshotAttempt.Phase != v1alpha1.SnapshotAttemptInProgress || got.Status.SnapshotAttempt.Attempts != 1 {
+		t.Errorf("SnapshotAttempt = %+v, want Seq=3 InProgress Attempts=1", got.Status.SnapshotAttempt)
+	}
+}
+
+func TestRecordSnapshot_SucceedsAndFlipsAttempt(t *testing.T) {
+	scheme := testScheme(t)
+	env := &v1alpha1.SandboxEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "env-h", Namespace: "ns-h"},
+		Status: v1alpha1.SandboxEnvironmentStatus{
+			SnapshotAttempt: &v1alpha1.SnapshotAttemptStatus{Seq: 0, Phase: v1alpha1.SnapshotAttemptInProgress, Attempts: 2},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(env).WithStatusSubresource(&v1alpha1.SandboxEnvironment{}).Build()
+
+	store := newEnvStore(c, "ns-h", "env-h")
+	takenAt := time.Now()
+	if err := store.RecordSnapshot(context.Background(), SnapshotRecord{
+		Seq: 0, URI: "s3://bucket/key", SizeBytes: 1024, SHA256: "abc123", TakenAt: takenAt, DurationMillis: 500,
+	}, time.Now()); err != nil {
+		t.Fatalf("RecordSnapshot: %v", err)
+	}
+
+	var got v1alpha1.SandboxEnvironment
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns-h", Name: "env-h"}, &got); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status.Snapshot == nil || got.Status.Snapshot.Seq != 0 || got.Status.Snapshot.SizeBytes != 1024 {
+		t.Fatalf("Status.Snapshot = %+v, want Seq=0 SizeBytes=1024", got.Status.Snapshot)
+	}
+	if got.Status.SnapshotAttempt == nil || got.Status.SnapshotAttempt.Phase != v1alpha1.SnapshotAttemptSucceeded {
+		t.Fatalf("Status.SnapshotAttempt = %+v, want Phase=Succeeded", got.Status.SnapshotAttempt)
+	}
+}
+
+func TestRecordSnapshot_RefusesSeqRegression(t *testing.T) {
+	scheme := testScheme(t)
+	env := &v1alpha1.SandboxEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "env-i", Namespace: "ns-i"},
+		Status: v1alpha1.SandboxEnvironmentStatus{
+			Snapshot: &v1alpha1.SnapshotStatus{Seq: 5},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(env).WithStatusSubresource(&v1alpha1.SandboxEnvironment{}).Build()
+
+	store := newEnvStore(c, "ns-i", "env-i")
+	err := store.RecordSnapshot(context.Background(), SnapshotRecord{Seq: 4, URI: "s3://bucket/key"}, time.Now())
+	if err == nil {
+		t.Fatal("expected ErrSnapshotSeqRegression, got nil")
+	}
+}

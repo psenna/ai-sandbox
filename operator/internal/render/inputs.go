@@ -31,6 +31,17 @@ const (
 // callers must not log this struct's fields either.
 type Credentials struct {
 	GitProxyToken string
+
+	// SnapshotAccessKeyID/SnapshotSecretAccessKey/SnapshotSessionToken are
+	// the S3 snapshot credentials (#28), resolved by internal/controller's
+	// resolveCredentials from the class-referenced Secret using
+	// internal/storage's fixed data keys (SecretKeyAccessKeyID etc. --
+	// storage/doc.go's gap G1). Projected into a NEW per-environment Secret
+	// (snapshotsecret.go), mounted into the sandboxctl container ONLY.
+	// Never logged, matching GitProxyToken's treatment.
+	SnapshotAccessKeyID     string
+	SnapshotSecretAccessKey string
+	SnapshotSessionToken    string
 }
 
 // SkillFile is a reserved seam for future image-independent skill delivery
@@ -61,6 +72,13 @@ type Inputs struct {
 	// required by RenderPod, not by Render (validateInputs is shared by
 	// both and does not check it).
 	SidecarImage string
+
+	// SpecHash is "sha256:<hex>" of the class+env specs, computed by
+	// internal/controller via storage.SpecHash and projected as a CLI flag
+	// on the sandboxctl sidecar container (#28). Render itself stays pure
+	// and never imports internal/storage -- this is a plain string, not a
+	// storage.Manifest field.
+	SpecHash string
 }
 
 // Objects holds every rendered child object for one environment.
@@ -71,12 +89,23 @@ type Objects struct {
 	PVC            *acorev1.PersistentVolumeClaimApplyConfiguration
 	ConfigMap      *acorev1.ConfigMapApplyConfiguration
 	Secret         *acorev1.SecretApplyConfiguration
+	// SnapshotSecret is nil unless the class's storage backend is S3 (#28).
+	SnapshotSecret *acorev1.SecretApplyConfiguration
 }
 
 // All returns every child object in a fixed order (ServiceAccount, Role,
-// RoleBinding, PVC, ConfigMap, Secret), safe to apply in sequence.
+// RoleBinding, PVC, ConfigMap, Secret, SnapshotSecret), safe to apply in
+// sequence. SnapshotSecret is appended ONLY when non-nil: a typed-nil
+// *acorev1.SecretApplyConfiguration stored in a
+// []runtime.ApplyConfiguration interface slice is NOT an interface nil (a
+// classic Go footgun), so an unconditional append would apply a nil object
+// whenever the backend isn't S3.
 func (o Objects) All() []runtime.ApplyConfiguration {
-	return []runtime.ApplyConfiguration{o.ServiceAccount, o.Role, o.RoleBinding, o.PVC, o.ConfigMap, o.Secret}
+	all := []runtime.ApplyConfiguration{o.ServiceAccount, o.Role, o.RoleBinding, o.PVC, o.ConfigMap, o.Secret}
+	if o.SnapshotSecret != nil {
+		all = append(all, o.SnapshotSecret)
+	}
+	return all
 }
 
 // validateInputs performs the nil/empty checks common to every renderer
@@ -117,6 +146,7 @@ func Render(in Inputs) (Objects, error) {
 		return Objects{}, fmt.Errorf("render: ConfigMap: %w", err)
 	}
 	secret := renderSecret(in)
+	snapshotSecret := renderSnapshotSecret(in)
 
 	return Objects{
 		ServiceAccount: sa,
@@ -125,5 +155,6 @@ func Render(in Inputs) (Objects, error) {
 		PVC:            pvc,
 		ConfigMap:      cm,
 		Secret:         secret,
+		SnapshotSecret: snapshotSecret,
 	}, nil
 }

@@ -319,6 +319,15 @@ spec:
                   Snapshot records the most recent workspace snapshot taken for this
                   environment.
                 properties:
+                  durationMillis:
+                    description: |-
+                      DurationMillis is how long the snapshot took, from the start of the
+                      freeze hook to the successful latest.json write. Milliseconds, not
+                      seconds: a small workspace snapshots in well under a second and a
+                      whole-second field would record a meaningless 0.
+                    format: int64
+                    minimum: 0
+                    type: integer
                   seq:
                     description: |-
                       Seq is the monotonically increasing sequence number of this
@@ -343,6 +352,65 @@ spec:
                     description: URI is the location the snapshot was written to.
                     type: string
                 required:
+                - seq
+                type: object
+              snapshotAttempt:
+                description: |-
+                  SnapshotAttempt records the freeze snapshot currently in flight, or
+                  the last one that failed. Written ONLY by the sandboxctl sidecar (or
+                  the recovery Job running the same binary). It is how the operator, and
+                  a human, distinguish "still retrying" from "permanently failed": on
+                  permanent failure the environment HOLDS in Freezing with
+                  Frozen=False/SnapshotFailed and the pod is never deleted, so the
+                  agent's context is never silently dropped.
+                properties:
+                  attempts:
+                    description: Attempts is how many upload attempts have been made
+                      so far.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  message:
+                    description: |-
+                      Message is a human explanation. Never contains a credential -- see
+                      internal/storage/doc.go's no-logging rule and credentials.go's
+                      Secret redaction.
+                    maxLength: 512
+                    type: string
+                  phase:
+                    description: SnapshotAttemptPhase is the state of the freeze snapshot
+                      being attempted.
+                    enum:
+                    - InProgress
+                    - Succeeded
+                    - Failed
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is a short, stable machine reason. See
+                      internal/sandboxctl/snapshot.go's SnapshotReason* constants.
+                    maxLength: 64
+                    type: string
+                  seq:
+                    description: |-
+                      Seq is the snapshot sequence number this attempt is producing. It
+                      always equals status.freezeCount for the freeze in flight.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  startedAt:
+                    description: StartedAt is when this attempt (this Seq) was first
+                      recorded.
+                    format: date-time
+                    type: string
+                  updatedAt:
+                    description: |-
+                      UpdatedAt is when this attempt was last patched (a retry, a phase
+                      change).
+                    format: date-time
+                    type: string
+                required:
+                - phase
                 - seq
                 type: object
               startedAt:

@@ -35,10 +35,15 @@
 // # What this suite does NOT test
 //
 // See the issue's non-goals: no NetworkPolicy rendering (the operator
-// renders none today), no wait-probe evaluation (#30), no freeze/wake/
-// snapshot/archive logic (#28/#29/#32), no sandboxctl sidecar (#27), no
-// rootless-podman engine (#24). The fixtures for several of these (MinIO,
-// the platform doubles) are stood up and self-tested here so that the
-// issues that DO implement that logic can build on a working harness
-// without also having to build the harness.
+// renders none today), no wait-probe evaluation (#30), no archive logic
+// (#32), no rootless-podman engine (#24). Freeze (snapshot, upload,
+// teardown, slot release) IS now tested -- see freeze_test.go (#28). Wake/
+// restore is NOT tested: no code path restores a snapshot yet (#29); the
+// "sequence numbers increase monotonically across repeated freezes" spec in
+// freeze_test.go simulates only the status.waitFor=nil half of a wake
+// (exercising the scheduler/pod-recreation machinery against the still-
+// intact workspace PVC), never an actual restore. The fixtures for several
+// of these (MinIO, the platform doubles) are stood up and self-tested here
+// so that the issues that DO implement that logic can build on a working
+// harness without also having to build the harness.
 package e2e

@@ -31,6 +31,7 @@ RUN apk add --no-cache git ca-certificates bash curl docker-cli && rm -rf /var/c
 COPY claude-code/use-git-proxy/SKILL.md /opt/skills/use-git-proxy/SKILL.md
 COPY claude-code/use-docker/SKILL.md    /opt/skills/use-docker/SKILL.md
 COPY claude-code/use-sandbox/SKILL.md   /opt/skills/use-sandbox/SKILL.md
+COPY claude-code/freeze/SKILL.md        /opt/skills/freeze/SKILL.md
 COPY claude-code/implement-issue/SKILL.md /opt/skills/implement-issue/SKILL.md
 COPY claude-code/agent-context/CLAUDE.md /opt/agent-context/CLAUDE.md
 

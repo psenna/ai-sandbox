@@ -11,6 +11,7 @@ import (
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
+	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
 
 // ensurePod is the ActionEnsurePod handler. It reuses applyOne verbatim --
@@ -27,7 +28,17 @@ func (r *Reconciler) ensurePod(ctx context.Context, env *v1alpha1.SandboxEnviron
 	if class == nil {
 		return nil
 	}
-	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID, SidecarImage: r.SidecarImage})
+	// SpecHash is projected onto the sidecar's --spec-hash flag (#28) so a
+	// freeze's manifest can record which class+env spec produced it. RenderPod
+	// itself ignores in.Credentials (see its doc comment): the pod never
+	// inlines a credential, it only names the operator-rendered
+	// snapshot-credentials Secret by ChildNames.
+	specHash, err := storage.SpecHash(&class.Spec, &env.Spec)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable: spec hash", "reason", err.Error())
+		return nil
+	}
+	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID, SidecarImage: r.SidecarImage, SpecHash: specHash})
 	if err != nil {
 		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable", "reason", err.Error())
 		return nil

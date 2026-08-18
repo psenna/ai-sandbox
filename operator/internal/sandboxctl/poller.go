@@ -71,6 +71,13 @@ func (p *Poller) tick(ctx context.Context) {
 // latchFreezing sets freezing exactly once (never un-latches -- a later
 // flip-back to a non-Freezing phase, which should not normally happen, does
 // not un-freeze the control API) and invokes the FreezeHook exactly once.
+//
+// The hook runs INLINE on this goroutine (the poll loop, or run.go's
+// SIGTERM path), so a real snapshot (#28's SnapshotHook) blocks the next
+// poll tick and /v1/status goes stale for the whole snapshot duration. This
+// is acceptable: the control API is already quiesced (every mutating
+// endpoint answers 409 CodeFreezing) once Freezing() is true, so nothing is
+// lost by /v1/status also going stale for the same window.
 func (p *Poller) latchFreezing(ctx context.Context, snap Snapshot) {
 	p.mu.Lock()
 	already := p.freezing

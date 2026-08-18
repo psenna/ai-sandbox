@@ -57,6 +57,19 @@ spec:
     - --environment=none-minimal
     - --namespace=default
     - --listen=127.0.0.1:9099
+    - --engine=none
+    - --cluster-id=test-cluster
+    - --agent-image=ghcr.io/psenna/ai-sandbox-agent:v1
+    - --workspace-path=/workspace
+    - --agent-home-path=/home/node/.claude-sandbox
+    - --snapshot-backend=s3
+    - --s3-endpoint=https://s3.example.com
+    - --s3-bucket=sandbox-snapshots
+    - --s3-force-path-style=true
+    - --snapshot-credentials-dir=/var/run/secrets/ai-sandbox/snapshot
+    - --quiesce-delay=2s
+    - --snapshot-retries=4
+    - --snapshot-step-timeout=2m
     command:
     - /sandboxctl
     image: test-sidecar:test
@@ -94,6 +107,9 @@ spec:
       name: workspace
     - mountPath: /home/node/.claude-sandbox
       name: agent-home
+    - mountPath: /var/run/secrets/ai-sandbox/snapshot
+      name: snapshot-credentials
+      readOnly: true
   restartPolicy: Never
   securityContext:
     fsGroup: 1000
@@ -132,3 +148,8 @@ spec:
           - fieldRef:
               fieldPath: metadata.namespace
             path: namespace
+  - name: snapshot-credentials
+    secret:
+      defaultMode: 256
+      optional: false
+      secretName: none-minimal-snapshot

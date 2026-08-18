@@ -111,8 +111,10 @@ func (h *Harness) S3List(ctx context.Context, bucket, prefix string) ([]S3Object
 
 // S3Put writes body to key in Cfg.FixtureBucket ONLY -- it refuses any
 // other bucket, since the fixture bucket is the sole bucket the e2e suite
-// itself is meant to write test data into (the snapshot bucket is written
-// by the operator, once #28/#29 exist).
+// itself is meant to write test data into. The snapshot bucket is now
+// written by the operator (#28's sandboxctl freeze hook); freeze_test.go
+// reads it back directly via S3Get/S3List to verify a real snapshot,
+// rather than writing to it here.
 func (h *Harness) S3Put(ctx context.Context, key string, body []byte) error {
 	u := fmt.Sprintf("%s/%s/%s", h.S3BaseURL(), h.Cfg.FixtureBucket, key)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
