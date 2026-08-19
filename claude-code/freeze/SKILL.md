@@ -12,9 +12,10 @@ When you (or the platform, via `spec.suspend` or a timeout) trigger a
 right now and, if you're reading this after a resume, what to check before you
 trust anything.
 
-Freeze is implemented. **Wake/restore is not.** As of today, a frozen
-environment does not come back on its own — see "The honest state of things"
-below before you plan around being resumed.
+Freeze is implemented, and so is **wake/restore**: a frozen environment can
+be resumed, its `/workspace` and agent home restored into a fresh pod. See
+"The honest state of things" below for what that does and — just as
+importantly — does not bring back.
 
 ## What freeze is
 
@@ -59,9 +60,8 @@ freeze as soon as the sidecar observes it. Before you call it:
   `/workspace` today (freeze doesn't wipe the working tree), but don't rely on
   that being your only copy — push what matters.
 - **Write down, in `/workspace`, anything you're holding only in your own
-  reasoning.** Your context resets on the next run even after a hypothetical
-  future wake; a note in a file is the only thing that reliably crosses that
-  boundary.
+  reasoning.** Your context resets on the next run even after a wake; a note
+  in a file is the only thing that reliably crosses that boundary.
 - **Don't leave a task half-applied across a container you assume is still
   running.** If step 2 of a plan depends on a background process from step 1,
   finish or checkpoint it first — that process will not survive.
@@ -78,12 +78,20 @@ freeze is still there just because your conversation history mentions it —
 the transcript describes what you *did*, not what *survived*. Re-create any
 service you need before relying on it.
 
+Then read the **`unfreeze` skill** — it is the counterpart to this one, and
+tells you exactly what the wake restored (and did not), how to tell warm from
+cold, and what to re-establish and in what order.
+
 ## The honest state of things
 
 Freeze (snapshot, teardown, slot release) is implemented and works today.
-**Wake/restore does not exist yet** — nothing currently reads a snapshot back
-or recreates a pod from one. A frozen environment stays frozen; there is no
-code path that resumes it. Don't plan a task around "I'll pick this back up
-after the freeze" until that lands. If your task genuinely cannot proceed
-without being resumed, that is a real limitation to surface in your `/v1/done`
-report, not something to work around silently.
+**Wake/restore is implemented too** (#29): a frozen environment can be
+resumed into a fresh pod, with `/workspace` and the agent home restored and
+checksum-verified against the snapshot manifest before you start. That does
+**not** mean everything comes back: the image cache is cold (your first build
+re-pulls every layer), every container you started is gone (re-establishing
+your own workload is your job), and nothing evaluates wait probes yet (#30) —
+a declared wait does not clear itself, so a human or a controller must clear
+`status.waitFor` for a wake to be triggered at all. If your task needs a
+wake, say so in your `/v1/done` report rather than assuming it will happen
+automatically.

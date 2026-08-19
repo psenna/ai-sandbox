@@ -84,7 +84,20 @@ GINKGO_FLAGS       ?= --timeout=$(E2E_TIMEOUT) --procs=$(E2E_PROCS) --seed=$(E2E
 # back to its own built-in default. Declared here (rather than left as bare
 # ambient-environment pass-through) so `-e NAME=$(NAME)` in E2E_GO_RUN below
 # does not depend on GNU Make's command-line-variable-export semantics.
-E2E_HOST           ?=
+#
+# E2E_HOST is the exception to "empty default is fine": harness.LoadConfig
+# defaults an unset E2E_HOST to 127.0.0.1, which is correct for the normal
+# single-daemon CI runner (IN_CONTAINER=1 -> E2E_INTERNAL_KUBECONFIG empty:
+# the ginkgo process is NOT on the kind network, it reaches the cluster's
+# NodePorts through the host's port-forwards at 127.0.0.1) but WRONG for the
+# nested sandbox runner (E2E_INTERNAL_KUBECONFIG=1: the ginkgo container is
+# launched on --network kind, where 127.0.0.1 is the ginkgo container itself,
+# not the cluster). On the kind network the NodePorts are reachable at the
+# kind node's hostname, <E2E_CLUSTER>-control-plane, resolvable via Docker
+# DNS -- see the E2E_GO_RUN comment below. So default E2E_HOST to that node
+# hostname exactly when E2E_INTERNAL_KUBECONFIG is set (the nested case), and
+# leave it empty (-> 127.0.0.1) for CI. Overridable on the make command line.
+E2E_HOST           ?= $(if $(filter 1,$(E2E_INTERNAL_KUBECONFIG)),$(E2E_CLUSTER)-control-plane,)
 E2E_MINIO_PORT     ?=
 E2E_BROKER_PORT    ?=
 E2E_MODEL_PORT     ?=

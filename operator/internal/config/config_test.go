@@ -32,6 +32,7 @@ func TestLoad_Defaults(t *testing.T) {
 		LeaderElectionID:        "sandbox-operator.sandbox.psenna.dev",
 		LeaderElectionNamespace: "",
 		SchedulerInterval:       5 * time.Second,
+		WarmCacheGCInterval:     time.Minute,
 		SidecarImage:            "ghcr.io/psenna/ai-sandbox-operator:dev",
 	}
 	if c != want {
@@ -345,6 +346,86 @@ func TestValidate_SchedulerIntervalBounds(t *testing.T) {
 			}
 			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "scheduler-interval") {
 				t.Errorf("Validate() error = %v, want it to mention scheduler-interval", err)
+			}
+		})
+	}
+}
+
+func TestWarmCacheGCInterval_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.WarmCacheGCInterval != time.Minute {
+		t.Errorf("WarmCacheGCInterval = %s, want 1m", c.WarmCacheGCInterval)
+	}
+}
+
+func TestWarmCacheGCInterval_EnvOverride(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_WARM_CACHE_GC_INTERVAL": "5s",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.WarmCacheGCInterval != 5*time.Second {
+		t.Errorf("WarmCacheGCInterval = %s, want 5s", c.WarmCacheGCInterval)
+	}
+}
+
+func TestWarmCacheGCInterval_UnparseableEnvFallsBackToDefault(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_WARM_CACHE_GC_INTERVAL": "not-a-duration",
+	})
+	c, err := Load(nil, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.WarmCacheGCInterval != time.Minute {
+		t.Errorf("WarmCacheGCInterval = %s, want 1m (default) on unparseable env value", c.WarmCacheGCInterval)
+	}
+}
+
+func TestWarmCacheGCInterval_FlagBeatsEnv(t *testing.T) {
+	env := envFrom(map[string]string{
+		"SANDBOX_OPERATOR_WARM_CACHE_GC_INTERVAL": "5s",
+	})
+	c, err := Load([]string{"--warm-cache-gc-interval=30s"}, env)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.WarmCacheGCInterval != 30*time.Second {
+		t.Errorf("WarmCacheGCInterval = %s, want 30s (flag should beat env)", c.WarmCacheGCInterval)
+	}
+}
+
+func TestValidate_WarmCacheGCIntervalBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		wantErr bool
+	}{
+		{"too low", "--warm-cache-gc-interval=500ms", true},
+		{"too high", "--warm-cache-gc-interval=2h", true},
+		{"lower boundary accepted", "--warm-cache-gc-interval=1s", false},
+		{"upper boundary accepted", "--warm-cache-gc-interval=1h", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{tc.flag}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() with %s: expected error, got nil", tc.flag)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() with %s: unexpected error: %v", tc.flag, err)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "warm-cache-gc-interval") {
+				t.Errorf("Validate() error = %v, want it to mention warm-cache-gc-interval", err)
 			}
 		})
 	}

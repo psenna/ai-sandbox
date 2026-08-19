@@ -261,3 +261,60 @@ func TestPathLayout_Golden(t *testing.T) {
 
 	assertGoldenPath(t, "path_layout.txt", []byte(sb.String()))
 }
+
+// TestLayout_SnapshotFileByID_RoundTrip verifies SnapshotFileByID, given the
+// id SnapshotID(seq, at) produces, resolves to exactly the same key
+// SnapshotFile(seq, at, name) does -- the two must never drift.
+func TestLayout_SnapshotFileByID_RoundTrip(t *testing.T) {
+	l, err := NewLayout("prefix", validIdentity())
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	at := time.Date(2026, 8, 16, 10, 30, 0, 0, time.UTC)
+	seq := 3
+	id := SnapshotID(seq, at)
+
+	for _, name := range []string{FileWorkspace, FileAgentHome, FileManifest} {
+		want := l.SnapshotFile(seq, at, name)
+		got, err := l.SnapshotFileByID(id, name)
+		if err != nil {
+			t.Fatalf("SnapshotFileByID(%q, %q): unexpected error: %v", id, name, err)
+		}
+		if got != want {
+			t.Errorf("SnapshotFileByID(%q, %q) = %q, want %q", id, name, got, want)
+		}
+	}
+}
+
+// TestLayout_SnapshotFileByID_RejectsUnsafeID verifies id is validated as a
+// path segment before being trusted -- it can arrive from outside this
+// process (the restore init container's --restore-snapshot-id flag).
+func TestLayout_SnapshotFileByID_RejectsUnsafeID(t *testing.T) {
+	l, err := NewLayout("prefix", validIdentity())
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"empty", ""},
+		{"dot", "."},
+		{"dotdot", ".."},
+		{"slash", "a/b"},
+		{"NUL byte", "a\x00b"},
+		{"traversal", "../../etc"},
+		{"over-length segment", strings.Repeat("a", 256)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := l.SnapshotFileByID(tc.id, FileManifest)
+			if err == nil {
+				t.Fatalf("SnapshotFileByID(%q, ..): want error, got nil", tc.id)
+			}
+			if !IsInvalid(err) {
+				t.Errorf("SnapshotFileByID(%q, ..): error %v is not ErrInvalid-kinded", tc.id, err)
+			}
+		})
+	}
+}

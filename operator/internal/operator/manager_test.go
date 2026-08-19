@@ -16,11 +16,14 @@ import (
 
 func baseConfig() config.Config {
 	return config.Config{
-		SlotCapacity:         4,
-		ClusterID:            "default",
-		DefaultSandboxClass:  "default",
-		MetricsAddr:          "0",
-		HealthProbeAddr:      "0",
+		SlotCapacity:        4,
+		ClusterID:           "default",
+		DefaultSandboxClass: "default",
+		MetricsAddr:         "0",
+		HealthProbeAddr:     "0",
+		// SchedulerInterval and WarmCacheGCInterval are left at their zero
+		// values here: SetupControllers only registers the runnables, and
+		// their Start is never invoked in these no-cluster tests.
 		EnableLeaderElection: false,
 	}
 }

@@ -26,11 +26,24 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 	// can do deterministically (#20). mgr.Add places it in the
 	// leader-election runnable group (see SlotScheduler.NeedLeaderElection),
 	// so exactly one instance ever runs cluster-wide.
-	return mgr.Add(&controller.SlotScheduler{
+	if err := mgr.Add(&controller.SlotScheduler{
 		Client:    mgr.GetClient(),
 		Reader:    mgr.GetAPIReader(),
 		Capacity:  cfg.SlotCapacity,
 		Interval:  cfg.SchedulerInterval,
+		Namespace: cfg.WatchNamespace,
+	}); err != nil {
+		return err
+	}
+	// The warm-cache GC is a Runnable for the same reason (#29): deleting a
+	// frozen environment's workspace PVC once its snapshot is older than the
+	// class's warmCacheTTL is a cross-object, wall-clock-driven policy
+	// decision, not a per-object event. Same leader-election group, so
+	// exactly one instance ever runs cluster-wide.
+	return mgr.Add(&controller.WarmCacheGC{
+		Client:    mgr.GetClient(),
+		Reader:    mgr.GetAPIReader(),
+		Interval:  cfg.WarmCacheGCInterval,
 		Namespace: cfg.WatchNamespace,
 	})
 }

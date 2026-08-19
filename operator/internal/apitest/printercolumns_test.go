@@ -68,13 +68,17 @@ func TestPrinterColumns_SandboxEnvironment(t *testing.T) {
 	current.Status.Phase = sandboxv1alpha1.PhaseRunning
 	current.Status.Slot.Granted = true
 	current.Status.FreezeCount = 3
+	current.Status.WakeCount = 2
 	if err := k8s.Status().Update(ctx, current); err != nil {
 		t.Fatalf("Status().Update: %v", err)
 	}
 
 	table := getTable(t, fmt.Sprintf("/apis/%s/%s/namespaces/%s/sandboxenvironments", sandboxv1alpha1.GroupVersion.Group, sandboxv1alpha1.GroupVersion.Version, testNamespace))
 
-	wantCols := []string{"Name", "Phase", "Slot", "Freezes", "Age", "Class", "Repo"}
+	// Column order mirrors the +kubebuilder:printcolumn markers on
+	// SandboxEnvironment (Name is always first, then the declared columns):
+	// Name, Phase, Slot, Freezes, Wakes, Age, Class, Repo.
+	wantCols := []string{"Name", "Phase", "Slot", "Freezes", "Wakes", "Age", "Class", "Repo"}
 	if len(table.ColumnDefinitions) != len(wantCols) {
 		t.Fatalf("ColumnDefinitions = %v, want %v", colNames(table), wantCols)
 	}
@@ -105,10 +109,13 @@ func TestPrinterColumns_SandboxEnvironment(t *testing.T) {
 	if got := fmt.Sprint(cells[3]); got != "3" {
 		t.Errorf("Freezes cell = %q, want %q", got, "3")
 	}
-	if got := fmt.Sprint(cells[5]); got != "printercol-class" {
+	if got := fmt.Sprint(cells[4]); got != "2" {
+		t.Errorf("Wakes cell = %q, want %q", got, "2")
+	}
+	if got := fmt.Sprint(cells[6]); got != "printercol-class" {
 		t.Errorf("Class cell = %q, want %q", got, "printercol-class")
 	}
-	if got := fmt.Sprint(cells[6]); got != "psenna/printercol-repo" {
+	if got := fmt.Sprint(cells[7]); got != "psenna/printercol-repo" {
 		t.Errorf("Repo cell = %q, want %q", got, "psenna/printercol-repo")
 	}
 }

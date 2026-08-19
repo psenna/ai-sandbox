@@ -46,6 +46,27 @@ type SnapshotAttempt struct {
 	Message  string
 }
 
+// RestoreAttempt is the value form of a status.restoreAttempt patch.
+type RestoreAttempt struct {
+	Seq        int
+	SnapshotID string
+	Phase      v1alpha1.RestoreAttemptPhase
+	Roots      []RestoredRoot
+	Attempts   int
+	Duration   time.Duration
+	Reason     string
+	Message    string
+}
+
+// RestoredRoot is one restored root's outcome, the value form of
+// v1alpha1.RestoredRootStatus.
+type RestoredRoot struct {
+	Name            string
+	Source          string
+	WarmMissReason  string
+	BytesDownloaded int64
+}
+
 // SnapshotRecord is the value form of a status.snapshot patch.
 type SnapshotRecord struct {
 	Seq            int
@@ -105,6 +126,9 @@ type Store interface {
 	// a lower sequence number than the one already recorded
 	// (ErrSnapshotSeqRegression).
 	RecordSnapshot(ctx context.Context, r SnapshotRecord, at time.Time) error
+	// RecordRestoreAttempt patches status.restoreAttempt. Idempotent.
+	// Written ONLY by the restore init container (#29).
+	RecordRestoreAttempt(ctx context.Context, a RestoreAttempt, at time.Time) error
 }
 
 // envStore is the real Store, backed by a direct (uncached) client.Client
@@ -213,6 +237,44 @@ func (s *envStore) RecordSnapshot(ctx context.Context, r SnapshotRecord, at time
 			Phase:     v1alpha1.SnapshotAttemptSucceeded,
 			StartedAt: startedAt,
 			UpdatedAt: &ts,
+		}
+		return nil
+	})
+}
+
+// RecordRestoreAttempt patches status.restoreAttempt, preserving StartedAt
+// across repeated updates for the same Seq -- mirrors
+// RecordSnapshotAttempt's own pattern exactly.
+func (s *envStore) RecordRestoreAttempt(ctx context.Context, a RestoreAttempt, at time.Time) error {
+	ts := metav1.NewTime(at)
+	return s.patchStatus(ctx, func(env *v1alpha1.SandboxEnvironment) error {
+		started := &ts
+		if existing := env.Status.RestoreAttempt; existing != nil && int(existing.Seq) == a.Seq && existing.StartedAt != nil {
+			started = existing.StartedAt
+		}
+		var roots []v1alpha1.RestoredRootStatus
+		if len(a.Roots) > 0 {
+			roots = make([]v1alpha1.RestoredRootStatus, len(a.Roots))
+			for i, r := range a.Roots {
+				roots[i] = v1alpha1.RestoredRootStatus{
+					Name:            r.Name,
+					Source:          r.Source,
+					WarmMissReason:  r.WarmMissReason,
+					BytesDownloaded: r.BytesDownloaded,
+				}
+			}
+		}
+		env.Status.RestoreAttempt = &v1alpha1.RestoreAttemptStatus{
+			Seq:            int32(a.Seq), //nolint:gosec // G115: seq is an internal, small, monotonically increasing counter
+			SnapshotID:     a.SnapshotID,
+			Phase:          a.Phase,
+			Roots:          roots,
+			Attempts:       int32(a.Attempts), //nolint:gosec // G115: bounded retry counter
+			DurationMillis: a.Duration.Milliseconds(),
+			Reason:         a.Reason,
+			Message:        a.Message,
+			StartedAt:      started,
+			UpdatedAt:      &ts,
 		}
 		return nil
 	})

@@ -31,12 +31,13 @@ localhost-only control API (`/v1/wait`, `/v1/done`, `/v1/progress`,
 `/v1/status`) so the agent container -- which holds no credential at all --
 can declare a wait condition or report its result. See
 `claude-code/use-sandbox/SKILL.md` for the agent-facing contract. Still
-stubbed/not-implemented: freeze/wake using `internal/storage` (#28/#29), wait
-probe *evaluation* (#30 -- #27 only validates and records a declared probe;
-nothing decides when one is satisfied yet), and the terminal archive (#32)
--- each lands incrementally, replacing one `notImplemented` action and one
-piece of `observeCluster` without touching the state machine or the
-reconcile loop itself.
+stubbed/not-implemented: wait probe *evaluation* (#30 -- #27/#29 only
+validate and record a declared probe; nothing decides when one is satisfied
+yet, so a declared wait does not clear itself), and the terminal archive
+(#32) -- each lands incrementally, replacing one `notImplemented` action and
+one piece of `observeCluster` without touching the state machine or the
+reconcile loop itself. Freeze (#28) and wake/restore (#29) are both
+implemented (see "Wake/restore (#29)" below).
 
 ### Child resources (#19)
 
@@ -252,6 +253,83 @@ and the current CRD field set). In short:
   again afterward (even on failure); `make minio-up` / `make test-minio` /
   `make minio-down` are the same three steps split apart for iterating
   locally without repeatedly restarting MinIO.
+
+### Wake/restore (#29)
+
+Freeze (#28) snapshots `/workspace` and the agent home into `internal/storage`
+and destroys the pod. Wake (#29) restores them into a fresh pod. The wake is
+implemented as a **one-shot init container** — the same `sandboxctl` binary as
+the sidecar, `restore` subcommand — rendered **last** among init containers,
+as a *plain* (non-restartable) init container under `restartPolicy: Never`.
+Both choices are load-bearing: Kubernetes starts no regular container (the
+agent) until every init container has succeeded, so "never start an agent on a
+partially restored workspace" is enforced by the kubelet itself; and a
+non-zero restore exit fails the whole pod, which is what makes a corrupted
+snapshot *loudly* fail the environment (`Failed`,
+`RestoreVerificationFailed`) rather than silently degrade. Folding restore
+into the sidecar's own startup was rejected: the sidecar's `startupProbe`
+has a 30s budget and `restartPolicy: Always` containers can never fail a pod.
+The restore container is rendered only when the class's storage backend is
+`s3` (the `pvc` backend has no restore path; see `internal/storage/doc.go`'s
+gap G5).
+
+What a wake restores, and what it cannot: the workspace (warm or cold, see
+below) and the agent home (always cold from S3) are restored byte-for-byte,
+checksum-verified against the snapshot manifest *before* the agent starts.
+Nothing else comes back — the image cache is cold, containers the agent
+started are gone, `/tmp` and installed packages are gone. The four
+`.sandbox/` markers the agent can read to reconcile against reality are:
+
+| file | author | says |
+|---|---|---|
+| `.sandbox/RESUME.md` | freeze | prose: what the freeze destroyed / preserved |
+| `.sandbox/last-freeze.json` | freeze | machine form of the same |
+| `.sandbox/last-wake.json` | restore | which snapshot was restored, warm or cold, bytes downloaded, and whether the snapshot's agent image / spec hash differ from the environment it was restored into (`SpecChanged`) |
+| `.sandbox/warm-cache.json` | freeze/restore | internal warm-cache marker — informational |
+
+**The warm-cache contract, and its honest trust boundary.** A frozen
+environment's workspace PVC is retained (that is the "warm cache"). On wake,
+if `.sandbox/warm-cache.json` in that PVC validates — the recorded `EnvUID`
+matches, the manifest SHA matches the just-downloaded manifest, the freeze's
+teardown sequence matches, and the recorded file list matches the manifest —
+the workspace is used as-is ("warm"), nothing is downloaded, and the
+`status.restoreAttempt.roots[]` row reports `Source: Warm` with zero bytes.
+Any mismatch, any missing marker, or a missing PVC falls through to a **cold**
+restore from S3. The marker is an *optimization hint, not an authority*: a
+warm restore is only ever a verification shortcut over a restore that could
+have happened cold; a stale or forged marker can cost a cold restore, never
+an unverified one.
+
+**The TTL GC (what it deletes, and what it never will).** A warm cache that
+is never reclaimed would pin every frozen environment's snapshot forever, so
+`internal/controller/warmcachegc.go` (a `manager.Runnable`, like
+`SlotScheduler` — one leader-elected loop cluster-wide, `--warm-cache-gc-interval`,
+default 30m) deletes the workspace PVC of an environment that is (a) exactly
+`Waiting`, (b) not being deleted, (c) holding a **complete, verified
+snapshot** in S3 (`status.snapshot` present with `Seq >= FreezeCount-1`, no
+in-flight/failed `snapshotAttempt`), (d) on an **S3-backed** class, and (e)
+past its class's `warmCacheTTL` (`spec.storage.warmCacheTTL`, default 30m;
+`"0s"` disables GC for that class). Every condition is independently
+required: a `Running` environment's PVC is never touched, and an environment
+whose freeze failed is never touched — before the snapshot exists, the PVC
+is the *only* copy of the agent's context, so deleting it would be data loss,
+not reclamation. One honest second-order consequence of retention, worth
+documenting: a retained RWO PVC on a `WaitForFirstConsumer` StorageClass
+pins a woken environment to the node holding its PV; the GC's reclamation
+is what un-pins it.
+
+**The scoping statement.** #29 makes the wake *correct when it happens*; it
+does **not** make environments wake by themselves. Nothing evaluates wait
+probes yet (#30): a declared wait does not clear itself — a human or a
+controller must clear `status.waitFor` for a wake to be triggered at all, and
+the e2e suite's wake specs all do exactly that via the admin client.
+
+The context-resumption property this all depends on — that a Claude Code
+session transcript, keyed by working directory, survives a freeze → wake
+cycle — was verified **before** the feature was built by a real experiment
+against the stack's own agent image and model endpoint (no Kubernetes):
+see [the spike doc](docs/spike-context-resumption.md) and its runnable
+script at `operator/spike/context-resumption/run.sh`.
 
 ### `make manifests` / `make generate`: `hack/tools`
 

@@ -162,6 +162,7 @@ type s3ProxyFaultBody struct {
 	Mode       string `json:"mode"`
 	Status     int    `json:"status"`
 	AfterBytes int64  `json:"afterBytes"`
+	PathSuffix string `json:"pathSuffix"`
 }
 
 // S3ProxySetFault programs the s3proxy double to fail every PUT/POST once
@@ -169,8 +170,16 @@ type s3ProxyFaultBody struct {
 // (an S3-shaped XML error body) instead of forwarding to MinIO. GET/HEAD/
 // DELETE are never affected.
 func (h *Harness) S3ProxySetFault(ctx context.Context, mode string, status int, afterBytes int64) {
+	h.S3ProxySetFaultOn(ctx, mode, status, afterBytes, "")
+}
+
+// S3ProxySetFaultOn is S3ProxySetFault with a pathSuffix filter: when
+// pathSuffix is non-empty, read faults (corrupt-read/truncate-read) apply
+// only to GETs whose path ends in it, so a spec can corrupt
+// workspace.tar.zst while leaving manifest.json intact.
+func (h *Harness) S3ProxySetFaultOn(ctx context.Context, mode string, status int, afterBytes int64, pathSuffix string) {
 	h.doJSON(ctx, http.MethodPut, h.S3ProxyBaseURL()+"/_control/fault", s3ProxyFaultBody{
-		Mode: mode, Status: status, AfterBytes: afterBytes,
+		Mode: mode, Status: status, AfterBytes: afterBytes, PathSuffix: pathSuffix,
 	}, nil)
 }
 

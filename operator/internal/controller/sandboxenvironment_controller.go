@@ -6,7 +6,7 @@ package controller
 // +kubebuilder:rbac:groups=sandbox.psenna.dev,resources=sandboxclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=sandbox.psenna.dev,resources=sandboxclasses/status,verbs=get;update;patch
 //
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
@@ -24,6 +24,15 @@ package controller
 // request. No update: the Job's spec is effectively immutable after
 // creation, so nothing in this codebase ever needs a plain update. delete
 // so a superseded recovery Job can be reclaimed.
+//
+// The PVC marker's delete verb lands with #29: the new WarmCacheGC runnable
+// (warmcachegc.go) deletes a frozen environment's workspace PVC once its
+// snapshot is older than the class's warmCacheTTL, reclaiming the warm-cache
+// storage. This is the ONLY new RBAC grant #29 adds, and it is on the
+// operator's ClusterRole -- the sidecar/restore container's per-environment
+// Role is unchanged (restore writes only status.restoreAttempt on its own
+// environment, already covered by the existing get+patch on
+// sandboxenvironments/status).
 //
 // The sandboxenvironments{,/status} grants above are what makes it legal
 // under the RBAC escalation/bind check to create the per-environment Role

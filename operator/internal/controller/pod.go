@@ -38,13 +38,35 @@ func (r *Reconciler) ensurePod(ctx context.Context, env *v1alpha1.SandboxEnviron
 		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable: spec hash", "reason", err.Error())
 		return nil
 	}
-	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID, SidecarImage: r.SidecarImage, SpecHash: specHash})
+	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID, SidecarImage: r.SidecarImage, SpecHash: specHash, Restore: restorePlanFor(env)})
 	if err != nil {
 		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable", "reason", err.Error())
 		return nil
 	}
 	names := render.ChildNames(env.Name)
 	return r.applyOne(ctx, env, "Pod", client.ObjectKey{Namespace: env.Namespace, Name: names.Pod}, &corev1.Pod{}, pod)
+}
+
+// restorePlanFor computes the render.RestorePlan for a wake (#29): the
+// snapshot status.snapshot names, formatted as the exact directory ID the
+// freeze wrote (storage.SnapshotID truncates to whole seconds UTC and
+// metav1.Time serialises RFC3339-seconds, so the ID reproduces the freeze's
+// directory exactly -- the property freeze_test.go already relies on when it
+// reads layout.Manifest(0, snap.TakenAt.Time)). nil means "nothing to
+// restore" -- the first-ever run, or a snapshot whose TakenAt is unset --
+// in which case RenderPod emits no restore init container at all. Stability
+// within a phase: status.snapshot changes only during Freezing, so
+// re-renders within one Restoring are identical and the immutable Pod spec
+// is never re-applied with a diff.
+func restorePlanFor(env *v1alpha1.SandboxEnvironment) *render.RestorePlan {
+	s := env.Status.Snapshot
+	if s == nil || s.TakenAt == nil {
+		return nil
+	}
+	return &render.RestorePlan{
+		SnapshotID: storage.SnapshotID(int(s.Seq), s.TakenAt.Time),
+		Seq:        s.Seq,
+	}
 }
 
 // deletePod is the ActionDeletePod handler. It only ever deletes a pod this

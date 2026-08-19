@@ -49,6 +49,12 @@ cp /opt/skills/use-sandbox/SKILL.md /workspace/.claude/skills/use-sandbox/SKILL.
 mkdir -p /workspace/.claude/skills/freeze
 cp /opt/skills/freeze/SKILL.md /workspace/.claude/skills/freeze/SKILL.md
 
+# unfreeze: the counterpart to freeze -- what a wake restored, what it did
+# not (cold image cache, containers gone), and what to re-establish, in
+# order. Only relevant to a pod that was woken, so equally on-demand.
+mkdir -p /workspace/.claude/skills/unfreeze
+cp /opt/skills/unfreeze/SKILL.md /workspace/.claude/skills/unfreeze/SKILL.md
+
 # implement-issue: drive a GitHub issue from spec to merged PR with a tiered
 # model pipeline (Opus plans, Sonnet implements, Opus validates & fixes).
 mkdir -p /workspace/.claude/skills/implement-issue

@@ -165,6 +165,21 @@ func (l Layout) SnapshotFile(seq int, at time.Time, name string) string {
 	return join(l.SnapshotDir(seq, at), name)
 }
 
+// SnapshotFileByID is SnapshotFile for a snapshot named by its already-
+// formatted ID (SnapshotID's output, or a Latest pointer's SnapshotID
+// field) rather than by (seq, at). Unlike SnapshotFile's (seq, at) --
+// always internally computed -- id can arrive from outside this process
+// (the restore init container's --restore-snapshot-id flag), so it is
+// validated as a path segment, never trusted: an empty id, "." / "..", a
+// "/" or a control character is rejected with an ErrInvalid-kinded error
+// rather than silently escaping the environment's own Root().
+func (l Layout) SnapshotFileByID(id, name string) (string, error) {
+	if err := validateSegment(id); err != nil {
+		return "", fmt.Errorf("snapshot id: %w", err)
+	}
+	return join(l.SnapshotsPrefix(), id, name), nil
+}
+
 // Workspace is the key for a snapshot's workspace archive.
 func (l Layout) Workspace(seq int, at time.Time) string {
 	return l.SnapshotFile(seq, at, FileWorkspace)

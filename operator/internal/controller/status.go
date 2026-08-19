@@ -39,6 +39,15 @@ func (r *Reconciler) writeStatus(ctx context.Context, env *v1alpha1.SandboxEnvir
 	// -- and so no further watch event -- is ever issued, leaving the
 	// object stuck with no other trigger to re-reconcile it.
 	decidedWaitFor := env.Status.WaitFor
+	// decidedHasSnapshot guards the last status field lifecycle.Next branches
+	// on that Generation/Phase/WaitFor cannot catch: nextRestoring computes
+	// IncrementWakeCount: env.Status.Snapshot != nil (next.go), and an
+	// external writer can change whether status.snapshot is nil -- the
+	// sidecar's own RecordSnapshot, or a test harness driving the
+	// freeze/wake contract -- without touching Phase or Generation. Without
+	// this check, a stale Decision could double- or non-increment
+	// WakeCount exactly like the #28 bug this same guard was extended for.
+	decidedHasSnapshot := env.Status.Snapshot != nil
 
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := &v1alpha1.SandboxEnvironment{}
@@ -46,7 +55,8 @@ func (r *Reconciler) writeStatus(ctx context.Context, env *v1alpha1.SandboxEnvir
 			return err
 		}
 		if fresh.Generation != decidedGen || fresh.Status.Phase != decidedFrom ||
-			!apiequality.Semantic.DeepEqual(fresh.Status.WaitFor, decidedWaitFor) {
+			!apiequality.Semantic.DeepEqual(fresh.Status.WaitFor, decidedWaitFor) ||
+			(fresh.Status.Snapshot != nil) != decidedHasSnapshot {
 			return errStaleDecision
 		}
 		desired := lifecycle.Apply(fresh, d)
