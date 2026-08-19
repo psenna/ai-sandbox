@@ -145,6 +145,15 @@ type SandboxEnvironmentStatus struct {
 	// +optional
 	WaitFor *WaitForStatus `json:"waitFor,omitempty"`
 
+	// ProbeAttempt records the operator's most recent evaluation of
+	// status.waitFor (#30). Written ONLY by the operator's ProbeEvaluator
+	// (internal/controller/probe.go), never by the sidecar or the agent. It
+	// is how a human, and the requeue logic, tell "still pending, will
+	// retry" from "unevaluatable, will fail" without inferring anything from
+	// timing.
+	// +optional
+	ProbeAttempt *ProbeAttemptStatus `json:"probeAttempt,omitempty"`
+
 	// AgentResult records the agent's own report of how its run ended, as
 	// declared through the sandboxctl sidecar's POST /v1/done.
 	// +optional
@@ -277,6 +286,75 @@ const (
 	WaitTypeS3ObjectExists = "S3ObjectExists"
 	WaitTypeNotBefore      = "NotBefore"
 )
+
+// ProbeAttemptPhase is the state of the probe evaluation being attempted.
+// +kubebuilder:validation:Enum=Pending;Satisfied;Failed
+type ProbeAttemptPhase string
+
+const (
+	// ProbeAttemptPending means the probe has been evaluated and is not yet
+	// satisfied (or could not be evaluated this pass but is still within the
+	// consecutive-error budget).
+	ProbeAttemptPending ProbeAttemptPhase = "Pending"
+	// ProbeAttemptSatisfied means the probe's condition has been met.
+	ProbeAttemptSatisfied ProbeAttemptPhase = "Satisfied"
+	// ProbeAttemptFailed means the probe could not be evaluated and the
+	// consecutive-error budget was exhausted -- the environment fails.
+	ProbeAttemptFailed ProbeAttemptPhase = "Failed"
+)
+
+// ProbeAttemptStatus records the operator's evaluation of status.waitFor
+// (#30). Written ONLY by the operator's ProbeEvaluator
+// (internal/controller/probe.go), never by the sidecar or the agent. It is
+// how a human, and the requeue logic, tell "still pending, will retry" from
+// "unevaluatable, will fail" without inferring anything from timing.
+type ProbeAttemptStatus struct {
+	// Type is the WaitForStatus.Type this attempt evaluated.
+	// +kubebuilder:validation:Enum=GitProxyCheck;HTTPGet;S3ObjectExists;NotBefore
+	Type string `json:"type"`
+
+	// Attempts is how many evaluation attempts have been made so far.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempts int32 `json:"attempts,omitempty"`
+
+	// ConsecutiveErrors is how many consecutive unevaluatable results have
+	// been observed. When it reaches the evaluator's MaxConsecutiveErrors
+	// threshold the environment fails rather than hanging.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ConsecutiveErrors int32 `json:"consecutiveErrors,omitempty"`
+
+	// Phase is the current state of this probe attempt.
+	Phase ProbeAttemptPhase `json:"phase"`
+
+	// LastResult is the outcome of the most recent evaluation:
+	// "satisfied", "pending", or "error".
+	// +kubebuilder:validation:Enum=satisfied;pending;error
+	// +optional
+	LastResult string `json:"lastResult,omitempty"`
+
+	// Reason is a short, stable machine reason. See
+	// internal/lifecycle/conditions.go's ReasonProbeFailed.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is a human explanation. Never contains a credential.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// LastAttemptAt is when the most recent evaluation ran.
+	// +optional
+	LastAttemptAt *metav1.Time `json:"lastAttemptAt,omitempty"`
+
+	// NextEligibleAt is when the next evaluation may run. The evaluator
+	// performs at most one I/O call per reconcile and suppresses calls
+	// before this time; the requeue logic wakes the reconciler at it.
+	// +optional
+	NextEligibleAt *metav1.Time `json:"nextEligibleAt,omitempty"`
+}
 
 // AgentOutcome is how the agent reported its run ended.
 // +kubebuilder:validation:Enum=Succeeded;Failed

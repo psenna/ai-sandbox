@@ -374,7 +374,7 @@ func nextWaiting(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.T
 		return newBuilder(env, facts, now).
 			phase(v1alpha1.PhaseFailed).
 			slot(false).
-			patch(StatusPatch{SetFinishedAt: newMetaTime(now)}).
+			patch(StatusPatch{SetFinishedAt: newMetaTime(now), SetProbeAttempt: facts.ProbeAttempt}).
 			cond(ConditionReady, metav1.ConditionFalse, reason, facts.WaitProbeFailure.Message).
 			build()
 	case env.Spec.Suspend:
@@ -395,16 +395,26 @@ func nextWaiting(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.T
 			cond(ConditionWaitSatisfied, metav1.ConditionUnknown, ReasonProbeNotEvaluated, "").
 			build()
 	case facts.WaitProbeSatisfied:
+		// The satisfied branch clears waitFor AND stamps the attempt as
+		// Satisfied, so status.probeAttempt records the terminal evaluation
+		// even after the wait itself is gone.
+		attempt := facts.ProbeAttempt
+		if attempt != nil {
+			attempt = attempt.DeepCopy()
+			attempt.Phase = v1alpha1.ProbeAttemptSatisfied
+			attempt.LastResult = "satisfied"
+		}
 		return newBuilder(env, facts, now).
 			phase(v1alpha1.PhaseReady).
 			slot(true).
-			patch(StatusPatch{ClearWaitFor: true}).
+			patch(StatusPatch{ClearWaitFor: true, SetProbeAttempt: attempt}).
 			cond(ConditionWaitSatisfied, metav1.ConditionTrue, ReasonProbeSatisfied, "").
 			build()
 	default:
 		return newBuilder(env, facts, now).
 			phase(v1alpha1.PhaseWaiting).
 			slot(false).
+			patch(StatusPatch{SetProbeAttempt: facts.ProbeAttempt}).
 			cond(ConditionWaitSatisfied, metav1.ConditionFalse, ReasonProbePending, "").
 			build()
 	}

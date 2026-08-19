@@ -91,6 +91,10 @@ type Reconciler struct {
 	// SidecarImage mirrors internal/config.Config.SidecarImage; passed into
 	// render.Inputs by ensurePod.
 	SidecarImage string
+	// Probes evaluates an environment's declared wait (status.waitFor) against
+	// the real world (#30). Nil leaves the probe facts at their safe zero
+	// reading -- the honest state before the evaluator is wired up.
+	Probes *ProbeEvaluator
 }
 
 func (r *Reconciler) now() time.Time {

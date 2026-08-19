@@ -292,6 +292,80 @@ spec:
                 - Done
                 - Failed
                 type: string
+              probeAttempt:
+                description: |-
+                  ProbeAttempt records the operator's most recent evaluation of
+                  status.waitFor (#30). Written ONLY by the operator's ProbeEvaluator
+                  (internal/controller/probe.go), never by the sidecar or the agent. It
+                  is how a human, and the requeue logic, tell "still pending, will
+                  retry" from "unevaluatable, will fail" without inferring anything from
+                  timing.
+                properties:
+                  attempts:
+                    description: Attempts is how many evaluation attempts have been
+                      made so far.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  consecutiveErrors:
+                    description: |-
+                      ConsecutiveErrors is how many consecutive unevaluatable results have
+                      been observed. When it reaches the evaluator's MaxConsecutiveErrors
+                      threshold the environment fails rather than hanging.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  lastAttemptAt:
+                    description: LastAttemptAt is when the most recent evaluation
+                      ran.
+                    format: date-time
+                    type: string
+                  lastResult:
+                    description: |-
+                      LastResult is the outcome of the most recent evaluation:
+                      "satisfied", "pending", or "error".
+                    enum:
+                    - satisfied
+                    - pending
+                    - error
+                    type: string
+                  message:
+                    description: Message is a human explanation. Never contains a
+                      credential.
+                    maxLength: 512
+                    type: string
+                  nextEligibleAt:
+                    description: |-
+                      NextEligibleAt is when the next evaluation may run. The evaluator
+                      performs at most one I/O call per reconcile and suppresses calls
+                      before this time; the requeue logic wakes the reconciler at it.
+                    format: date-time
+                    type: string
+                  phase:
+                    description: Phase is the current state of this probe attempt.
+                    enum:
+                    - Pending
+                    - Satisfied
+                    - Failed
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is a short, stable machine reason. See
+                      internal/lifecycle/conditions.go's ReasonProbeFailed.
+                    maxLength: 64
+                    type: string
+                  type:
+                    description: Type is the WaitForStatus.Type this attempt evaluated.
+                    enum:
+                    - GitProxyCheck
+                    - HTTPGet
+                    - S3ObjectExists
+                    - NotBefore
+                    type: string
+                required:
+                - phase
+                - type
+                type: object
               queuedSince:
                 description: QueuedSince is when the environment started waiting for
                   a slot.
