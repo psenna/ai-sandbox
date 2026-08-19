@@ -42,6 +42,11 @@ type StatusPatch struct {
 	IncrementWakeCount   bool
 	ClearWaitFor         bool
 	SetArchiveURI        string
+	// SetProbeAttempt replaces status.probeAttempt with the evaluator's most
+	// recent attempt record (#30). Unlike the timestamp fields it is NOT
+	// set-once: the attempt is a mutable record that is replaced wholesale on
+	// every evaluation.
+	SetProbeAttempt *v1alpha1.ProbeAttemptStatus
 }
 
 // Decision is the complete output of Next.

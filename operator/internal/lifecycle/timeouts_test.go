@@ -320,4 +320,47 @@ func TestNext_Timeouts_RequeueAfter(t *testing.T) {
 			t.Errorf("RequeueAfter = %v, want 0", d.RequeueAfter)
 		}
 	})
+
+	t.Run("RequeueAfter honors NextEligibleAt when no timeout deadline applies", func(t *testing.T) {
+		// Waiting with a waitFor but no Frozen condition: the waiting-timeout
+		// clock has no anchor and Total is ~71h away, so without #30's
+		// NextEligibleAt the reconciler would have no reason to wake. The
+		// probe's backoff window must drive the requeue.
+		f := baseFacts()
+		env := envAt(v1alpha1.PhaseWaiting, withWaitFor(aWaitFor()))
+		next := metav1.NewTime(fixedNow.Add(5 * time.Minute))
+		env.Status.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{NextEligibleAt: &next}
+		d := Next(env, f, fixedNow)
+		if want := clampDuration(5*time.Minute, MinRequeueAfter, MaxRequeueAfter); d.RequeueAfter != want {
+			t.Errorf("RequeueAfter = %v, want %v", d.RequeueAfter, want)
+		}
+	})
+
+	t.Run("RequeueAfter uses the earlier of NextEligibleAt and the waiting-timeout deadline", func(t *testing.T) {
+		// Frozen anchored 23h50m ago -> waiting deadline fixedNow+10m.
+		// NextEligibleAt at fixedNow+5m is earlier and must win.
+		f := baseFacts()
+		env := envAt(v1alpha1.PhaseWaiting, withWaitFor(aWaitFor()),
+			withCondition(ConditionFrozen, metav1.ConditionTrue, ReasonWaitDeclared, fixedNow.Add(-23*time.Hour-50*time.Minute)))
+		next := metav1.NewTime(fixedNow.Add(5 * time.Minute))
+		env.Status.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{NextEligibleAt: &next}
+		d := Next(env, f, fixedNow)
+		if want := clampDuration(5*time.Minute, MinRequeueAfter, MaxRequeueAfter); d.RequeueAfter != want {
+			t.Errorf("RequeueAfter = %v, want %v", d.RequeueAfter, want)
+		}
+	})
+
+	t.Run("RequeueAfter uses the waiting-timeout deadline when it is earlier than NextEligibleAt", func(t *testing.T) {
+		// Same Frozen anchor -> waiting deadline fixedNow+10m; NextEligibleAt
+		// at fixedNow+20m is later and must lose.
+		f := baseFacts()
+		env := envAt(v1alpha1.PhaseWaiting, withWaitFor(aWaitFor()),
+			withCondition(ConditionFrozen, metav1.ConditionTrue, ReasonWaitDeclared, fixedNow.Add(-23*time.Hour-50*time.Minute)))
+		next := metav1.NewTime(fixedNow.Add(20 * time.Minute))
+		env.Status.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{NextEligibleAt: &next}
+		d := Next(env, f, fixedNow)
+		if want := clampDuration(10*time.Minute, MinRequeueAfter, MaxRequeueAfter); d.RequeueAfter != want {
+			t.Errorf("RequeueAfter = %v, want %v", d.RequeueAfter, want)
+		}
+	})
 }

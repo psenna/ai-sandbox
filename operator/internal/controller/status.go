@@ -48,6 +48,16 @@ func (r *Reconciler) writeStatus(ctx context.Context, env *v1alpha1.SandboxEnvir
 	// this check, a stale Decision could double- or non-increment
 	// WakeCount exactly like the #28 bug this same guard was extended for.
 	decidedHasSnapshot := env.Status.Snapshot != nil
+	// decidedProbeAttempt guards the last status field lifecycle.Next both
+	// branches on and writes: nextWaiting threads facts.ProbeAttempt into
+	// status.probeAttempt, and timeouts.go's nextTimeoutDeadline reads
+	// status.probeAttempt.NextEligibleAt to compute RequeueAfter. An external
+	// writer (the sidecar, or a test harness driving the wait contract) can
+	// change status.probeAttempt without touching Phase, Generation, WaitFor
+	// or Snapshot -- without this check, a stale Decision could clobber a
+	// concurrent attempt record (e.g. resetting NextEligibleAt and losing the
+	// backoff) exactly like the #28 bug the Snapshot guard was added for.
+	decidedProbeAttempt := env.Status.ProbeAttempt
 
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := &v1alpha1.SandboxEnvironment{}
@@ -56,7 +66,8 @@ func (r *Reconciler) writeStatus(ctx context.Context, env *v1alpha1.SandboxEnvir
 		}
 		if fresh.Generation != decidedGen || fresh.Status.Phase != decidedFrom ||
 			!apiequality.Semantic.DeepEqual(fresh.Status.WaitFor, decidedWaitFor) ||
-			(fresh.Status.Snapshot != nil) != decidedHasSnapshot {
+			(fresh.Status.Snapshot != nil) != decidedHasSnapshot ||
+			!apiequality.Semantic.DeepEqual(fresh.Status.ProbeAttempt, decidedProbeAttempt) {
 			return errStaleDecision
 		}
 		desired := lifecycle.Apply(fresh, d)

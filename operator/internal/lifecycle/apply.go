@@ -40,6 +40,9 @@ func Apply(env *v1alpha1.SandboxEnvironment, d Decision) *v1alpha1.SandboxEnviro
 	if d.StatusPatch.SetArchiveURI != "" {
 		s.ArchiveURI = d.StatusPatch.SetArchiveURI
 	}
+	if d.StatusPatch.SetProbeAttempt != nil {
+		s.ProbeAttempt = d.StatusPatch.SetProbeAttempt.DeepCopy()
+	}
 
 	// Slot: Apply implements only the RELEASE half. #20 owns granting.
 	if !d.SlotWanted {

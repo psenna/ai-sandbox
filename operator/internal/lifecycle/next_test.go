@@ -27,6 +27,9 @@ type transitionCase struct {
 	// type (checked in addition to wantConds' Status/Reason check for that
 	// same type, if present). Absent entries are not checked.
 	wantMsgs map[string]string
+	// wantProbeAttempt, when non-nil, asserts d.StatusPatch.SetProbeAttempt
+	// deep-equals it (#30).
+	wantProbeAttempt *v1alpha1.ProbeAttemptStatus
 }
 
 func (tc transitionCase) run(t *testing.T) {
@@ -64,6 +67,9 @@ func (tc transitionCase) run(t *testing.T) {
 		if c.Message != wantMsg {
 			t.Errorf("condition %s Message = %q, want %q", condType, c.Message, wantMsg)
 		}
+	}
+	if tc.wantProbeAttempt != nil && !reflect.DeepEqual(d.StatusPatch.SetProbeAttempt, tc.wantProbeAttempt) {
+		t.Errorf("StatusPatch.SetProbeAttempt = %+v, want %+v", d.StatusPatch.SetProbeAttempt, tc.wantProbeAttempt)
 	}
 }
 
@@ -397,6 +403,69 @@ func TestNext_Transitions(t *testing.T) {
 			wantSlotWanted: false,
 			wantActions:    []Action{ActionEnsureResources},
 			wantConds:      map[string]wantCond{ConditionWaitSatisfied: {metav1.ConditionFalse, ReasonProbePending}},
+		},
+		{
+			name: "W7 probe pending threads the attempt record",
+			env:  envAt(v1alpha1.PhaseWaiting, withWaitFor(aWaitFor())),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{
+					Type: "GitProxyCheck", Phase: v1alpha1.ProbeAttemptPending,
+					Attempts: 2, LastResult: "pending",
+				}
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseWaiting,
+			wantSlotWanted: false,
+			wantActions:    []Action{ActionEnsureResources},
+			wantConds:      map[string]wantCond{ConditionWaitSatisfied: {metav1.ConditionFalse, ReasonProbePending}},
+			wantProbeAttempt: &v1alpha1.ProbeAttemptStatus{
+				Type: "GitProxyCheck", Phase: v1alpha1.ProbeAttemptPending,
+				Attempts: 2, LastResult: "pending",
+			},
+		},
+		{
+			name: "W8 probe satisfied stamps the attempt Satisfied and clears waitFor",
+			env:  envAt(v1alpha1.PhaseWaiting, withWaitFor(aWaitFor())),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.WaitProbeSatisfied = true
+				f.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{
+					Type: "GitProxyCheck", Phase: v1alpha1.ProbeAttemptPending,
+					Attempts: 3, LastResult: "satisfied",
+				}
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseReady,
+			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources},
+			wantConds:      map[string]wantCond{ConditionWaitSatisfied: {metav1.ConditionTrue, ReasonProbeSatisfied}},
+			wantProbeAttempt: &v1alpha1.ProbeAttemptStatus{
+				Type: "GitProxyCheck", Phase: v1alpha1.ProbeAttemptSatisfied,
+				Attempts: 3, LastResult: "satisfied",
+			},
+		},
+		{
+			name: "W9 probe failure threads the attempt record",
+			env:  envAt(v1alpha1.PhaseWaiting, withWaitFor(aWaitFor())),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.WaitProbeFailure = &StepFailure{Reason: ReasonProbeFailed, Message: "broker returned 401"}
+				f.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{
+					Type: "GitProxyCheck", Phase: v1alpha1.ProbeAttemptFailed,
+					Attempts: 5, ConsecutiveErrors: 5, LastResult: "error",
+					Reason: ReasonProbeFailed, Message: "broker returned 401",
+				}
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseFailed,
+			wantSlotWanted: false,
+			wantConds:      map[string]wantCond{ConditionReady: {metav1.ConditionFalse, ReasonProbeFailed}},
+			wantProbeAttempt: &v1alpha1.ProbeAttemptStatus{
+				Type: "GitProxyCheck", Phase: v1alpha1.ProbeAttemptFailed,
+				Attempts: 5, ConsecutiveErrors: 5, LastResult: "error",
+				Reason: ReasonProbeFailed, Message: "broker returned 401",
+			},
 		},
 
 		// --- agent/pod terminal (Restoring/Running) ---

@@ -76,6 +76,9 @@ func (b *builder) patch(p StatusPatch) *builder {
 	if p.SetArchiveURI != "" {
 		b.statusPatch.SetArchiveURI = p.SetArchiveURI
 	}
+	if p.SetProbeAttempt != nil {
+		b.statusPatch.SetProbeAttempt = p.SetProbeAttempt
+	}
 	return b
 }
 

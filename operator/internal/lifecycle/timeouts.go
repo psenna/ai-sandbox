@@ -115,6 +115,13 @@ func nextTimeoutDeadline(env v1alpha1.SandboxEnvironment, facts ClusterFacts, ph
 				consider(since.Add(t))
 			}
 		}
+		// The probe evaluator's backoff window (#30): the reconciler must wake
+		// at NextEligibleAt so the next evaluation runs promptly rather than
+		// waiting for the waiting-timeout deadline (up to 24h away) or some
+		// unrelated event. consider() keeps the earlier of the two.
+		if pa := env.Status.ProbeAttempt; pa != nil && pa.NextEligibleAt != nil {
+			consider(pa.NextEligibleAt.Time)
+		}
 	}
 	return deadline, have
 }

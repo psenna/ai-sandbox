@@ -18,6 +18,7 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 		ClusterID:            cfg.ClusterID,
 		WatchNamespace:       cfg.WatchNamespace,
 		SidecarImage:         cfg.SidecarImage,
+		Probes:               controller.NewProbeEvaluator(),
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

@@ -45,8 +45,9 @@ type resourceCheck struct {
 // forever on any normal cluster. Lost (the bound PV was destroyed) is a
 // real terminal fault and DOES flip readiness false.
 //
-// Still stubbed: ProbeObserved (#30), ArchiveWritten (#32). SnapshotComplete
-// is no longer stubbed -- see observeSnapshot in freeze.go.
+// Still stubbed: ArchiveWritten (#32). ProbeObserved is no longer stubbed --
+// see observeProbe below. SnapshotComplete is no longer stubbed either -- see
+// observeSnapshot in freeze.go.
 func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) (lifecycle.ClusterFacts, error) {
 	f := lifecycle.ClusterFacts{
 		SlotGranted:       env.Status.Slot.Granted,
@@ -68,10 +69,12 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		return f, nil
 	}
 
-	if _, err := r.resolveCredentials(ctx, class); err != nil {
+	creds, err := r.resolveCredentials(ctx, class)
+	if err != nil {
 		f.ResourcesProblem = err.Error()
 		return f, nil
 	}
+	r.observeProbe(ctx, env, class, creds, &f)
 
 	names := render.ChildNames(env.Name)
 	checks := []resourceCheck{
@@ -108,6 +111,39 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 
 	f.ResourcesReady = true
 	return f, nil
+}
+
+// observeProbe fills in the four wait-probe facts (#30) by running the
+// evaluator against the environment's declared wait, when one exists and the
+// evaluator is wired up. A nil r.Probes leaves the facts at their safe zero
+// reading (ProbeObserved=false -> WaitSatisfied=Unknown/ProbeNotEvaluated),
+// which is exactly the honest state before #30 ships. The evaluator's own
+// skip path (the backoff window) reports ProbeObserved=true with a nil
+// attempt, so status.probeAttempt -- and its NextEligibleAt requeue -- is
+// preserved untouched.
+func (r *Reconciler) observeProbe(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass, creds render.Credentials, f *lifecycle.ClusterFacts) {
+	if r.Probes == nil {
+		return
+	}
+	if env.Status.Phase != v1alpha1.PhaseWaiting || env.Status.WaitFor == nil {
+		return
+	}
+	pf, attempt, err := r.Probes.Evaluate(ctx, env, class, creds)
+	if err != nil {
+		// Evaluate's error is reserved for failures that must fail the
+		// reconcile; none exist today. Swallow defensively so a probe bug can
+		// never wedge the reconcile loop.
+		return
+	}
+	f.ProbeObserved = pf.ProbeObserved
+	f.WaitProbeSatisfied = pf.WaitProbeSatisfied
+	if pf.WaitProbeFailure != nil {
+		f.WaitProbeFailure = &lifecycle.StepFailure{
+			Reason:  pf.WaitProbeFailure.Reason,
+			Message: truncateMessage(pf.WaitProbeFailure.Message, podFailureMessageBytes),
+		}
+	}
+	f.ProbeAttempt = attempt
 }
 
 // observeResources looks up every child in checks, filling in f.ResourcesProblem

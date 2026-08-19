@@ -176,6 +176,11 @@ type ClusterFacts struct {
 	// WaitProbeFailure, when non-nil, is an unevaluatable probe (bad URL,
 	// auth failure) -- must fail the environment rather than hang.
 	WaitProbeFailure *StepFailure
+	// ProbeAttempt is the evaluator's most recent attempt record, threaded
+	// into status.probeAttempt by nextWaiting. Nil when the evaluator skipped
+	// I/O this pass (the backoff window) or did not run at all -- the safe
+	// zero reading, like ArchiveURI.
+	ProbeAttempt *v1alpha1.ProbeAttemptStatus
 
 	// ---- archive (#32) ----
 
