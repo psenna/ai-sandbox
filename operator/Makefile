@@ -74,7 +74,15 @@ E2E_TOOLBOX_IMAGE  ?= docker:28-cli
 E2E_BIN_DIR        ?= $(SHARED_DIR)/.e2e-bin
 E2E_KUBECONFIG     ?= $(SHARED_DIR)/.e2e-kubeconfig
 E2E_ARTIFACT_DIR   ?= $(CURDIR)/test/e2e/_artifacts
-E2E_TIMEOUT        ?= 15m
+# The wake/restore suite (#29) added several long specs that pushed the full
+# suite well past the old 15m budget: never-leaks runs three freeze->wake
+# cycles (~9m, Serial), and the corrupted/truncated/freeze-failed/backend-out
+# specs form a Serial chain. A local run is ~17m; CI's faster hardware lands
+# right at 15m, so the prior --timeout=15m aborted the suite mid-run (the
+# e2e-run step exited non-zero after exactly 15m). 25m leaves ~8m of headroom
+# for runner variance and modest future growth without cutting the
+# acceptance-criteria coverage (the cycle counts are the point of never-leaks).
+E2E_TIMEOUT        ?= 25m
 E2E_PROCS          ?= 4
 E2E_SEED           ?= 1
 GINKGO_FLAGS       ?= --timeout=$(E2E_TIMEOUT) --procs=$(E2E_PROCS) --seed=$(E2E_SEED) --flake-attempts=1 --fail-fast=false --keep-going --poll-progress-after=60s --poll-progress-interval=30s -v
