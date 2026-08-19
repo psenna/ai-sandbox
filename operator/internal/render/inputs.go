@@ -79,6 +79,23 @@ type Inputs struct {
 	// and never imports internal/storage -- this is a plain string, not a
 	// storage.Manifest field.
 	SpecHash string
+
+	// Restore, when non-nil, describes the snapshot a wake must restore
+	// (#29): internal/controller computes it from status.snapshot via
+	// storage.SnapshotID (restorePlanFor). nil means "nothing to restore"
+	// -- the first-ever run, or an unresolvable snapshot -- in which case
+	// RenderPod emits no restore init container at all. Only consulted by
+	// RenderPod, not by Render.
+	Restore *RestorePlan
+}
+
+// RestorePlan describes the snapshot a wake must restore, computed by
+// internal/controller from status.snapshot via storage.SnapshotID.
+// internal/render stays pure and never imports internal/storage -- this is
+// a plain string, exactly like SpecHash.
+type RestorePlan struct {
+	SnapshotID string
+	Seq        int32
 }
 
 // Objects holds every rendered child object for one environment.

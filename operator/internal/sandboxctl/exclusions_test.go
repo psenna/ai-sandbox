@@ -8,6 +8,7 @@ import (
 	"sort"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
@@ -78,6 +79,40 @@ func TestSnapshotExclude_RoundTrip(t *testing.T) {
 		t.Fatal("ReadArchive (unexcluded) succeeded, want an error from the unrestorable FIFO entry")
 	}
 }
+
+// TestSnapshotExclude_WarmMarkerAndRestoreSentinel verifies the two #29
+// exclusions directly: a stale warm-cache.json must never be baked into a
+// new archive, and the restore-in-progress sentinel must never be restored
+// into a fresh workspace.
+func TestSnapshotExclude_WarmMarkerAndRestoreSentinel(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{".sandbox/warm-cache.json", true},
+		{".sandbox/restore-in-progress", true},
+		{".sandbox/last-freeze.json", false},
+		{".sandbox/RESUME.md", false},
+		{"workspace.txt", false},
+	}
+	for _, tc := range cases {
+		fi := fakeFileInfo{}
+		if got := SnapshotExclude(tc.rel, fi); got != tc.want {
+			t.Errorf("SnapshotExclude(%q) = %v, want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+// fakeFileInfo is a minimal fs.FileInfo satisfying SnapshotExclude's use of
+// Mode()/IsDir() for a regular file, avoiding a real filesystem entry.
+type fakeFileInfo struct{}
+
+func (fakeFileInfo) Name() string           { return "" }
+func (fakeFileInfo) Size() int64            { return 0 }
+func (fakeFileInfo) Mode() os.FileMode      { return 0o644 }
+func (fakeFileInfo) ModTime() (t time.Time) { return t }
+func (fakeFileInfo) IsDir() bool            { return false }
+func (fakeFileInfo) Sys() any               { return nil }
 
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()

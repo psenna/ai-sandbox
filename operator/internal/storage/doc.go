@@ -116,7 +116,14 @@
 //   - G3: the CRD/status has no specHash field anywhere. SpecHash
 //     (spechash.go) is provided as a pure helper, and Manifest.SpecHash is
 //     always populated, but surfacing a spec hash on SandboxEnvironment's
-//     status is a later issue's job.
+//     status is a later issue's job. (#29 partially closes the gap: the
+//     wake marker the sidecar writes at restore time -- /workspace/
+//     .sandbox/last-wake.json — now compares the snapshot's
+//     Manifest.SpecHash and Manifest.AgentImage against the environment the
+//     snapshot is being restored into, and surfaces the result as its
+//     SpecChanged field, so an agent that reads that file learns whether
+//     its restored workspace was produced from the spec it is now running
+//     under, even though the comparison never lands on the CR status.)
 //   - G4: the CRD has no resolved agent-image-digest field.
 //     Manifest.AgentImage is required; Manifest.AgentImageDigest is
 //     optional and never populated by this package itself -- resolving a

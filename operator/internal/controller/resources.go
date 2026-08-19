@@ -131,8 +131,19 @@ func (r *Reconciler) ensureResources(ctx context.Context, env *v1alpha1.SandboxE
 	if err := r.applyOne(ctx, env, "RoleBinding", client.ObjectKey{Namespace: env.Namespace, Name: names.RoleBinding}, &rbacv1.RoleBinding{}, objs.RoleBinding); err != nil {
 		return err
 	}
-	if err := r.applyOne(ctx, env, "PersistentVolumeClaim", client.ObjectKey{Namespace: env.Namespace, Name: names.PVC}, &corev1.PersistentVolumeClaim{}, objs.PVC); err != nil {
-		return err
+	// The PVC apply is skipped while Waiting (#29): nothing mounts the
+	// workspace while frozen, and WarmCacheGC's whole purpose is to delete a
+	// frozen environment's PVC once its snapshot is older than the class's
+	// warmCacheTTL -- re-applying it here (withEnsureResources prepends
+	// ActionEnsureResources for every non-terminal phase, Waiting included)
+	// would recreate the just-deleted PVC within a second and defeat the GC
+	// entirely. The PVC is unconditionally re-applied on the very next
+	// Waiting->Ready->Restoring pass, since withEnsureResources prepends
+	// ActionEnsureResources before ActionEnsurePod in the SAME Decision.
+	if env.Status.Phase != v1alpha1.PhaseWaiting {
+		if err := r.applyOne(ctx, env, "PersistentVolumeClaim", client.ObjectKey{Namespace: env.Namespace, Name: names.PVC}, &corev1.PersistentVolumeClaim{}, objs.PVC); err != nil {
+			return err
+		}
 	}
 	if err := r.applyOne(ctx, env, "ConfigMap", client.ObjectKey{Namespace: env.Namespace, Name: names.ConfigMap}, &corev1.ConfigMap{}, objs.ConfigMap); err != nil {
 		return err

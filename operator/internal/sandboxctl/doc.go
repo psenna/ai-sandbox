@@ -49,4 +49,20 @@
 // configuration and streaming the actual archive/upload is unavoidably this
 // package's job, since the sidecar is the only process running inside the
 // pod with the workspace and agent-home volumes mounted.
+//
+// # Wake (#29)
+//
+// This package also owns the wake path: restore, integrity verification,
+// and the warm-cache marker contract. Unlike freeze (which runs inside the
+// long-lived sandboxctl sidecar or the recovery Job), restore runs as a
+// ONE-SHOT init container -- the `restore` subcommand of this SAME binary
+// (runrestore.go, restore.go), ordered LAST among init containers, after
+// the sandboxctl native sidecar and any engine init containers (see
+// internal/render/pod.go). This is structural, not a style choice: a plain
+// init container under restartPolicy: Never is the only way "never start
+// the agent on a partially restored workspace" is enforced by the kubelet
+// itself -- a non-zero exit fails the whole pod rather than merely
+// reporting an unhealthy container. warmmarker.go/wakemarker.go/purge.go/
+// restoreconfig.go round out the implementation; retrystep.go's retryStep
+// is shared, unmodified in behavior, between the freeze and restore paths.
 package sandboxctl

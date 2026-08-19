@@ -23,6 +23,12 @@ type Config struct {
 	// Snapshot is the freeze-snapshot backend configuration. See
 	// snapshotconfig.go.
 	Snapshot SnapshotConfig
+
+	// Restore is the wake-restore configuration (#29). Only consulted by
+	// the `restore` subcommand; unvalidated (and irrelevant) for `serve`/
+	// `freeze-once`, matching how those two never touch this field. See
+	// restoreconfig.go.
+	Restore RestoreConfig
 }
 
 // Load parses args into a Config, falling back to the environment (via
@@ -42,6 +48,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.DurationVar(&c.ShutdownTimeout, "shutdown-timeout", envOrDuration(getenv, "SHUTDOWN_TIMEOUT", 100*time.Second),
 		"bounded deadline for graceful HTTP shutdown after SIGTERM/SIGINT; must sit inside the pod's terminationGracePeriodSeconds with headroom")
 	registerSnapshotFlags(fs, &c.Snapshot, getenv)
+	registerRestoreFlags(fs, &c.Restore, getenv)
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -23,6 +22,12 @@ const (
 	SnapshotReasonArchiveFailed      = "ArchiveFailed"
 	SnapshotReasonTeardownFailed     = "TeardownFailed"
 	SnapshotReasonInternal           = "Internal"
+	// SnapshotReasonRestoreInProgress means Freeze was asked to run while
+	// the restore container's restore-in-progress sentinel
+	// (<workspacePath>/.sandbox/restore-in-progress, restore.go) is still
+	// present -- a suspend arriving mid-restore must never let freeze
+	// snapshot a half-extracted tree. See Freeze's top-of-function check.
+	SnapshotReasonRestoreInProgress = "RestoreInProgress"
 )
 
 // SnapshotHook is the real FreezeHook: engine teardown, quiesce, marker
@@ -69,6 +74,19 @@ func (h *SnapshotHook) Freeze(ctx context.Context, s Snapshot) error {
 	now := h.Now
 	if now == nil {
 		now = time.Now
+	}
+
+	// 0. Fail closed if a restore is currently in progress on this
+	// workspace: the restore container writes
+	// <workspacePath>/.sandbox/restore-in-progress as its literal first
+	// action and removes it on success (see restore.go). A SIGTERM arriving
+	// mid-restore must never let this Freeze snapshot a half-extracted
+	// tree. Checked before ANYTHING else, including the pvc-backend guard
+	// below, so this holds regardless of backend configuration.
+	if restoreInProgress(h.Cfg.WorkspacePath) {
+		msg := "a restore is currently in progress on this workspace"
+		h.recordFailure(ctx, int(s.FreezeCount), 0, SnapshotReasonRestoreInProgress, msg)
+		return fmt.Errorf("sandboxctl: %s", msg)
 	}
 
 	// Fail closed for the "pvc" backend BEFORE touching h.Backend (which is
@@ -239,7 +257,29 @@ func (h *SnapshotHook) Freeze(ctx context.Context, s Snapshot) error {
 		return fmt.Errorf("sandboxctl: uploading latest pointer: %w", err)
 	}
 
-	// 10. Record success -- flips status.snapshotAttempt to Succeeded in the
+	// 10. Write the warm-cache marker: a NEW final step, after latest.json,
+	// so it is only ever written once a verified snapshot genuinely exists
+	// in the backend -- never before. This write failing is logged but does
+	// NOT fail the freeze: the freeze's own correctness (a verified
+	// snapshot exists) does not depend on it, only the NEXT wake's
+	// warm-path optimization does. The workspace root is the only warm-
+	// eligible root; the agent home is an emptyDir restored cold on every
+	// wake regardless (see restore.go), so no marker is written there.
+	if err := WriteWarmMarker(h.Cfg.WorkspacePath, WarmMarker{
+		SchemaVersion:  WarmMarkerSchemaVersion,
+		EnvUID:         s.Environment.UID,
+		Seq:            seq,
+		SnapshotID:     storage.SnapshotID(seq, at),
+		Root:           "workspace",
+		ManifestSHA256: mInfo.SHA256,
+		Files:          m.Files,
+		WrittenAt:      now(),
+		WrittenBy:      "freeze",
+	}); err != nil {
+		h.Log.Info("writing warm-cache marker failed (continuing; the next wake will cold-restore)", "error", err.Error())
+	}
+
+	// 11. Record success -- flips status.snapshotAttempt to Succeeded in the
 	// same patch as status.snapshot.
 	totalSize := wsInfo.Size + ahInfo.Size
 	if err := h.Store.RecordSnapshot(ctx, SnapshotRecord{
@@ -355,53 +395,12 @@ func classifySnapshotErr(err error) string {
 	}
 }
 
-// retrySnapshotStep retries fn while storage.IsRetryable(err) -- i.e. only
-// ErrUnreachable-kinded failures. ErrNotFound/ErrInvalid/ErrPermission/
-// ErrCorrupt are permanent and surface immediately. Exponential backoff with
-// jitter, bounded by Cfg.SnapshotRetries; h.Sleep is injected so tests run
-// instantly.
-//
-// Each attempt runs under its own Cfg.SnapshotStepTimeout-bounded context,
-// not the bare outer ctx: internal/storage's S3 client is built with a
-// plain http.Client{} (no Timeout, see s3.go), so a single slow or wedged
-// backend call would otherwise hang indefinitely -- defeating the whole
-// point of a "bounded" retry budget, since the loop can never even reach
-// its next attempt, let alone give up and report Failed. A context deadline
-// hit mid-call is classified ErrUnreachable (retryable) by
-// classifySnapshotErr/classifyS3Error, so a timed-out attempt is treated
-// exactly like any other transient failure and counts toward maxRetries.
+// retrySnapshotStep is a thin wrapper around the shared retryStep
+// (retrystep.go), bound to this hook's Cfg.SnapshotRetries/
+// Cfg.SnapshotStepTimeout/h.sleep/h.Log. See retryStep's doc comment for the
+// full behavior; this is a refactor of what used to be this method's own
+// standalone implementation, not a behavior change -- RestoreHook.retryStep
+// (restore.go) now shares the exact same logic.
 func (h *SnapshotHook) retrySnapshotStep(ctx context.Context, seq int, step string, fn func(context.Context) error) error {
-	delays := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
-	maxRetries := h.Cfg.SnapshotRetries
-	if maxRetries <= 0 {
-		maxRetries = defaultSnapshotRetries
-	}
-	stepTimeout := h.Cfg.SnapshotStepTimeout
-	if stepTimeout <= 0 {
-		stepTimeout = defaultSnapshotStepTimeout
-	}
-
-	var err error
-	for attempt := 0; ; attempt++ {
-		stepCtx, cancel := context.WithTimeout(ctx, stepTimeout)
-		err = fn(stepCtx)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		if !storage.IsRetryable(err) || attempt >= maxRetries {
-			return err
-		}
-		delay := delays[len(delays)-1]
-		if attempt < len(delays) {
-			delay = delays[attempt]
-		}
-		// jitter: +/- 20%
-		jitter := time.Duration(rand.Int63n(int64(delay) / 5)) //nolint:gosec // G404: jitter timing, not security-sensitive
-		delay = delay - delay/10 + jitter
-		h.Log.Info("retrying snapshot step", "seq", seq, "step", step, "attempt", attempt+1, "error", err.Error())
-		if serr := h.sleep(ctx, delay); serr != nil {
-			return serr
-		}
-	}
+	return retryStep(ctx, h.Log, h.sleep, h.Cfg.SnapshotRetries, h.Cfg.SnapshotStepTimeout, seq, step, fn)
 }

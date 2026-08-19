@@ -23,6 +23,13 @@ const (
 	// engine (if any) the class selected.
 	SidecarContainerName = "sandboxctl"
 
+	// RestoreContainerName is the one-shot wake/restore init container
+	// (#29): the SAME sandboxctl binary/image, `restore` subcommand,
+	// ordered LAST among init containers. See restoreContainer's doc
+	// comment for why this must be a plain init container (no
+	// restartPolicy) rather than folded into the native sidecar.
+	RestoreContainerName = "restore"
+
 	// SidecarPort is the loopback port the control API binds. Matches
 	// SidecarBaseURL (inputs.go), already projected into the rendered
 	// ConfigMap's sandbox.json since #19.
@@ -153,12 +160,19 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 
 	// sandboxctl is ALWAYS first among init containers: a restartable
 	// (native) sidecar that must be running for the whole pod lifetime,
-	// including during a future restore init container (#29), so the agent
-	// never observes a pod without a control channel.
+	// including during the restore init container (#29), so the agent
+	// never observes a pod without a control channel. The restore
+	// container (if any) is ALWAYS last: a plain (non-restartable) init
+	// container under restartPolicy: Never is the only way "never start
+	// the agent on a partially restored workspace" is enforced by the
+	// kubelet itself -- see restoreContainer's doc comment.
 	initContainers := append(
 		[]*acorev1.ContainerApplyConfiguration{sidecarContainer(in, names)},
 		contribution.InitContainers...,
 	)
+	if in.Restore != nil && isS3Backend(in) {
+		initContainers = append(initContainers, restoreContainer(in, names))
+	}
 
 	pod := acorev1.Pod(names.Pod, in.Env.Namespace).
 		WithLabels(Labels(in.Env)).
@@ -186,7 +200,7 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 // render time with a clear message naming the offending container.
 func validateNoReservedContainerNames(c Contribution) error {
 	check := func(name string) error {
-		if name == AgentContainerName || name == SidecarContainerName {
+		if name == AgentContainerName || name == SidecarContainerName || name == RestoreContainerName {
 			return fmt.Errorf("render: engine contribution container name %q collides with a reserved container name", name)
 		}
 		return nil
@@ -439,6 +453,80 @@ func sidecarSnapshotArgs(in Inputs) []string {
 		"--quiesce-delay="+defaultQuiesceDelayFlag,
 		"--snapshot-retries="+defaultSnapshotRetriesFlag,
 		"--snapshot-step-timeout="+defaultSnapshotStepTimeoutFlag,
+	)
+	return args
+}
+
+// restoreContainer renders the one-shot wake/restore init container (#29):
+// the SAME sandboxctl binary/image as the sidecar, `restore` subcommand,
+// ordered LAST among init containers by RenderPod.
+//
+// This MUST be a plain (regular) init container -- no restartPolicy field
+// set at all, never restartPolicy: Always -- and it MUST run last. Both are
+// required, not style choices:
+//
+//   - Kubernetes runs regular init containers to completion, in order, and
+//     starts no regular container (the agent) until every init container,
+//     including a native sidecar's own startupProbe, has succeeded. Placing
+//     restore last as a plain init container is the ONLY way "never start
+//     an agent on a partially restored workspace" is enforced by the
+//     kubelet itself: a non-zero exit here fails the whole pod under
+//     restartPolicy: Never.
+//   - Folding restore into sandboxctl's own native-sidecar startup is
+//     wrong: its startupProbe has a 30s budget (failureThreshold: 30,
+//     periodSeconds: 1) gating on /healthz, which any real restore would
+//     blow, and restartPolicy: Always containers can never fail the pod --
+//     making "a corrupted snapshot must fail loudly" inexpressible there.
+//
+// Only rendered when in.Restore is non-nil AND the class's storage backend
+// is S3 (isS3Backend) -- restore has no support for the pvc backend (Q7).
+func restoreContainer(in Inputs, names Names) *acorev1.ContainerApplyConfiguration {
+	mounts := []*acorev1.VolumeMountApplyConfiguration{
+		acorev1.VolumeMount().WithName(sidecarTokenVolumeName).
+			WithMountPath(SidecarTokenMountPath).WithReadOnly(true),
+		acorev1.VolumeMount().WithName(workspaceVolumeName).WithMountPath(WorkspaceMountPath),
+		acorev1.VolumeMount().WithName(agentHomeVolumeName).WithMountPath(AgentHomePath),
+		acorev1.VolumeMount().WithName(snapshotCredentialsVolumeName).
+			WithMountPath(SnapshotCredentialsMountPath).WithReadOnly(true),
+	}
+
+	return acorev1.Container().
+		WithName(RestoreContainerName).
+		WithImage(in.SidecarImage).
+		WithCommand(SidecarBinaryPath).
+		WithArgs(restoreArgs(in)...).
+		WithVolumeMounts(mounts...).
+		WithResources(acorev1.ResourceRequirements().
+			WithRequests(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			}).
+			WithLimits(corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("1000m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"), // zstd decompression headroom
+			})).
+		WithSecurityContext(sidecarSecurityContext())
+}
+
+// restoreArgs builds the restore container's args: the same backend/
+// credentials/paths flags sidecarSnapshotArgs already builds (reused
+// verbatim, never duplicated), plus the restore-specific flags naming which
+// snapshot to restore. Defaults are emitted explicitly, matching
+// sidecarSnapshotArgs' own "visible/reviewable in the golden pod"
+// convention.
+func restoreArgs(in Inputs) []string {
+	args := append([]string{
+		"restore",
+		"--environment=" + in.Env.Name,
+		"--namespace=" + in.Env.Namespace,
+	}, sidecarSnapshotArgs(in)...)
+
+	args = append(args,
+		"--restore-snapshot-id="+in.Restore.SnapshotID,
+		fmt.Sprintf("--restore-seq=%d", in.Restore.Seq),
+		"--restore-warm=true",
+		"--restore-retries=4",
+		"--restore-step-timeout=2m",
 	)
 	return args
 }

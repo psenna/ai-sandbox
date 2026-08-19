@@ -322,3 +322,91 @@ func TestWriteStatus_ExternalWaitForClearRace(t *testing.T) {
 		t.Errorf("final Phase = %s, want Ready", final.Status.Phase)
 	}
 }
+
+// TestWriteStatus_ExternalSnapshotRace is the regression test for #29's
+// extension of the same staleness guard: lifecycle.Next branches on
+// status.snapshot's nil-ness (nextRestoring's IncrementWakeCount:
+// env.Status.Snapshot != nil), and an external status-only write that
+// clears status.snapshot -- the shape a test harness driving the
+// freeze/wake contract performs -- without touching Phase or Generation
+// must NOT be silently absorbed by a reconcile whose Decision was computed
+// from the pre-clear object. Before the fix, the staleness check in
+// writeStatus compared only Generation, Phase, and WaitFor -- none of which
+// change when snapshot is cleared -- so the stale Decision (still carrying
+// IncrementWakeCount=true) sailed through and double-incremented WakeCount
+// against a fresh object that no longer has a snapshot, exactly the #28
+// bug class this same guard was extended for.
+func TestWriteStatus_ExternalSnapshotRace(t *testing.T) {
+	mustCreateClass(t)
+	env := mustCreateEnv(t, "snapshot-race")
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
+
+	// Settle the environment in Restoring with a real snapshot recorded, as
+	// if a freeze had just completed and a wake had begun (see
+	// nextRestoring's IncrementWakeCount branch).
+	settled := getEnv(t, key)
+	settled.Status.Phase = sandboxv1alpha1.PhaseRestoring
+	settled.Status.Snapshot = &sandboxv1alpha1.SnapshotStatus{Seq: 0, TakenAt: &metav1.Time{Time: fixedStart}}
+	if err := k8s.Status().Update(ctx, settled); err != nil {
+		t.Fatalf("settling Restoring with snapshot: %v", err)
+	}
+
+	// The reconcile under test reads the object HERE, while snapshot is
+	// still set -- so its Decision (computed below) reflects the pre-clear
+	// state.
+	decidedFrom := getEnv(t, key)
+	d := lifecycle.Next(*decidedFrom, lifecycle.ClusterFacts{
+		ClassResolved: true, SlotGranted: true, PodObserved: true,
+		PodPhase: corev1.PodRunning, PodReady: true,
+	}, fixedStart)
+	if d.Phase != sandboxv1alpha1.PhaseRunning {
+		t.Fatalf("setup: d.Phase = %s, want Running", d.Phase)
+	}
+	if !d.StatusPatch.IncrementWakeCount {
+		t.Fatal("setup: d.StatusPatch.IncrementWakeCount = false, want true (snapshot present)")
+	}
+
+	// An external actor clears status.snapshot AFTER the read above but
+	// BEFORE writeStatus runs -- the exact interleaving a real reconcile
+	// loop cannot prevent.
+	external := getEnv(t, key)
+	external.Status.Snapshot = nil
+	if err := k8s.Status().Update(ctx, external); err != nil {
+		t.Fatalf("external snapshot clear: %v", err)
+	}
+
+	r := &Reconciler{Client: k8s}
+	err := r.writeStatus(ctx, decidedFrom, d)
+	if !errors.Is(err, errStaleDecision) {
+		t.Fatalf("writeStatus with a stale snapshot read: err = %v, want errStaleDecision", err)
+	}
+
+	// The stale write must not have clobbered the external clear.
+	afterStale := getEnv(t, key)
+	if afterStale.Status.Snapshot != nil {
+		t.Fatalf("stale writeStatus clobbered the external snapshot clear: %+v", afterStale.Status.Snapshot)
+	}
+	if afterStale.Status.WakeCount != 0 {
+		t.Fatalf("stale writeStatus incremented WakeCount to %d, want 0 (no snapshot on the fresh object)", afterStale.Status.WakeCount)
+	}
+
+	// The follow-up reconcile (as would be triggered by the external
+	// write's own watch event) now reads truly fresh state and correctly
+	// computes IncrementWakeCount=false.
+	fresh := getEnv(t, key)
+	d2 := lifecycle.Next(*fresh, lifecycle.ClusterFacts{
+		ClassResolved: true, SlotGranted: true, PodObserved: true,
+		PodPhase: corev1.PodRunning, PodReady: true,
+	}, fixedStart)
+	if d2.StatusPatch.IncrementWakeCount {
+		t.Fatal("follow-up Decision.IncrementWakeCount = true, want false (snapshot cleared)")
+	}
+	if err := r.writeStatus(ctx, fresh, d2); err != nil {
+		t.Fatalf("follow-up writeStatus: %v", err)
+	}
+
+	final := getEnv(t, key)
+	if final.Status.WakeCount != 0 {
+		t.Errorf("final WakeCount = %d, want 0", final.Status.WakeCount)
+	}
+}

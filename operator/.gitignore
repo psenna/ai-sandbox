@@ -9,3 +9,12 @@ dist/
 # and the kubeconfig default to $(SHARED_DIR)-anchored paths outside this
 # repo tree (see Makefile), so only the artifact dir needs ignoring here.
 test/e2e/_artifacts/
+# compiled e2e test binary from `go test -c` (test/e2e is its own module); the
+# suite is run via `go run github.com/onsi/ginkgo/v2/ginkgo` (no on-disk
+# binary), so any e2e.test left by a manual `go test -c` is pure artifact.
+test/e2e/e2e.test
+# exploratory spike scratch for the context-resumption investigation; the
+# durable write-up lives in docs/spike-context-resumption.md. The spike/
+# directory itself is tracked (other spikes ship their manifests), so only
+# this subdirectory is ignored.
+spike/context-resumption/

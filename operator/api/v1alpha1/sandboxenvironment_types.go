@@ -165,6 +165,14 @@ type SandboxEnvironmentStatus struct {
 	// +optional
 	SnapshotAttempt *SnapshotAttemptStatus `json:"snapshotAttempt,omitempty"`
 
+	// RestoreAttempt records the wake currently in flight, or the last one
+	// that failed. Written ONLY by the restore init container (the same
+	// sandboxctl binary, `restore` subcommand). It is how the operator, and
+	// a human, tell a warm wake from a cold one -- and a corrupt snapshot
+	// from a slow one -- without inferring anything from timing.
+	// +optional
+	RestoreAttempt *RestoreAttemptStatus `json:"restoreAttempt,omitempty"`
+
 	// QueuedSince is when the environment started waiting for a slot.
 	// +optional
 	QueuedSince *metav1.Time `json:"queuedSince,omitempty"`
@@ -386,12 +394,104 @@ type SnapshotAttemptStatus struct {
 	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
 }
 
+// RestoreAttemptPhase is the state of the wake restore being attempted.
+// +kubebuilder:validation:Enum=InProgress;Succeeded;Failed
+type RestoreAttemptPhase string
+
+const (
+	RestoreAttemptInProgress RestoreAttemptPhase = "InProgress"
+	RestoreAttemptSucceeded  RestoreAttemptPhase = "Succeeded"
+	RestoreAttemptFailed     RestoreAttemptPhase = "Failed"
+)
+
+// RestoreAttemptStatus records one wake's restore attempt.
+type RestoreAttemptStatus struct {
+	// Seq is the snapshot sequence number this attempt is restoring.
+	// +kubebuilder:validation:Minimum=0
+	Seq int32 `json:"seq"`
+
+	// SnapshotID is the snapshot directory name restored from
+	// ("<seq:05d>-<RFC3339>"), so a human can find the exact objects.
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	SnapshotID string `json:"snapshotID,omitempty"`
+
+	Phase RestoreAttemptPhase `json:"phase"`
+
+	// Roots records the outcome per restored root. The workspace root is
+	// the only one that can ever be Warm: the agent home is an emptyDir
+	// that dies with the pod, so it is restored cold on every wake.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Roots []RestoredRootStatus `json:"roots,omitempty"`
+
+	// Attempts is how many restore attempts have been made so far.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Attempts int32 `json:"attempts,omitempty"`
+
+	// DurationMillis is how long the restore took.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	DurationMillis int64 `json:"durationMillis,omitempty"`
+
+	// Reason is a short, stable machine reason. See
+	// internal/sandboxctl/restore.go's RestoreReason* constants.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is a human explanation. Never contains a credential.
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// StartedAt is when this attempt (this Seq) was first recorded.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// UpdatedAt is when this attempt was last patched (a retry, a phase
+	// change, or a per-root outcome landing).
+	// +optional
+	UpdatedAt *metav1.Time `json:"updatedAt,omitempty"`
+}
+
+// RestoredRootStatus is one restored root's outcome.
+type RestoredRootStatus struct {
+	// Name is the restored root: "workspace" (the mounted workspace PVC,
+	// the only root that can ever be Warm) or "agent-home" (the per-pod
+	// agent home emptyDir, always restored cold).
+	// +kubebuilder:validation:Enum=workspace;agent-home
+	Name string `json:"name"`
+
+	// Source is Warm when the retained PVC already held this exact
+	// snapshot -- validated against the manifest, never inferred from the
+	// PVC merely existing -- so no bytes were downloaded for this root.
+	// +kubebuilder:validation:Enum=Warm;Cold
+	Source string `json:"source"`
+
+	// WarmMissReason, set only when Source is Cold, names why the warm
+	// path was refused.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	WarmMissReason string `json:"warmMissReason,omitempty"`
+
+	// BytesDownloaded is the number of uncompressed bytes restored from
+	// the backend into this root. Always 0 when Source is Warm -- this is
+	// the acceptance criterion's "measurably skips the download", asserted
+	// as a value rather than inferred from elapsed time.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	BytesDownloaded int64 `json:"bytesDownloaded,omitempty"`
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=sbenv,categories=sandbox
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Slot",type=boolean,JSONPath=`.status.slot.granted`
 // +kubebuilder:printcolumn:name="Freezes",type=integer,JSONPath=`.status.freezeCount`
+// +kubebuilder:printcolumn:name="Wakes",type=integer,JSONPath=".status.wakeCount"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="Class",type=string,JSONPath=`.spec.classRef.name`,priority=1
 // +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.repo`,priority=1

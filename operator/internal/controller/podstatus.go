@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/render"
 )
 
 // unschedulableGracePeriod is how long a pod must have been continuously
@@ -41,8 +42,11 @@ func podReady(pod *corev1.Pod) bool {
 // phase==Failed fallback. now is injected (never time.Now()) so the
 // unschedulable grace window is testable with a fake clock.
 //
-// ReasonRestoreVerificationFailed is NEVER produced here -- reserved for
-// #29's wake/restore verification.
+// restoreFailure (#29) sits after imagePullFailure and before the generic
+// fallback: a failed restore init container is a specific, actionable cause
+// (a corrupt snapshot, a backend outage) that must not be masked by the
+// generic phase==Failed line, but an image-pull problem on the restore
+// container itself still reads as ImagePullFailure.
 func podFailure(pod *corev1.Pod, now time.Time) *lifecycle.PodFailure {
 	if !pod.DeletionTimestamp.IsZero() {
 		return nil // deliberately being deleted (Done/freeze/suspend), not a failure
@@ -53,7 +57,36 @@ func podFailure(pod *corev1.Pod, now time.Time) *lifecycle.PodFailure {
 	if f := imagePullFailure(pod); f != nil {
 		return f
 	}
+	if f := restoreFailure(pod); f != nil {
+		return f
+	}
 	return genericFailure(pod)
+}
+
+// restoreFailure maps a failed restore init container (#29) to
+// ReasonRestoreVerificationFailed. The restore container is a plain (non-
+// restartable) init container ordered LAST: under restartPolicy: Never a
+// non-zero exit fails the whole pod, and this is the ONLY branch of
+// podFailure that can explain WHY -- genericFailure's
+// firstTerminatedContainerMessage only scans regular containers, so without
+// this a failed restore would surface as phase=Failed with an empty message.
+// The terminated container's own Message is used when present; otherwise a
+// formatted fallback naming the exit code.
+func restoreFailure(pod *corev1.Pod) *lifecycle.PodFailure {
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.Name != render.RestoreContainerName {
+			continue
+		}
+		if cs.State.Terminated == nil || cs.State.Terminated.ExitCode == 0 {
+			continue
+		}
+		msg := cs.State.Terminated.Message
+		if msg == "" {
+			msg = fmt.Sprintf("restore container exited with code %d (%s)", cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+		}
+		return &lifecycle.PodFailure{Reason: lifecycle.ReasonRestoreVerificationFailed, Message: msg}
+	}
+	return nil
 }
 
 func unschedulableFailure(pod *corev1.Pod, now time.Time) *lifecycle.PodFailure {

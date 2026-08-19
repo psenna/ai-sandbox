@@ -39,6 +39,22 @@ var cacheExcludePaths = []string{
 //     successfully and can NEVER be restored -- exactly the "half-written
 //     snapshot a restore would accept" failure class this issue exists to
 //     prevent.
+//
+// #29 adds two more exclusions, both under .sandbox/:
+//
+//  3. warm-cache.json: a marker from freeze N-1 must never be baked into
+//     snapshot N's tarball. It is written fresh by THIS freeze (snapshot.go's
+//     final step) after the manifest it describes already exists, so an
+//     archived copy would always describe a manifest one freeze stale --
+//     exactly the kind of self-referential staleness ValidateWarmMarker
+//     exists to catch, but which is simplest to never create in the first
+//     place.
+//  4. restore-in-progress: the sentinel restore.go writes as its literal
+//     first action and removes on success. If a snapshot somehow captured
+//     it (it shouldn't -- Freeze itself refuses to run while the sentinel
+//     exists, see snapshot.go's top-of-function check), restoring that
+//     snapshot into a fresh workspace would make the NEXT freeze believe a
+//     restore was still in progress and refuse to run.
 func SnapshotExclude(rel string, fi fs.FileInfo) bool {
 	mode := fi.Mode()
 
@@ -64,6 +80,18 @@ func SnapshotExclude(rel string, fi fs.FileInfo) bool {
 
 	// (4) reserved scratch under the marker directory.
 	if rel == ".sandbox/tmp" || strings.HasPrefix(rel, ".sandbox/tmp/") {
+		return true
+	}
+
+	// (5) the warm-cache marker: never bake a stale one into the archive it
+	// describes. See the doc comment above.
+	if rel == ".sandbox/"+warmMarkerFileName {
+		return true
+	}
+
+	// (6) the restore-in-progress sentinel: never restore this into a fresh
+	// workspace. See the doc comment above.
+	if rel == ".sandbox/"+restoreInProgressFileName {
 		return true
 	}
 

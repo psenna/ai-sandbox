@@ -65,6 +65,10 @@ func (f *fakeStore) RecordSnapshot(context.Context, SnapshotRecord, time.Time) e
 	return nil
 }
 
+func (f *fakeStore) RecordRestoreAttempt(context.Context, RestoreAttempt, time.Time) error {
+	return nil
+}
+
 func newTestServer(t *testing.T, store *fakeStore, poll *Poller) *httptest.Server {
 	t.Helper()
 	if poll == nil {

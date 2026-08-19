@@ -126,6 +126,12 @@ type fakeSnapshotStore struct {
 	attempts  []SnapshotAttempt
 	recorded  *SnapshotRecord
 	recordErr error
+
+	// restoreAttempts/restoreErr support restore_test.go's use of this same
+	// fake for RestoreHook tests -- freeze and restore share the store
+	// double for the same reason they now share retryStep.
+	restoreAttempts []RestoreAttempt
+	restoreErr      error
 }
 
 func (s *fakeSnapshotStore) Snapshot() Snapshot            { return Snapshot{} }
@@ -150,6 +156,15 @@ func (s *fakeSnapshotStore) RecordSnapshot(_ context.Context, r SnapshotRecord, 
 	}
 	rc := r
 	s.recorded = &rc
+	return nil
+}
+func (s *fakeSnapshotStore) RecordRestoreAttempt(_ context.Context, a RestoreAttempt, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.restoreErr != nil {
+		return s.restoreErr
+	}
+	s.restoreAttempts = append(s.restoreAttempts, a)
 	return nil
 }
 

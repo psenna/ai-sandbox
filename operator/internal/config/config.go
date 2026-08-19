@@ -39,6 +39,12 @@ type Config struct {
 	// load.
 	SchedulerInterval time.Duration
 
+	// WarmCacheGCInterval is how often the warm-cache GC runs a reclamation
+	// pass (#29). Each pass performs one live LIST of SandboxEnvironments
+	// across the watch scope plus a Get per distinct class, so this trades
+	// warm-cache reclamation latency against API-server load.
+	WarmCacheGCInterval time.Duration
+
 	// SidecarImage is the container image for the always-present
 	// sandboxctl control-channel sidecar (#27). It is the operator's OWN
 	// image (the sandboxctl binary ships alongside the manager binary --
@@ -84,6 +90,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.DurationVar(&c.SchedulerInterval, "scheduler-interval",
 		envOrDuration(getenv, "SCHEDULER_INTERVAL", 5*time.Second),
 		"how often the slot scheduler runs an admission pass")
+	fs.DurationVar(&c.WarmCacheGCInterval, "warm-cache-gc-interval",
+		envOrDuration(getenv, "WARM_CACHE_GC_INTERVAL", time.Minute),
+		"how often the warm-cache GC runs a reclamation pass")
 	fs.StringVar(&c.SidecarImage, "sidecar-image",
 		envOr(getenv, "SIDECAR_IMAGE", "ghcr.io/psenna/ai-sandbox-operator:dev"),
 		"container image for the always-present sandboxctl control-channel sidecar; must match the deployed operator image tag")
@@ -118,6 +127,9 @@ func (c Config) Validate() error {
 	}
 	if c.SchedulerInterval < 100*time.Millisecond || c.SchedulerInterval > 5*time.Minute {
 		return fmt.Errorf("scheduler-interval: must be between 100ms and 5m, got %s", c.SchedulerInterval)
+	}
+	if c.WarmCacheGCInterval < time.Second || c.WarmCacheGCInterval > time.Hour {
+		return fmt.Errorf("warm-cache-gc-interval: must be between 1s and 1h, got %s", c.WarmCacheGCInterval)
 	}
 	if c.SidecarImage == "" {
 		return fmt.Errorf("sidecar-image: must not be empty")

@@ -16,6 +16,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -208,6 +209,13 @@ func WithS3Backend(endpoint, bucket, secretName string) ClassOption {
 	}
 }
 
+// WithWarmCacheTTL sets the class's warm-cache TTL (storage.warmCacheTTL,
+// a Go duration string like "30m"). It is the policy knob the warm-cache
+// GC (#29) reclaims a frozen environment's workspace PVC on.
+func WithWarmCacheTTL(d string) ClassOption {
+	return func(c *sandboxv1alpha1.SandboxClass) { c.Spec.Storage.WarmCacheTTL = d }
+}
+
 // WithS3Endpoint overrides the class's default in-cluster MinIO endpoint
 // (from CreateClass) with a different one -- used by freeze_test.go to
 // route S3 traffic through the s3proxy fault-injection double instead
@@ -334,6 +342,21 @@ func (h *Harness) WaitForPhase(ctx context.Context, key client.ObjectKey, phase 
 	}, timeout, h.Cfg.Poll).Should(gomega.Equal(phase), "environment %s never reached phase %s", key, phase)
 }
 
+// WaitForWakeCount polls key's SandboxEnvironment until status.wakeCount
+// equals want, or fails the spec after timeout. WakeCount is monotonic (it
+// only ever increments, on the Restoring->Running transition, and never
+// resets -- see internal/lifecycle/next.go and apply.go) and CAS-protected
+// (store.go's patchStatus uses MergeFromWithOptimisticLock), so it cannot
+// match a stale pre-wake value. That monotonicity is what makes it a
+// reliable "the wake actually happened" signal -- unlike phase, which
+// WaitForPhase can race to a stale match immediately after ClearWaitFor
+// (the env is still Waiting until the controller reconciles toward Ready).
+func (h *Harness) WaitForWakeCount(ctx context.Context, key client.ObjectKey, want int32) {
+	gomega.EventuallyWithOffset(1, func() int32 {
+		return h.GetEnv(ctx, key).Status.WakeCount
+	}, h.Cfg.PhaseTimeout, h.Cfg.Poll).Should(gomega.Equal(want), "environment %s wakeCount never reached %d", key, want)
+}
+
 // WaitForAnyPhase polls key's SandboxEnvironment until its phase is one of
 // phases, returning the phase actually observed.
 func (h *Harness) WaitForAnyPhase(ctx context.Context, key client.ObjectKey, timeout time.Duration, phases ...sandboxv1alpha1.Phase) sandboxv1alpha1.Phase {
@@ -392,6 +415,66 @@ func (h *Harness) WaitForPVCBound(ctx context.Context, key client.ObjectKey, tim
 	}, timeout, h.Cfg.Poll).Should(gomega.Equal(corev1.ClaimBound), "PVC %s never bound", key)
 }
 
+// WaitForPVCGone polls the PVC named key.Name until it no longer exists
+// (NotFound). This is the REAL cluster's deletion signal -- unlike envtest,
+// kind runs kube-controller-manager, so the kubernetes.io/pvc-protection
+// finalizer is removed and the object actually disappears once the warm-
+// cache GC (#29) deletes it.
+func (h *Harness) WaitForPVCGone(ctx context.Context, key client.ObjectKey, timeout time.Duration) {
+	gomega.EventuallyWithOffset(1, func() bool {
+		var pvc corev1.PersistentVolumeClaim
+		err := h.Client.Get(ctx, key, &pvc)
+		return apierrors.IsNotFound(err)
+	}, timeout, h.Cfg.Poll).Should(gomega.BeTrue(), "PVC %s was never reclaimed", key)
+}
+
+// ListEnvPVCs returns the workspace PVCs (render.ChildNames(envName).PVC,
+// always exactly zero or one object) for envName in ns. The workspace PVC is
+// the only persistent volume a sandbox has -- the agent home is an emptyDir
+// -- so an empty result is the assertion that the warm-cache GC reclaimed
+// the environment's cache and none leaked behind it.
+func (h *Harness) ListEnvPVCs(ctx context.Context, ns, envName string) []corev1.PersistentVolumeClaim {
+	pvcName := render.ChildNames(envName).PVC
+	var list corev1.PersistentVolumeClaimList
+	gomega.ExpectWithOffset(1, h.Client.List(ctx, &list, client.InNamespace(ns))).To(gomega.Succeed(), "listing PVCs in %s", ns)
+	var out []corev1.PersistentVolumeClaim
+	for _, p := range list.Items {
+		if p.Name == pvcName {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// WaitForRestoreAttempt polls key's SandboxEnvironment until
+// status.restoreAttempt reports phase, returning the attempt status at that
+// point. restoreAttempt is written ONLY by the restore init container
+// (#29), so reaching a given phase is the direct, non-inferred observation
+// of a wake progressing (or failing).
+func (h *Harness) WaitForRestoreAttempt(ctx context.Context, key client.ObjectKey, phase sandboxv1alpha1.RestoreAttemptPhase, timeout time.Duration) *sandboxv1alpha1.RestoreAttemptStatus {
+	var attempt *sandboxv1alpha1.RestoreAttemptStatus
+	gomega.EventuallyWithOffset(1, func() sandboxv1alpha1.RestoreAttemptPhase {
+		attempt = h.GetEnv(ctx, key).Status.RestoreAttempt
+		if attempt == nil {
+			return ""
+		}
+		return attempt.Phase
+	}, timeout, h.Cfg.Poll).Should(gomega.Equal(phase), "environment %s restoreAttempt never reached phase %s", key, phase)
+	return attempt
+}
+
+// ClearWaitFor clears status.waitFor on key's SandboxEnvironment -- the wake
+// trigger. A frozen environment holding on status.waitFor stays in Waiting
+// (the operator's own probe evaluation is #30); clearing the field unblocks
+// the scheduler to grant a slot and recreate the pod, whose restore init
+// container performs the actual wake.
+func (h *Harness) ClearWaitFor(ctx context.Context, key client.ObjectKey) {
+	first := h.GetEnv(ctx, key)
+	modified := first.DeepCopy()
+	modified.Status.WaitFor = nil
+	gomega.ExpectWithOffset(1, h.Client.Status().Patch(ctx, modified, client.MergeFrom(first))).To(gomega.Succeed(), "clearing status.waitFor on %s", key)
+}
+
 // ExpectCondition asserts (once, no polling) that key's SandboxEnvironment
 // currently carries a condition of type condType with the given status and
 // reason.
@@ -411,17 +494,37 @@ func (h *Harness) ExpectStablePhase(ctx context.Context, key client.ObjectKey, p
 
 // ExpectAgentExitCode asserts the agent container in key's agent pod
 // terminated with exactly code.
+//
+// The environment can reach Done -- and the controller can issue its
+// success-path pod cleanup -- as soon as the sidecar records the agent's
+// /v1/done outcome. That observation lives in the controller's informer
+// cache, which can run ahead of this client's own cache reflecting the
+// agent container's own Terminated state in the pod object we read. A
+// single Get therefore races two caches and flakes on "agent is not
+// terminated" whenever Done lands first (the woken agent calls sandbox-done
+// then falls through to `exit 0` microseconds later, so the container IS
+// terminating -- the test just has to wait for its cache to catch up). Poll
+// for the terminated state instead. The success pod is deleted on Done but
+// lingers in Terminating long enough to observe the exit code; if a poll
+// lands after garbage collection, surface that as a legible failure rather
+// than a nil-pointer panic.
 func (h *Harness) ExpectAgentExitCode(ctx context.Context, key client.ObjectKey, code int32) {
-	pod := h.GetAgentPod(ctx, key)
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.Name != render.AgentContainerName {
-			continue
+	gomega.EventuallyWithOffset(1, func(g gomega.Gomega) {
+		pod := h.getAgentPodOrNil(ctx, key)
+		if pod == nil {
+			g.Expect(pod).NotTo(gomega.BeNil(), "agent pod for %s vanished before its exit code could be read", key)
+			return
 		}
-		gomega.ExpectWithOffset(1, cs.State.Terminated).NotTo(gomega.BeNil(), "agent container %s/%s is not terminated", pod.Namespace, pod.Name)
-		gomega.ExpectWithOffset(1, cs.State.Terminated.ExitCode).To(gomega.Equal(code))
-		return
-	}
-	ginkgo.Fail(fmt.Sprintf("pod %s/%s has no %q container status", pod.Namespace, pod.Name, render.AgentContainerName))
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.Name != render.AgentContainerName {
+				continue
+			}
+			g.Expect(cs.State.Terminated).NotTo(gomega.BeNil(), "agent container %s/%s is not terminated", pod.Namespace, pod.Name)
+			g.Expect(cs.State.Terminated.ExitCode).To(gomega.Equal(code), "agent container %s/%s exit code", pod.Namespace, pod.Name)
+			return
+		}
+		ginkgo.Fail(fmt.Sprintf("pod %s/%s has no %q container status", pod.Namespace, pod.Name, render.AgentContainerName))
+	}, h.Cfg.PodTimeout, h.Cfg.Poll).Should(gomega.Succeed())
 }
 
 // GetEnv fetches key's SandboxEnvironment, failing the spec if it cannot be

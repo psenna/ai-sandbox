@@ -123,20 +123,42 @@ func agentOrPodTerminal(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now
 	if phase != v1alpha1.PhaseRestoring && phase != v1alpha1.PhaseRunning {
 		return Decision{}, false
 	}
+	var d Decision
 	switch {
 	case facts.AgentFailed:
-		return terminalOutcome(env, facts, now, v1alpha1.PhaseFailed, false), true
+		d = terminalOutcome(env, facts, now, v1alpha1.PhaseFailed, false)
 	case facts.AgentDone:
-		return terminalOutcome(env, facts, now, v1alpha1.PhaseDone, true), true
+		d = terminalOutcome(env, facts, now, v1alpha1.PhaseDone, true)
 	case facts.PodObserved && facts.PodFailure != nil:
-		return terminalOutcome(env, facts, now, v1alpha1.PhaseFailed, false), true
+		d = terminalOutcome(env, facts, now, v1alpha1.PhaseFailed, false)
 	case facts.PodObserved && facts.PodPhase == corev1.PodFailed:
-		return terminalOutcome(env, facts, now, v1alpha1.PhaseFailed, false), true
+		d = terminalOutcome(env, facts, now, v1alpha1.PhaseFailed, false)
 	case facts.PodObserved && facts.PodPhase == corev1.PodSucceeded:
-		return terminalOutcome(env, facts, now, v1alpha1.PhaseDone, true), true
+		d = terminalOutcome(env, facts, now, v1alpha1.PhaseDone, true)
 	default:
 		return Decision{}, false
 	}
+	// Count a wake that reaches a terminal outcome (Done or Failed) while
+	// still Restoring, before nextRestoring could flip Restoring->Running.
+	// nextRestoring increments WakeCount at the Restoring->Running transition
+	// (gated on Status.Snapshot != nil), but that transition requires the
+	// pod to be observed Running+Ready -- and a fast-completing agent can
+	// finish (AgentResult set by the sidecar's /v1/done, or the restore init
+	// container failing) before the controller ever observes PodReady, so
+	// agentOrPodTerminal fires Done/Failed straight out of Restoring and the
+	// Restoring->Running increment is skipped entirely, leaving WakeCount at
+	// 0 on a real wake. This closes that gap: the only way to be in Restoring
+	// with a populated Snapshot is a wake (a fresh start has no Snapshot and
+	// never counts), so this fires exactly once per wake, on the path
+	// nextRestoring's increment missed. It never double-counts: once
+	// Restoring->Running fires the env never returns to Restoring, so this
+	// branch (phase==Restoring) and nextRestoring's increment are mutually
+	// exclusive across a single wake. Same Snapshot != nil gate as
+	// nextRestoring, so the never-frozen first start stays WakeCount 0.
+	if phase == v1alpha1.PhaseRestoring && env.Status.Snapshot != nil {
+		d.StatusPatch.IncrementWakeCount = true
+	}
+	return d, true
 }
 
 // terminalOutcome builds the common shape shared by every agentOrPodTerminal

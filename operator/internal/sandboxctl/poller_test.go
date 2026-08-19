@@ -45,6 +45,9 @@ func (s *sequenceStore) RecordSnapshotAttempt(context.Context, SnapshotAttempt, 
 func (s *sequenceStore) RecordSnapshot(context.Context, SnapshotRecord, time.Time) error {
 	return nil
 }
+func (s *sequenceStore) RecordRestoreAttempt(context.Context, RestoreAttempt, time.Time) error {
+	return nil
+}
 
 type countingHook struct {
 	mu    sync.Mutex

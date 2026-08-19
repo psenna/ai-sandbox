@@ -24,6 +24,22 @@ type runConfig struct {
 	TaskFile      string        `json:"taskFile"`
 	SidecarURL    string        `json:"sidecarURL"`
 	Task          runConfigTask `json:"task"`
+
+	// Wake is populated only when in.Restore != nil -- i.e. this pod render
+	// is a wake, not a first-ever run. Deliberately carries NO counters
+	// (wakeCount lives only in /v1/status, populated live after the pod
+	// starts): a counter baked in here at render time would be stale the
+	// instant it was written and would contradict the sidecar's own live
+	// status.
+	// +optional
+	Wake *runConfigWake `json:"wake,omitempty"`
+}
+
+// runConfigWake is sandbox.json's optional wake block (#29).
+type runConfigWake struct {
+	Restored   bool   `json:"restored"`
+	SnapshotID string `json:"snapshotID"`
+	Seq        int32  `json:"seq"`
 }
 
 type runConfigEnv struct {
@@ -67,6 +83,9 @@ func renderConfigMap(in Inputs) (*acorev1.ConfigMapApplyConfiguration, error) {
 		TaskFile:      TaskFileName,
 		SidecarURL:    SidecarBaseURL,
 		Task:          renderRunConfigTask(in),
+	}
+	if in.Restore != nil {
+		rc.Wake = &runConfigWake{Restored: true, SnapshotID: in.Restore.SnapshotID, Seq: in.Restore.Seq}
 	}
 
 	sandboxJSON, err := json.MarshalIndent(rc, "", "  ")

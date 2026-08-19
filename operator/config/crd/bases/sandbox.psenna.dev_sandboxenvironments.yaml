@@ -28,6 +28,9 @@ spec:
     - jsonPath: .status.freezeCount
       name: Freezes
       type: integer
+    - jsonPath: .status.wakeCount
+      name: Wakes
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -294,6 +297,120 @@ spec:
                   a slot.
                 format: date-time
                 type: string
+              restoreAttempt:
+                description: |-
+                  RestoreAttempt records the wake currently in flight, or the last one
+                  that failed. Written ONLY by the restore init container (the same
+                  sandboxctl binary, `restore` subcommand). It is how the operator, and
+                  a human, tell a warm wake from a cold one -- and a corrupt snapshot
+                  from a slow one -- without inferring anything from timing.
+                properties:
+                  attempts:
+                    description: Attempts is how many restore attempts have been made
+                      so far.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  durationMillis:
+                    description: DurationMillis is how long the restore took.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  message:
+                    description: Message is a human explanation. Never contains a
+                      credential.
+                    maxLength: 512
+                    type: string
+                  phase:
+                    description: RestoreAttemptPhase is the state of the wake restore
+                      being attempted.
+                    enum:
+                    - InProgress
+                    - Succeeded
+                    - Failed
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is a short, stable machine reason. See
+                      internal/sandboxctl/restore.go's RestoreReason* constants.
+                    maxLength: 64
+                    type: string
+                  roots:
+                    description: |-
+                      Roots records the outcome per restored root. The workspace root is
+                      the only one that can ever be Warm: the agent home is an emptyDir
+                      that dies with the pod, so it is restored cold on every wake.
+                    items:
+                      description: RestoredRootStatus is one restored root's outcome.
+                      properties:
+                        bytesDownloaded:
+                          description: |-
+                            BytesDownloaded is the number of uncompressed bytes restored from
+                            the backend into this root. Always 0 when Source is Warm -- this is
+                            the acceptance criterion's "measurably skips the download", asserted
+                            as a value rather than inferred from elapsed time.
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        name:
+                          description: |-
+                            Name is the restored root: "workspace" (the mounted workspace PVC,
+                            the only root that can ever be Warm) or "agent-home" (the per-pod
+                            agent home emptyDir, always restored cold).
+                          enum:
+                          - workspace
+                          - agent-home
+                          type: string
+                        source:
+                          description: |-
+                            Source is Warm when the retained PVC already held this exact
+                            snapshot -- validated against the manifest, never inferred from the
+                            PVC merely existing -- so no bytes were downloaded for this root.
+                          enum:
+                          - Warm
+                          - Cold
+                          type: string
+                        warmMissReason:
+                          description: |-
+                            WarmMissReason, set only when Source is Cold, names why the warm
+                            path was refused.
+                          maxLength: 64
+                          type: string
+                      required:
+                      - name
+                      - source
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  seq:
+                    description: Seq is the snapshot sequence number this attempt
+                      is restoring.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  snapshotID:
+                    description: |-
+                      SnapshotID is the snapshot directory name restored from
+                      ("<seq:05d>-<RFC3339>"), so a human can find the exact objects.
+                    maxLength: 128
+                    type: string
+                  startedAt:
+                    description: StartedAt is when this attempt (this Seq) was first
+                      recorded.
+                    format: date-time
+                    type: string
+                  updatedAt:
+                    description: |-
+                      UpdatedAt is when this attempt was last patched (a retry, a phase
+                      change, or a per-root outcome landing).
+                    format: date-time
+                    type: string
+                required:
+                - phase
+                - seq
+                type: object
               slot:
                 description: |-
                   Slot records whether this environment currently holds a scheduling

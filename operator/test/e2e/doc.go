@@ -37,13 +37,15 @@
 // See the issue's non-goals: no NetworkPolicy rendering (the operator
 // renders none today), no wait-probe evaluation (#30), no archive logic
 // (#32), no rootless-podman engine (#24). Freeze (snapshot, upload,
-// teardown, slot release) IS now tested -- see freeze_test.go (#28). Wake/
-// restore is NOT tested: no code path restores a snapshot yet (#29); the
-// "sequence numbers increase monotonically across repeated freezes" spec in
-// freeze_test.go simulates only the status.waitFor=nil half of a wake
-// (exercising the scheduler/pod-recreation machinery against the still-
-// intact workspace PVC), never an actual restore. The fixtures for several
-// of these (MinIO, the platform doubles) are stood up and self-tested here
-// so that the issues that DO implement that logic can build on a working
-// harness without also having to build the harness.
+// teardown, slot release) IS tested -- see freeze_test.go (#28). Wake/
+// restore (a real snapshot being restored into a fresh pod) IS tested -- see
+// resumption_test.go (#29, the standalone context round-trip) and
+// wake_test.go (#29: warm restore, cold restore after TTL GC, GC safety,
+// and corrupt/truncated archive failures). What remains untested is
+// AUTOMATIC wake triggering (#30): every wake spec here clears
+// status.waitFor by hand via the admin client (harness.go's ClearWaitFor),
+// because nothing in the operator evaluates the wait probe yet. The
+// fixtures for several of these (MinIO, the platform doubles) are stood up
+// and self-tested here so that the issues that DO implement that logic can
+// build on a working harness without also having to build the harness.
 package e2e

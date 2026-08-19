@@ -148,6 +148,44 @@ func isAlnum(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
+// TestRender_ConfigMapWakeBlock proves sandbox.json's optional wake block
+// (#29) is populated exactly when in.Restore != nil, and absent otherwise
+// -- never a stale/zero-valued placeholder.
+func TestRender_ConfigMapWakeBlock(t *testing.T) {
+	withoutRestore := Inputs{Env: baseEnv("wake-none-env"), Class: minimalClass(), ClusterID: "test-cluster"}
+	objs, err := Render(withoutRestore)
+	if err != nil {
+		t.Fatalf("Render (no restore): %v", err)
+	}
+	if strings.Contains(objs.ConfigMap.Data[RunConfigFileName], `"wake"`) {
+		t.Errorf("sandbox.json has a wake block with in.Restore == nil:\n%s", objs.ConfigMap.Data[RunConfigFileName])
+	}
+
+	withRestore := Inputs{
+		Env: baseEnv("wake-some-env"), Class: minimalClass(), ClusterID: "test-cluster",
+		Restore: &RestorePlan{SnapshotID: "00003-2026-01-01T00:00:00Z", Seq: 3},
+	}
+	objs, err = Render(withRestore)
+	if err != nil {
+		t.Fatalf("Render (with restore): %v", err)
+	}
+	sandboxJSON := objs.ConfigMap.Data[RunConfigFileName]
+	if !strings.Contains(sandboxJSON, `"restored": true`) {
+		t.Errorf("sandbox.json missing wake.restored=true:\n%s", sandboxJSON)
+	}
+	if !strings.Contains(sandboxJSON, `"snapshotID": "00003-2026-01-01T00:00:00Z"`) {
+		t.Errorf("sandbox.json missing wake.snapshotID:\n%s", sandboxJSON)
+	}
+	if !strings.Contains(sandboxJSON, `"seq": 3`) {
+		t.Errorf("sandbox.json missing wake.seq:\n%s", sandboxJSON)
+	}
+	// No wakeCount/freezeCount counters baked in at render time -- those
+	// live only in /v1/status, populated live after the pod starts.
+	if strings.Contains(sandboxJSON, "wakeCount") || strings.Contains(sandboxJSON, "freezeCount") {
+		t.Errorf("sandbox.json must not bake in a wake/freeze counter at render time:\n%s", sandboxJSON)
+	}
+}
+
 func TestRender_StorageClassNilVsEmpty(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		class := minimalClass()

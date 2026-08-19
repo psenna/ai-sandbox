@@ -26,6 +26,35 @@
 #   SCRIPT:require-no-file <path>           inverse of require-file: fail if readable      (exit 36)
 #   SCRIPT:write-tree <relpath> <bytes>     write <bytes> of /dev/urandom under
 #                                            $WORKDIR/<relpath>                             (exit 37 on failure)
+#   SCRIPT:write-home <relpath> <text>      write <text> under $CLAUDE_CONFIG_DIR/<relpath>
+#                                            (the agent home, snapshotted as agent-home.tar.zst
+#                                            on freeze -- the context-resumption proof)      (exit 38)
+#   SCRIPT:append-home <relpath> <text>     append <text> to $CLAUDE_CONFIG_DIR/<relpath>;
+#                                            proves the restored home is writable by uid 1000,
+#                                            not read-only/root-owned                          (exit 38)
+#   SCRIPT:require-home-file <relpath> <substring>
+#                                            fail unless $CLAUDE_CONFIG_DIR/<relpath> is
+#                                            readable AND contains <substring> (post-wake
+#                                            assertion executed inside the woken pod)         (exit 38)
+#   SCRIPT:tree-sha256 <root> <outfile>     deterministic digest over <root>: sorted paths,
+#                                            per-file mode+size+sha256, symlink targets;
+#                                            EXCLUDING .sandbox/, directory modes and mtimes
+#                                            (all legitimately differ across a restore)       (exit 39)
+#   SCRIPT:require-tree-sha256 <root> <file>
+#                                            recompute the digest of <root> and compare
+#                                            against <file>; non-zero exit on mismatch        (exit 39)
+#   SCRIPT:if-file <path> <directive>        run <directive> (a full SCRIPT: line, the
+#                                           remainder of this line) only when <path> is
+#                                           readable; otherwise skip it. Lets a single
+#                                           immutable prompt self-branch on the wake marker
+#                                           (.sandbox/last-wake.json, written by the restore
+#                                           init container only on a wake) so run 1 (ends in
+#                                           sandbox-wait) and the woken run (asserts the
+#                                           restoration) can be one task.prompt #29  (exit NN
+#                                           propagates from the inner directive)
+#   SCRIPT:unless-file <path> <directive>    the inverse of if-file: run <directive> only when
+#                                           <path> is NOT readable                         (exit NN
+#                                           propagates from the inner directive)
 # An empty prompt, or a prompt with no directives, exits 0. An unrecognised
 # `SCRIPT:` line exits 20.
 
@@ -50,7 +79,8 @@ if [ -z "$prompt" ]; then
 	exit 0
 fi
 
-while IFS= read -r line || [ -n "$line" ]; do
+dispatch() { # dispatch <line> -- run one SCRIPT: directive (exit N propagates)
+	local line="$1"
 	case "$line" in
 	"SCRIPT:echo "*)
 		printf '%s\n' "${line#SCRIPT:echo }"
@@ -167,6 +197,85 @@ while IFS= read -r line || [ -n "$line" ]; do
 		mkdir -p "$(dirname "$target")" || exit 37
 		head -c "$nbytes" /dev/urandom >"$target" || exit 37
 		;;
+	"SCRIPT:write-home "*)
+		rest="${line#SCRIPT:write-home }"
+		relpath="${rest%% *}"
+		text="${rest#* }"
+		target="${CLAUDE_CONFIG_DIR:-/home/node/.claude-sandbox}/$relpath"
+		mkdir -p "$(dirname "$target")" || exit 38
+		printf '%s\n' "$text" >"$target" || exit 38
+		;;
+	"SCRIPT:append-home "*)
+		rest="${line#SCRIPT:append-home }"
+		relpath="${rest%% *}"
+		text="${rest#* }"
+		target="${CLAUDE_CONFIG_DIR:-/home/node/.claude-sandbox}/$relpath"
+		mkdir -p "$(dirname "$target")" || exit 38
+		printf '%s\n' "$text" >>"$target" || exit 38
+		;;
+	"SCRIPT:require-home-file "*)
+		rest="${line#SCRIPT:require-home-file }"
+		relpath="${rest%% *}"
+		substring="${rest#* }"
+		target="${CLAUDE_CONFIG_DIR:-/home/node/.claude-sandbox}/$relpath"
+		[ -r "$target" ] || exit 38
+		if [ -n "$substring" ]; then
+			grep -qF -- "$substring" "$target" || exit 38
+		fi
+		;;
+	"SCRIPT:tree-sha256 "*)
+		rest="${line#SCRIPT:tree-sha256 }"
+		root="${rest%% *}"
+		outfile="${rest#* }"
+		# Deterministic digest over <root>: sorted paths, per-file
+		# mode+size+sha256, symlink targets. Excludes .sandbox/ (its markers
+		# are legitimately rewritten on every freeze/wake), directory modes
+		# (normalised by ReadArchive) and mtimes (not restored).
+		(
+			cd "$root" || exit 39
+			find . -path ./.sandbox -prune -o -print | sort | while IFS= read -r p; do
+				if [ -L "$p" ]; then
+					printf 'L %s -> %s\n' "$p" "$(readlink "$p")"
+				elif [ -f "$p" ]; then
+					printf 'F %s %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(stat -c %s "$p")" "$(sha256sum "$p" | cut -d' ' -f1)"
+				fi
+			done
+		) >"$outfile" || exit 39
+		;;
+	"SCRIPT:require-tree-sha256 "*)
+		rest="${line#SCRIPT:require-tree-sha256 }"
+		root="${rest%% *}"
+		file="${rest#* }"
+		tmp="$(mktemp)" || exit 39
+		(
+			cd "$root" || exit 39
+			find . -path ./.sandbox -prune -o -print | sort | while IFS= read -r p; do
+				if [ -L "$p" ]; then
+					printf 'L %s -> %s\n' "$p" "$(readlink "$p")"
+				elif [ -f "$p" ]; then
+					printf 'F %s %s %s %s\n' "$p" "$(stat -c %a "$p")" "$(stat -c %s "$p")" "$(sha256sum "$p" | cut -d' ' -f1)"
+				fi
+			done
+		) >"$tmp" || exit 39
+		cmp -s "$tmp" "$file" || {
+			echo "claude: tree-sha256 mismatch for $root vs $file" >&2
+			rm -f "$tmp"
+			exit 39
+		}
+		rm -f "$tmp"
+		;;
+	"SCRIPT:if-file "*)
+		rest="${line#SCRIPT:if-file }"
+		path="${rest%% *}"
+		sub="${rest#* }"
+		[ -r "$path" ] && dispatch "$sub"
+		;;
+	"SCRIPT:unless-file "*)
+		rest="${line#SCRIPT:unless-file }"
+		path="${rest%% *}"
+		sub="${rest#* }"
+		[ -r "$path" ] || dispatch "$sub"
+		;;
 	"SCRIPT:exit "*)
 		exit "${line#SCRIPT:exit }"
 		;;
@@ -180,6 +289,10 @@ while IFS= read -r line || [ -n "$line" ]; do
 		# Plain, non-directive prompt text: ignored.
 		;;
 	esac
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+	dispatch "$line"
 done <<PROMPT
 $prompt
 PROMPT

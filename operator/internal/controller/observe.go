@@ -62,6 +62,7 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		r.observeQueuePosition(ctx, env, &f)
 	}
 	r.observePod(ctx, env, &f)
+	r.observeRestore(&env.Status, &f)
 
 	if class == nil {
 		return f, nil
@@ -77,9 +78,19 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		{"ServiceAccount", names.ServiceAccount, &corev1.ServiceAccount{}},
 		{"Role", names.Role, &rbacv1.Role{}},
 		{"RoleBinding", names.RoleBinding, &rbacv1.RoleBinding{}},
-		{"PersistentVolumeClaim", names.PVC, &corev1.PersistentVolumeClaim{}},
 		{"ConfigMap", names.ConfigMap, &corev1.ConfigMap{}},
 		{"Secret", names.Secret, &corev1.Secret{}},
+	}
+	// The workspace PVC is deliberately NOT checked while Waiting (#29): a
+	// frozen environment's PVC may have been deleted by WarmCacheGC (or may
+	// be about to be), and nothing mounts it while Waiting anyway -- it is
+	// unconditionally re-applied on the very next Waiting->Ready->Restoring
+	// pass (withEnsureResources prepends ActionEnsureResources before
+	// ActionEnsurePod in the same Decision). Requiring it here would make a
+	// healthy frozen environment report a misleading "waiting for
+	// PersistentVolumeClaim" problem.
+	if env.Status.Phase != v1alpha1.PhaseWaiting {
+		checks = append(checks, resourceCheck{"PersistentVolumeClaim", names.PVC, &corev1.PersistentVolumeClaim{}})
 	}
 	if class.Spec.Storage.Backend.Type == v1alpha1.StorageBackendTypeS3 {
 		checks = append(checks, resourceCheck{"Secret", names.SnapshotSecret, &corev1.Secret{}})
@@ -90,7 +101,7 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		return f, err
 	}
 
-	if pvc.Status.Phase == corev1.ClaimLost {
+	if pvc != nil && pvc.Status.Phase == corev1.ClaimLost {
 		f.ResourcesProblem = fmt.Sprintf("workspace PVC %s is Lost", pvc.Name)
 		return f, nil
 	}

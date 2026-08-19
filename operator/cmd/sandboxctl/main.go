@@ -13,6 +13,9 @@
 //	             not a curl/wget invocation)
 //	freeze-once  take a single freeze snapshot and exit (the recovery Job's
 //	             entire program; #28, see internal/sandboxctl/freezeonce.go)
+//	restore      restore a snapshot into the mounted workspace/agent-home
+//	             and exit (the restore init container's entire program;
+//	             #29, see internal/sandboxctl/runrestore.go)
 package main
 
 import (
@@ -32,7 +35,7 @@ func main() {
 
 func run(args []string) int {
 	if len(args) < 2 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once> [flags]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore> [flags]")
 		return 2
 	}
 
@@ -47,8 +50,10 @@ func run(args []string) int {
 		return 0
 	case "freeze-once":
 		return runFreezeOnce(args[2:])
+	case "restore":
+		return runRestore(args[2:])
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once> [flags]\n", args[1])
+		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore> [flags]\n", args[1])
 		return 2
 	}
 }
@@ -96,6 +101,39 @@ func runFreezeOnce(args []string) int {
 
 	if err := sandboxctl.RunFreezeOnce(context.Background(), cfg, log); err != nil {
 		log.Error(err, "freeze-once exited with error")
+		return 1
+	}
+	return 0
+}
+
+// runRestore reuses sandboxctl.Load (the restore subcommand accepts the
+// same base flag set as serve/freeze-once, plus the --restore-* flags
+// registered by registerRestoreFlags), requires --environment/--namespace,
+// and validates both cfg.Snapshot and cfg.Restore before running --
+// mirroring runFreezeOnce exactly.
+func runRestore(args []string) int {
+	cfg, err := sandboxctl.Load(args, os.Getenv)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: "+err.Error())
+		return 2
+	}
+	if cfg.Environment == "" || cfg.Namespace == "" {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: --environment and --namespace are required")
+		return 2
+	}
+	if err := cfg.Snapshot.Validate(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: "+err.Error())
+		return 2
+	}
+	if err := cfg.Restore.Validate(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: "+err.Error())
+		return 2
+	}
+
+	log := logr.FromSlogHandler(slog.NewJSONHandler(os.Stderr, nil))
+
+	if err := sandboxctl.RunRestore(context.Background(), cfg, log); err != nil {
+		log.Error(err, "restore exited with error")
 		return 1
 	}
 	return 0

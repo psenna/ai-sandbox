@@ -32,6 +32,11 @@ patches:
           - --metrics-bind-address=:8080
           - --slot-capacity=8
           - --scheduler-interval=2s
+          # #29: 5s (not the 1m default) so the warm-cache GC spec in
+          # wake_test.go can observe a TTL-based reclamation pass within a
+          # test-viable window. This op REPLACES the whole args array, so
+          # omitting the flag would silently leave the 1m default.
+          - --warm-cache-gc-interval=5s
           - --sidecar-image=ai-sandbox-operator:e2e
       - op: add
         path: /spec/template/spec/containers/0/imagePullPolicy
