@@ -19,9 +19,15 @@ var legalTransitions = map[v1alpha1.Phase]map[v1alpha1.Phase]bool{
 	v1alpha1.PhaseRestoring: {v1alpha1.PhaseRestoring: true, v1alpha1.PhaseRunning: true, v1alpha1.PhaseReady: true, v1alpha1.PhaseDone: true, v1alpha1.PhaseFailed: true},
 	v1alpha1.PhaseRunning:   {v1alpha1.PhaseRunning: true, v1alpha1.PhaseFreezing: true, v1alpha1.PhaseDone: true, v1alpha1.PhaseFailed: true},
 	v1alpha1.PhaseFreezing:  {v1alpha1.PhaseFreezing: true, v1alpha1.PhaseWaiting: true, v1alpha1.PhaseFailed: true},
-	v1alpha1.PhaseWaiting:   {v1alpha1.PhaseWaiting: true, v1alpha1.PhaseReady: true, v1alpha1.PhaseFailed: true},
-	v1alpha1.PhaseDone:      {v1alpha1.PhaseDone: true},
-	v1alpha1.PhaseFailed:    {v1alpha1.PhaseFailed: true},
+	// Waiting -> Done/Failed is the #32 freeze-detour return: a run that
+	// already terminated once reaches Waiting only through terminal()'s detour
+	// and must return to its recorded terminal phase rather than re-run.
+	v1alpha1.PhaseWaiting: {v1alpha1.PhaseWaiting: true, v1alpha1.PhaseReady: true, v1alpha1.PhaseFailed: true, v1alpha1.PhaseDone: true},
+	// Done/Failed -> Freezing is the #32 freeze detour: a terminal run whose
+	// agent home was never snapshotted while a live pod exists freezes the pod
+	// to capture the transcripts before archiving.
+	v1alpha1.PhaseDone:   {v1alpha1.PhaseDone: true, v1alpha1.PhaseFreezing: true},
+	v1alpha1.PhaseFailed: {v1alpha1.PhaseFailed: true, v1alpha1.PhaseFreezing: true},
 }
 
 var allPhases = []v1alpha1.Phase{
@@ -62,6 +68,11 @@ func namedFacts() map[string]ClusterFacts {
 		"probe failed unknown reason":         withF(baseFacts(), func(f *ClusterFacts) { f.WaitProbeFailure = &StepFailure{Reason: "bogus"} }),
 		"archive written":                     withF(baseFacts(), func(f *ClusterFacts) { f.ArchiveWritten = true; f.ArchiveURI = "s3://x" }),
 		"archive not written":                 baseFacts(),
+		"pod alive for archive": withF(baseFacts(), func(f *ClusterFacts) { f.PodAliveForArchive = true }),
+		"pod alive for archive, archive written": withF(baseFacts(), func(f *ClusterFacts) {
+			f.PodAliveForArchive = true
+			f.ArchiveWritten = true
+		}),
 		"zero timeouts (disabled)":            ClusterFacts{}.WithAllObserved(),
 		"all combined: slot+pod ready+resources": withF(baseFacts(), func(f *ClusterFacts) {
 			f.SlotGranted = true
@@ -142,9 +153,13 @@ func TestNext_OnlyLegalTransitions(t *testing.T) {
 	}
 }
 
-// TestNext_TerminalIsSticky verifies Done/Failed never transition out,
-// regardless of facts, and never want a slot or perform any action besides
-// (conditionally) ActionArchive.
+// TestNext_TerminalIsSticky verifies Done/Failed stay terminal except for the
+// one #32 exception: the freeze detour to Freezing (a terminal run whose
+// agent home was never snapshotted while a live pod exists freezes the pod to
+// capture the transcripts before archiving). Outside that detour, a terminal
+// environment never wants a slot and never performs any action besides
+// ActionArchive -- or, for Done once the archive is written, ActionDeletePod
+// (#32: the pod is deleted only after the archive exists).
 func TestNext_TerminalIsSticky(t *testing.T) {
 	facts := namedFacts()
 	for _, phase := range []v1alpha1.Phase{v1alpha1.PhaseDone, v1alpha1.PhaseFailed} {
@@ -152,6 +167,23 @@ func TestNext_TerminalIsSticky(t *testing.T) {
 			env := envAt(phase)
 			d := Next(env, f, fixedNow)
 
+			if d.Phase == v1alpha1.PhaseFreezing {
+				// The freeze detour: legal only when the agent home was never
+				// snapshotted and a live pod exists to capture it, and it must
+				// freeze the pod and hold the slot while doing so.
+				if env.Status.Snapshot != nil || !f.PodAliveForArchive {
+					t.Errorf("facts=%q phase=%s: detour without an alive, uncaptured pod", factName, phase)
+				}
+				if f.ArchiveWritten {
+					t.Errorf("facts=%q phase=%s: detour with the archive already written", factName, phase)
+				}
+				for _, a := range d.Actions {
+					if a != ActionFreezePod && a != ActionEnsureResources {
+						t.Errorf("facts=%q phase=%s: unexpected detour action %s", factName, phase, a)
+					}
+				}
+				continue
+			}
 			if d.Phase != phase {
 				t.Errorf("facts=%q phase=%s: phase changed to %s", factName, phase, d.Phase)
 			}
@@ -159,7 +191,16 @@ func TestNext_TerminalIsSticky(t *testing.T) {
 				t.Errorf("facts=%q phase=%s: SlotWanted=true in terminal phase", factName, phase)
 			}
 			for _, a := range d.Actions {
-				if a != ActionArchive {
+				switch a {
+				case ActionArchive:
+					if f.ArchiveWritten {
+						t.Errorf("facts=%q phase=%s: ActionArchive with the archive already written", factName, phase)
+					}
+				case ActionDeletePod:
+					if phase != v1alpha1.PhaseDone || !f.ArchiveWritten {
+						t.Errorf("facts=%q phase=%s: ActionDeletePod legal only for Done with the archive written", factName, phase)
+					}
+				default:
 					t.Errorf("facts=%q phase=%s: unexpected action %s in terminal phase", factName, phase, a)
 				}
 			}

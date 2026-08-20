@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -483,6 +484,10 @@ func TestNext_Transitions(t *testing.T) {
 			wantConds:      map[string]wantCond{ConditionReady: {metav1.ConditionFalse, ReasonAgentReportedFailure}},
 		},
 		{
+			// #32: the pod is NOT deleted on the Running->Done transition any
+			// more -- the agent home must survive until the terminal archive
+			// captures it. terminal() deletes the pod on the next reconcile
+			// once status.archive is written.
 			name: "agent reports success while Running",
 			env:  envAt(v1alpha1.PhaseRunning),
 			facts: func() ClusterFacts {
@@ -492,7 +497,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseDone,
 			wantSlotWanted: false,
-			wantActions:    []Action{ActionDeletePod},
+			wantActions:    []Action{},
 		},
 		{
 			name: "pod failure reason surfaces sanitized",
@@ -537,6 +542,8 @@ func TestNext_Transitions(t *testing.T) {
 			wantConds:      map[string]wantCond{ConditionReady: {metav1.ConditionFalse, ReasonPodFailed}},
 		},
 		{
+			// #32: same as the agent-success case -- the pod delete is deferred
+			// to terminal() until the archive is written.
 			name: "pod phase Succeeded -> Done",
 			env:  envAt(v1alpha1.PhaseRunning),
 			facts: func() ClusterFacts {
@@ -546,7 +553,7 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseDone,
 			wantSlotWanted: false,
-			wantActions:    []Action{ActionDeletePod},
+			wantActions:    []Action{},
 		},
 		{
 			name: "agent failure while Restoring",
@@ -588,7 +595,7 @@ func TestNext_Transitions(t *testing.T) {
 			wantConds:      map[string]wantCond{ConditionReady: {metav1.ConditionUnknown, ReasonClassNotResolved}},
 		},
 
-		// --- Done / Failed stickiness ---
+		// --- Done / Failed stickiness + #32 archive ordering ---
 		{
 			name:           "Done stays Done, archives",
 			env:            envAt(v1alpha1.PhaseDone),
@@ -598,7 +605,8 @@ func TestNext_Transitions(t *testing.T) {
 			wantActions:    []Action{ActionArchive},
 		},
 		{
-			name: "Done with archive already written issues no action",
+			// #32: the pod is deleted only AFTER the archive is written.
+			name: "Done with archive written deletes the pod",
 			env:  envAt(v1alpha1.PhaseDone),
 			facts: func() ClusterFacts {
 				f := baseFacts()
@@ -607,7 +615,72 @@ func TestNext_Transitions(t *testing.T) {
 			}(),
 			wantPhase:      v1alpha1.PhaseDone,
 			wantSlotWanted: false,
+			wantActions:    []Action{ActionDeletePod},
 			wantConds:      map[string]wantCond{ConditionArchived: {metav1.ConditionTrue, ReasonArchiveWritten}},
+		},
+		{
+			// #32: a Done env whose agent home was never snapshotted while the
+			// pod is still alive takes the freeze detour to capture it before
+			// archiving, rather than losing the transcripts.
+			name: "Done, no archive, live pod, no snapshot -> freeze detour",
+			env:  envAt(v1alpha1.PhaseDone),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.PodExists = true
+				f.PodPhase = corev1.PodRunning
+				f.PodAliveForArchive = true
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseFreezing,
+			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources, ActionFreezePod},
+			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionFalse, ReasonSnapshotInProgress}},
+		},
+		{
+			// Same detour, but a Failed terminal phase: the transcripts of a
+			// failed run are worth capturing too.
+			name: "Failed, no archive, live pod, no snapshot -> freeze detour to Freezing",
+			env:  envAt(v1alpha1.PhaseFailed),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.PodExists = true
+				f.PodPhase = corev1.PodRunning
+				f.PodAliveForArchive = true
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseFreezing,
+			wantSlotWanted: true,
+			wantActions:    []Action{ActionEnsureResources, ActionFreezePod},
+			wantConds:      map[string]wantCond{ConditionFrozen: {metav1.ConditionFalse, ReasonSnapshotInProgress}},
+		},
+		{
+			// No detour when a snapshot already exists: the agent home is
+			// already captured, archive directly.
+			name: "Done, no archive, snapshot exists, live pod -> archive directly",
+			env:  envAt(v1alpha1.PhaseDone, withSnapshot(aSnapshot())),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.PodExists = true
+				f.PodPhase = corev1.PodRunning
+				f.PodAliveForArchive = true
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseDone,
+			wantSlotWanted: false,
+			wantActions:    []Action{ActionArchive},
+		},
+		{
+			// No detour when the pod is already gone: nothing is left to
+			// capture, archive from whatever snapshot exists (or none).
+			name: "Done, no archive, pod gone, no snapshot -> archive directly",
+			env:  envAt(v1alpha1.PhaseDone),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseDone,
+			wantSlotWanted: false,
+			wantActions:    []Action{ActionArchive},
 		},
 		{
 			name:           "Failed stays Failed, archives",
@@ -616,6 +689,27 @@ func TestNext_Transitions(t *testing.T) {
 			wantPhase:      v1alpha1.PhaseFailed,
 			wantSlotWanted: false,
 			wantActions:    []Action{ActionArchive},
+		},
+		{
+			// #32: the freeze detour returns here. A run that already reached
+			// Done must return to Done, not re-run the agent.
+			name: "Waiting with FinishedAt returns to Done (freeze detour return)",
+			env:  envAt(v1alpha1.PhaseWaiting, withFinishedAt(fixedNow.Add(-5*time.Minute))),
+			facts: func() ClusterFacts {
+				f := baseFacts()
+				f.SnapshotComplete = true
+				return f
+			}(),
+			wantPhase:      v1alpha1.PhaseDone,
+			wantSlotWanted: false,
+		},
+		{
+			name: "Waiting with FinishedAt + Failed terminal returns to Failed",
+			env: envAt(v1alpha1.PhaseWaiting, withFinishedAt(fixedNow.Add(-5*time.Minute)),
+				withTerminalPhase(v1alpha1.PhaseFailed)),
+			facts:          baseFacts(),
+			wantPhase:      v1alpha1.PhaseFailed,
+			wantSlotWanted: false,
 		},
 	}
 

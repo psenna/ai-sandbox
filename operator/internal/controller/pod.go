@@ -120,6 +120,13 @@ func (r *Reconciler) observePod(ctx context.Context, env *v1alpha1.SandboxEnviro
 		f.PodExists = true // true even while terminating: nextFreezing waits on this
 		f.PodPhase = pod.Status.Phase
 		f.PodReady = podReady(&pod)
+		// PodAliveForArchive (#32): a pod whose agent-home emptyDir has not
+		// been captured in a snapshot yet -- Pending or Running only. A
+		// Succeeded/Failed pod is excluded because the agent container is gone
+		// and the sidecar freeze cannot run, so nothing is capturable from it.
+		if env.Status.Snapshot == nil && (pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning) {
+			f.PodAliveForArchive = true
+		}
 		if pf := podFailure(&pod, r.now()); pf != nil {
 			pf.Message = truncateMessage(pf.Message, podFailureMessageBytes)
 			f.PodFailure = pf

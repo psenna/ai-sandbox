@@ -46,13 +46,16 @@ type resourceCheck struct {
 // forever on any normal cluster. Lost (the bound PV was destroyed) is a
 // real terminal fault and DOES flip readiness false.
 //
-// Still stubbed: ArchiveWritten (#32). ProbeObserved is no longer stubbed --
-// see observeProbe below. SnapshotComplete is no longer stubbed either -- see
-// observeSnapshot in freeze.go.
+// ProbeObserved is no longer stubbed -- see observeProbe below.
+// SnapshotComplete is no longer stubbed either -- see observeSnapshot in
+// freeze.go. ArchiveWritten/ArchiveURI (#32) read status.archive and
+// status.archiveURI, written by the sandboxctl archive Job.
 func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) (lifecycle.ClusterFacts, error) {
 	f := lifecycle.ClusterFacts{
 		SlotGranted:       env.Status.Slot.Granted,
 		AgentWaitDeclared: env.Status.WaitFor != nil,
+		ArchiveWritten:    env.Status.Archive != nil || env.Status.ArchiveURI != "",
+		ArchiveURI:        env.Status.ArchiveURI,
 	}
 	if ar := env.Status.AgentResult; ar != nil {
 		f.AgentDone = ar.Outcome == v1alpha1.AgentOutcomeSucceeded

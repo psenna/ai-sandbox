@@ -42,6 +42,11 @@ type StatusPatch struct {
 	IncrementWakeCount   bool
 	ClearWaitFor         bool
 	SetArchiveURI        string
+	// SetTerminalPhase records the terminal phase (Done or Failed) the
+	// environment reached. Set-once like the timestamp fields: the freeze
+	// detour (#32) reads it from nextWaiting to return to the correct
+	// terminal phase after capturing the agent home.
+	SetTerminalPhase v1alpha1.Phase
 	// SetProbeAttempt replaces status.probeAttempt with the evaluator's most
 	// recent attempt record (#30). Unlike the timestamp fields it is NOT
 	// set-once: the attempt is a mutable record that is replaced wholesale on
