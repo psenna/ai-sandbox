@@ -40,6 +40,14 @@ const (
 	PhaseFailed Phase = "Failed"
 )
 
+// FinalizerArchiveOnDelete is applied to every SandboxEnvironment on creation.
+// Its presence guarantees the controller completes the terminal archive
+// (archive/run.json + archive/context.tar.zst) before the object is removed
+// from the API: Kubernetes will not garbage-collect a CR while a finalizer
+// is present, so a backend outage during archiving blocks finalizer removal
+// and retries on the next reconcile rather than dropping the run's context.
+const FinalizerArchiveOnDelete = "sandbox.psenna.dev/environment-archiver"
+
 // SandboxEnvironmentSpec describes a single agent run: which class to build
 // the sandbox from, which repository it operates on, what task it should
 // perform, and its scheduling priority.
@@ -213,6 +221,35 @@ type SandboxEnvironmentStatus struct {
 	// archive, once the environment has reached a terminal phase.
 	// +optional
 	ArchiveURI string `json:"archiveURI,omitempty"`
+
+	// Archive records the terminal archive written for this environment.
+	// Written by the sandboxctl archive Job; read by the controller to clear
+	// the finalizer and by retention GC to select archives past their TTL.
+	// +optional
+	Archive *ArchiveStatus `json:"archive,omitempty"`
+
+	// TerminalPhase records the terminal phase (Done or Failed) the
+	// environment reached, set once when the run first terminated. Used by
+	// the freeze-detour path (#32) to return to the correct terminal phase
+	// after capturing the agent home, rather than re-running the agent.
+	// +optional
+	TerminalPhase Phase `json:"terminalPhase,omitempty"`
+
+	// PhaseHistory is the full phase-transition history with timestamps,
+	// appended on every phase change in lifecycle.Apply. It is the issue's
+	// "full phase-transition history with timestamps" requirement: the Ready
+	// condition only carries the LastTransitionTime for the *current* phase,
+	// while this list preserves every transition so run.json can record them.
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	// +listType=atomic
+	PhaseHistory []PhaseTransition `json:"phaseHistory,omitempty"`
+
+	// GitState records the agent's final git state, if the agent recorded
+	// one. Written by the sandboxctl sidecar from
+	// /workspace/.sandbox/git-state.json during freeze; surfaced in run.json.
+	// +optional
+	GitState *GitStateStatus `json:"gitState,omitempty"`
 
 	// ObservedGeneration is the most recent generation observed by the
 	// controller reconciling this environment.
@@ -561,6 +598,75 @@ type RestoredRootStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	BytesDownloaded int64 `json:"bytesDownloaded,omitempty"`
+}
+
+// PhaseTransition records one observed phase change.
+type PhaseTransition struct {
+	// Phase is the phase the environment entered.
+	Phase Phase `json:"phase"`
+
+	// At is when the environment was first observed in this phase.
+	At metav1.Time `json:"at"`
+
+	// Reason is the Ready condition's Reason at the transition, if any (the
+	// summary condition's reason carries the terminal/failure reason).
+	// +optional
+	Reason string `json:"reason,omitempty"`
+}
+
+// ArchiveStatus records the terminal archive written for this environment.
+// Written by the sandboxctl archive Job; read by the controller to clear
+// the finalizer and by retention GC to select archives past their TTL.
+type ArchiveStatus struct {
+	// URI is where the archive was written (e.g.
+	// s3://<bucket>/<prefix>/<clusterID>/<ns>/<name>/<uid>/archive).
+	// +kubebuilder:validation:MinLength=1
+	URI string `json:"uri"`
+
+	// FinishedAt is when the run reached its terminal phase (mirrors
+	// status.finishedAt; duplicated here so retention GC need not parse
+	// run.json to find the run's end time).
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+
+	// ContextPresent is false when no agent-home snapshot existed to draw
+	// context.tar.zst from (a never-frozen run whose pod was already gone).
+	// +optional
+	ContextPresent bool `json:"contextPresent,omitempty"`
+
+	// RunJSONSHA256 is the lowercase hex SHA-256 of run.json, for audit.
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
+	// +optional
+	RunJSONSHA256 string `json:"runJSONSHA256,omitempty"`
+}
+
+// GitStateStatus records the agent's final git state, if the agent recorded
+// one. Written by the sandboxctl sidecar from
+// /workspace/.sandbox/git-state.json during freeze; surfaced in run.json.
+type GitStateStatus struct {
+	// Branch is the git branch the agent left the workspace on.
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
+	// HeadSHA is the lowercase hex SHA-1 of HEAD.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
+	// +optional
+	HeadSHA string `json:"headSHA,omitempty"`
+
+	// PullRequest, if the agent opened/updated one, references it.
+	// +optional
+	PullRequest *PullRequestRef `json:"pullRequest,omitempty"`
+}
+
+// PullRequestRef references a pull request the agent opened or updated.
+type PullRequestRef struct {
+	// Repo is the repository the pull request belongs to, in "owner/name" form.
+	// +kubebuilder:validation:MinLength=1
+	Repo string `json:"repo"`
+
+	// Number is the pull request number.
+	// +kubebuilder:validation:Minimum=1
+	Number int32 `json:"number"`
 }
 
 // +kubebuilder:object:root=true

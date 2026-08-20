@@ -192,6 +192,38 @@ spec:
                 required:
                 - outcome
                 type: object
+              archive:
+                description: |-
+                  Archive records the terminal archive written for this environment.
+                  Written by the sandboxctl archive Job; read by the controller to clear
+                  the finalizer and by retention GC to select archives past their TTL.
+                properties:
+                  contextPresent:
+                    description: |-
+                      ContextPresent is false when no agent-home snapshot existed to draw
+                      context.tar.zst from (a never-frozen run whose pod was already gone).
+                    type: boolean
+                  finishedAt:
+                    description: |-
+                      FinishedAt is when the run reached its terminal phase (mirrors
+                      status.finishedAt; duplicated here so retention GC need not parse
+                      run.json to find the run's end time).
+                    format: date-time
+                    type: string
+                  runJSONSHA256:
+                    description: RunJSONSHA256 is the lowercase hex SHA-256 of run.json,
+                      for audit.
+                    pattern: ^[a-f0-9]{64}$
+                    type: string
+                  uri:
+                    description: |-
+                      URI is where the archive was written (e.g.
+                      s3://<bucket>/<prefix>/<clusterID>/<ns>/<name>/<uid>/archive).
+                    minLength: 1
+                    type: string
+                required:
+                - uri
+                type: object
               archiveURI:
                 description: |-
                   ArchiveURI is the location of this environment's final workspace
@@ -273,6 +305,39 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              gitState:
+                description: |-
+                  GitState records the agent's final git state, if the agent recorded
+                  one. Written by the sandboxctl sidecar from
+                  /workspace/.sandbox/git-state.json during freeze; surfaced in run.json.
+                properties:
+                  branch:
+                    description: Branch is the git branch the agent left the workspace
+                      on.
+                    type: string
+                  headSHA:
+                    description: HeadSHA is the lowercase hex SHA-1 of HEAD.
+                    pattern: ^[0-9a-f]{40}$
+                    type: string
+                  pullRequest:
+                    description: PullRequest, if the agent opened/updated one, references
+                      it.
+                    properties:
+                      number:
+                        description: Number is the pull request number.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      repo:
+                        description: Repo is the repository the pull request belongs
+                          to, in "owner/name" form.
+                        minLength: 1
+                        type: string
+                    required:
+                    - number
+                    - repo
+                    type: object
+                type: object
               observedGeneration:
                 description: |-
                   ObservedGeneration is the most recent generation observed by the
@@ -292,6 +357,45 @@ spec:
                 - Done
                 - Failed
                 type: string
+              phaseHistory:
+                description: |-
+                  PhaseHistory is the full phase-transition history with timestamps,
+                  appended on every phase change in lifecycle.Apply. It is the issue's
+                  "full phase-transition history with timestamps" requirement: the Ready
+                  condition only carries the LastTransitionTime for the *current* phase,
+                  while this list preserves every transition so run.json can record them.
+                items:
+                  description: PhaseTransition records one observed phase change.
+                  properties:
+                    at:
+                      description: At is when the environment was first observed in
+                        this phase.
+                      format: date-time
+                      type: string
+                    phase:
+                      description: Phase is the phase the environment entered.
+                      enum:
+                      - Pending
+                      - Ready
+                      - Running
+                      - Freezing
+                      - Waiting
+                      - Restoring
+                      - Done
+                      - Failed
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is the Ready condition's Reason at the transition, if any (the
+                        summary condition's reason carries the terminal/failure reason).
+                      type: string
+                  required:
+                  - at
+                  - phase
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
               probeAttempt:
                 description: |-
                   ProbeAttempt records the operator's most recent evaluation of
@@ -607,6 +711,22 @@ spec:
               startedAt:
                 description: StartedAt is when the sandbox first started running.
                 format: date-time
+                type: string
+              terminalPhase:
+                description: |-
+                  TerminalPhase records the terminal phase (Done or Failed) the
+                  environment reached, set once when the run first terminated. Used by
+                  the freeze-detour path (#32) to return to the correct terminal phase
+                  after capturing the agent home, rather than re-running the agent.
+                enum:
+                - Pending
+                - Ready
+                - Running
+                - Freezing
+                - Waiting
+                - Restoring
+                - Done
+                - Failed
                 type: string
               waitFor:
                 description: |-
