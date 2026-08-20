@@ -331,6 +331,84 @@ against the stack's own agent image and model endpoint (no Kubernetes):
 see [the spike doc](docs/spike-context-resumption.md) and its runnable
 script at `operator/spike/context-resumption/run.sh`.
 
+### Destroy / terminal archive (#32)
+
+Every `SandboxEnvironment` carries `sandbox.psenna.dev/environment-archiver`
+(`v1alpha1.FinalizerArchiveOnDelete`), added on its first non-deleting
+reconcile. Deleting the object sets `DeletionTimestamp` but does **not**
+remove it from the API until the controller has written a terminal archive
+(or a documented reason says archiving was never possible, or is already
+done) — a `kubectl delete` on a still-`Running` environment does not lose
+the agent's transcript.
+
+**What `reconcileDelete` does, in order:** (1) the escape hatch, below; (2)
+if `status.archive` is already set — including by the *normal* completion
+path, since every environment gets archived on reaching `Done`/`Failed`, not
+only on deletion — the finalizer is removed with nothing left to do; (3) an
+unresolvable class, or a class whose `storage.backend.type` isn't `s3`,
+removes the finalizer without archiving (documented limitation, matching
+freeze's own S3-only restriction — see below); (4) a backend that can't even
+be constructed (e.g. a missing/malformed credentials Secret) holds the
+finalizer and retries; (5) if the agent home has never been snapshotted and
+a live pod still exists, the environment is frozen first — exactly the
+freeze-before-archive detour a normally-completing environment goes through
+(`internal/lifecycle/next.go`'s `terminal()`) — so the transcript is captured
+before the pod goes away; (6) otherwise the one-shot `sandboxctl archive`
+Job (`internal/render/archivejob.go`, `internal/controller/archive.go`) is
+created or re-applied. The archive Job mounts no workspace/agent-home PVC —
+it assembles `run.json` from `status.*` and copies `context.tar.zst`
+backend-to-backend from the most recent freeze snapshot — only the
+snapshot-credentials Secret and the sidecar token volume, so the Job's own
+`sandboxctl` process can authenticate and patch `status.archive`.
+
+**The escape hatch.** Set the annotation
+`sandbox.psenna.dev/remove-finalizer: "true"` on a `SandboxEnvironment` to
+force the finalizer off *without* archiving — for a genuinely unrecoverable
+situation (credentials rotated away, the bucket itself deleted) that would
+otherwise wedge deletion forever. This is a deliberate, documented
+data-loss action: the controller emits a `Warning` Event
+(`ArchiveSkippedByEscapeHatch`) every time it's honored, so it's never
+silent.
+
+**The archive key layout**, under the same `<prefix>/<clusterID>/<namespace>/
+<envName>/<envUID>/` root every snapshot uses (see `internal/storage`
+above): `archive/run.json` (the full run record — phase history, snapshot
+list, git state, timing — see `internal/storage/runrecord.go`) and
+`archive/context.tar.zst` (the most recent freeze's `agent-home.tar.zst`,
+copied over; **omitted, not failed,** for a never-frozen run or a
+workspace-only recovery-Job snapshot — `run.json`'s `context.reason` names
+which). `status.archive.uri` / `status.archiveURI` point at the `archive/`
+prefix; `status.archive.runJSONSHA256` lets an auditor verify a downloaded
+`run.json` byte-for-byte.
+
+**Retention GC** (`internal/controller/retentiongc.go`, a `manager.Runnable`
+like `WarmCacheGC`/`SlotScheduler` — one leader-elected loop cluster-wide)
+runs two independent sweeps per S3-backed class every
+`--retention-gc-interval` (default 30m): **retention** deletes a live
+environment's entire storage root (snapshots *and* archive) once
+`status.archive.finishedAt` is older than `--retention-ttl` (default 168h;
+`0` disables this sweep only); **orphan cleanup** deletes any storage root
+whose `EnvUID` belongs to no currently-live environment, regardless of TTL —
+the mechanism that makes deleting an environment and recreating one with the
+*same name* safe (the new object gets a fresh UID and therefore a disjoint
+root; the old UID's root is reclaimed here, not silently inherited or
+colliding). `--retention-dry-run` logs what either sweep would delete
+without deleting anything.
+
+**The PVC-backend limitation.** Archiving, like freeze, is S3-only: a class
+whose `storage.backend.type` is `pvc` never gets a terminal archive — its
+environments' finalizers are removed on deletion with nothing written. This
+is the same restriction `internal/storage/doc.go`'s gap analysis already
+documents for freeze/wake; it isn't new here.
+
+**The never-frozen-context limitation.** An environment deleted (or that
+fails) before it ever reaches a pod — `Pending`, or `Ready` still queued —
+has no `agent-home.tar.zst` anywhere to copy from. Its `archive/run.json`
+still gets written (a complete record of what *did* happen: spec, phase
+history, timing), but `context.present` is `false` and `context.reason`
+reads `"no agent home snapshot"`. This is not a bug: there was never a
+session transcript to lose.
+
 ### `make manifests` / `make generate`: `hack/tools`
 
 Unlike `go install pkg@version`, a Go **module**'s own `go.mod` requires
