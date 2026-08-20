@@ -69,6 +69,10 @@ func (f *fakeStore) RecordRestoreAttempt(context.Context, RestoreAttempt, time.T
 	return nil
 }
 
+func (f *fakeStore) PatchArchive(context.Context, ArchivePatch) error {
+	return nil
+}
+
 func newTestServer(t *testing.T, store *fakeStore, poll *Poller) *httptest.Server {
 	t.Helper()
 	if poll == nil {

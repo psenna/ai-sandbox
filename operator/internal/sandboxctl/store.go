@@ -75,6 +75,21 @@ type SnapshotRecord struct {
 	SHA256         string
 	TakenAt        time.Time
 	DurationMillis int64
+	// GitState, when non-nil, is patched into status.gitState alongside
+	// status.snapshot: the freeze hook's best-effort capture of
+	// /workspace/.sandbox/git-state.json (see gitstate.go). A nil value
+	// leaves status.gitState untouched, so a freeze whose agent left no
+	// git-state file never clobbers an earlier capture.
+	GitState *v1alpha1.GitStateStatus
+}
+
+// ArchivePatch is the value form of a status.archive + status.archiveURI
+// patch (the terminal archive recorded by the sandboxctl archive Job).
+type ArchivePatch struct {
+	URI            string
+	FinishedAt     *metav1.Time
+	ContextPresent bool
+	RunJSONSHA256  string
 }
 
 // Result is the store's form of a /v1/done report.
@@ -101,6 +116,15 @@ type Snapshot struct {
 	ObservedAt time.Time
 	// Fresh is true once at least one poll has succeeded.
 	Fresh bool
+
+	// Env is the full SandboxEnvironment most recently observed by Refresh.
+	// Populated for every poll, but read ONLY by the one-shot subcommands
+	// (freeze-once, restore, archive) that need more than the sidecar's own
+	// status -- the /v1/status handler never reads it. The archive
+	// subcommand assembles run.json from this single value copy (phase
+	// history, snapshots, probe attempt, timestamps) instead of issuing a
+	// second live Get.
+	Env v1alpha1.SandboxEnvironment
 }
 
 // Store is sandboxctl's seam onto the SandboxEnvironment's status
@@ -129,6 +153,10 @@ type Store interface {
 	// RecordRestoreAttempt patches status.restoreAttempt. Idempotent.
 	// Written ONLY by the restore init container (#29).
 	RecordRestoreAttempt(ctx context.Context, a RestoreAttempt, at time.Time) error
+	// PatchArchive records the finished terminal archive in status.archive
+	// AND status.archiveURI in a single patch, so the two can never disagree.
+	// Written ONLY by the archive subcommand (#32). Idempotent.
+	PatchArchive(ctx context.Context, a ArchivePatch) error
 }
 
 // envStore is the real Store, backed by a direct (uncached) client.Client
@@ -185,6 +213,7 @@ func (s *envStore) Refresh(ctx context.Context) error {
 		Generation:  env.Generation,
 		ObservedAt:  time.Now(),
 		Fresh:       true,
+		Env:         env,
 	})
 	return nil
 }
@@ -238,6 +267,12 @@ func (s *envStore) RecordSnapshot(ctx context.Context, r SnapshotRecord, at time
 			StartedAt: startedAt,
 			UpdatedAt: &ts,
 		}
+		// The freeze hook's best-effort git-state capture lands in the SAME
+		// patch, so status.gitState can never name a snapshot that did not
+		// take. A nil GitState (agent left no file) leaves the field alone.
+		if r.GitState != nil {
+			env.Status.GitState = r.GitState.DeepCopy()
+		}
 		return nil
 	})
 }
@@ -280,10 +315,28 @@ func (s *envStore) RecordRestoreAttempt(ctx context.Context, a RestoreAttempt, a
 	})
 }
 
+// PatchArchive records the terminal archive in status.archive AND
+// status.archiveURI in the same patch, so the two can never disagree --
+// mirrors RecordSnapshot's own single-patch, no-inconsistency guarantee.
+// Written ONLY by the sandboxctl archive subcommand (#32), which is the sole
+// producer of archive/run.json + archive/context.tar.zst.
+func (s *envStore) PatchArchive(ctx context.Context, a ArchivePatch) error {
+	return s.patchStatus(ctx, func(env *v1alpha1.SandboxEnvironment) error {
+		env.Status.Archive = &v1alpha1.ArchiveStatus{
+			URI:            a.URI,
+			FinishedAt:     a.FinishedAt,
+			ContextPresent: a.ContextPresent,
+			RunJSONSHA256:  a.RunJSONSHA256,
+		}
+		env.Status.ArchiveURI = a.URI
+		return nil
+	})
+}
+
 // DeclareWait refuses if status.waitFor is already non-nil (ErrWaitAlreadyDeclared),
 // otherwise patches p into it, stamping DeclaredAt from at (never time.Now()
-// directly -- matches Reconciler.now()'s injected-clock pattern elsewhere in
-// this repo).
+// directly) -- matches Reconciler.now()'s injected-clock pattern elsewhere in
+// this repo.
 func (s *envStore) DeclareWait(ctx context.Context, p WaitProbe, at time.Time) error {
 	declaredAt := metav1.NewTime(at)
 	return s.patchStatus(ctx, func(env *v1alpha1.SandboxEnvironment) error {

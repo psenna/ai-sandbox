@@ -87,8 +87,10 @@ func testRunRecord(t *testing.T) RunRecord {
 			},
 		},
 		Context: ContextRecord{
-			Present: true,
-			URI:     "s3://bucket/cluster-a/ns-a/env-a/uid-a/archive/context.tar.zst",
+			Present:   true,
+			URI:       "s3://bucket/cluster-a/ns-a/env-a/uid-a/archive/context.tar.zst",
+			SizeBytes: 4321,
+			SHA256:    strings.Repeat("e", 64),
 		},
 	}
 }
@@ -192,7 +194,14 @@ func TestRunRecord_Validate(t *testing.T) {
 		{"snapshot malformed sha256", func(r RunRecord) RunRecord { r.Snapshots[0].SHA256 = "nope"; return r }, true},
 		{"snapshot negative size", func(r RunRecord) RunRecord { r.Snapshots[0].SizeBytes = -5; return r }, true},
 		{"context present with empty uri", func(r RunRecord) RunRecord { r.Context.URI = ""; return r }, true},
-		{"context absent with empty reason", func(r RunRecord) RunRecord { r.Context.Present = false; r.Context.URI = ""; r.Context.Reason = ""; return r }, true},
+		{"context negative size", func(r RunRecord) RunRecord { r.Context.SizeBytes = -1; return r }, true},
+		{"context malformed sha256", func(r RunRecord) RunRecord { r.Context.SHA256 = "nope"; return r }, true},
+		{"context absent with empty reason", func(r RunRecord) RunRecord {
+			r.Context.Present = false
+			r.Context.URI = ""
+			r.Context.Reason = ""
+			return r
+		}, true},
 		{"context absent with reason allowed", func(r RunRecord) RunRecord {
 			r.Context.Present = false
 			r.Context.URI = ""

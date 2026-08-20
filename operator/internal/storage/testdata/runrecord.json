@@ -103,6 +103,8 @@
   },
   "context": {
     "present": true,
-    "uri": "s3://bucket/cluster-a/ns-a/env-a/uid-a/archive/context.tar.zst"
+    "uri": "s3://bucket/cluster-a/ns-a/env-a/uid-a/archive/context.tar.zst",
+    "sizeBytes": 4321,
+    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   }
 }

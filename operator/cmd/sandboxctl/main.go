@@ -16,6 +16,9 @@
 //	restore      restore a snapshot into the mounted workspace/agent-home
 //	             and exit (the restore init container's entire program;
 //	             #29, see internal/sandboxctl/runrestore.go)
+//	archive      assemble run.json + archive/context.tar.zst and exit (the
+//	             terminal-archive Job's entire program; #32, see
+//	             internal/sandboxctl/archive.go)
 //	probe-tcp    dial host:port and exit 0/1 (the CNI enforcement probe's
 //	             client; #31, see internal/sandboxctl/cniprobe.go)
 //	probe-listen  listen on :port forever (the CNI enforcement probe's server;
@@ -39,7 +42,7 @@ func main() {
 
 func run(args []string) int {
 	if len(args) < 2 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|probe-tcp|probe-listen> [flags]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|probe-tcp|probe-listen> [flags]")
 		return 2
 	}
 
@@ -56,6 +59,8 @@ func run(args []string) int {
 		return runFreezeOnce(args[2:])
 	case "restore":
 		return runRestore(args[2:])
+	case "archive":
+		return runArchive(args[2:])
 	case "probe-tcp":
 		if len(args) < 3 {
 			_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl probe-tcp <host:port>")
@@ -77,9 +82,37 @@ func run(args []string) int {
 		}
 		return 0
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|probe-tcp|probe-listen> [flags]\n", args[1])
+		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|probe-tcp|probe-listen> [flags]\n", args[1])
 		return 2
 	}
+}
+
+// runArchive reuses sandboxctl.Load (the archive subcommand accepts the same
+// base flag set as serve/freeze-once/restore), requires
+// --environment/--namespace, and validates cfg.Snapshot before running --
+// mirroring runFreezeOnce exactly.
+func runArchive(args []string) int {
+	cfg, err := sandboxctl.Load(args, os.Getenv)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: "+err.Error())
+		return 2
+	}
+	if cfg.Environment == "" || cfg.Namespace == "" {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: --environment and --namespace are required")
+		return 2
+	}
+	if err := cfg.Snapshot.Validate(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "invalid configuration: "+err.Error())
+		return 2
+	}
+
+	log := logr.FromSlogHandler(slog.NewJSONHandler(os.Stderr, nil))
+
+	if err := sandboxctl.RunArchive(context.Background(), cfg, log); err != nil {
+		log.Error(err, "archive exited with error")
+		return 1
+	}
+	return 0
 }
 
 func runServe(args []string) int {

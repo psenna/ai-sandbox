@@ -68,12 +68,12 @@ func namedFacts() map[string]ClusterFacts {
 		"probe failed unknown reason":         withF(baseFacts(), func(f *ClusterFacts) { f.WaitProbeFailure = &StepFailure{Reason: "bogus"} }),
 		"archive written":                     withF(baseFacts(), func(f *ClusterFacts) { f.ArchiveWritten = true; f.ArchiveURI = "s3://x" }),
 		"archive not written":                 baseFacts(),
-		"pod alive for archive": withF(baseFacts(), func(f *ClusterFacts) { f.PodAliveForArchive = true }),
+		"pod alive for archive":               withF(baseFacts(), func(f *ClusterFacts) { f.PodAliveForArchive = true }),
 		"pod alive for archive, archive written": withF(baseFacts(), func(f *ClusterFacts) {
 			f.PodAliveForArchive = true
 			f.ArchiveWritten = true
 		}),
-		"zero timeouts (disabled)":            ClusterFacts{}.WithAllObserved(),
+		"zero timeouts (disabled)": ClusterFacts{}.WithAllObserved(),
 		"all combined: slot+pod ready+resources": withF(baseFacts(), func(f *ClusterFacts) {
 			f.SlotGranted = true
 			f.ResourcesReady = true

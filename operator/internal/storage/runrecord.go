@@ -149,6 +149,11 @@ type PullRequestRecord struct {
 type ContextRecord struct {
 	Present bool   `json:"present"`
 	URI     string `json:"uri,omitempty"`
+	// SizeBytes and SHA256 describe the uploaded context.tar.zst; set only
+	// when Present. SHA256 is the lowercase hex SHA-256 of the tarball as
+	// uploaded, so an auditor can verify a downloaded copy byte-for-byte.
+	SizeBytes int64  `json:"sizeBytes,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
 	// Reason explains an absent context: "no agent home snapshot" when the
 	// environment never froze, or "agent home not in snapshot" when the most
 	// recent snapshot was a workspace-only recovery-Job snapshot.
@@ -280,6 +285,12 @@ func (r RunRecord) Validate() error {
 	}
 	if r.Context.Present && r.Context.URI == "" {
 		return fmt.Errorf("%w: run record context.present is true but context.uri is empty", ErrInvalid)
+	}
+	if r.Context.SizeBytes < 0 {
+		return fmt.Errorf("%w: run record context.sizeBytes %d must be >= 0", ErrInvalid, r.Context.SizeBytes)
+	}
+	if r.Context.SHA256 != "" && !hex64.MatchString(r.Context.SHA256) {
+		return fmt.Errorf("%w: run record context has malformed sha256 %q", ErrInvalid, r.Context.SHA256)
 	}
 	if !r.Context.Present && r.Context.Reason == "" {
 		return fmt.Errorf("%w: run record context is absent but context.reason is empty", ErrInvalid)
