@@ -65,6 +65,23 @@ type Config struct {
 	// own namespace, so this trades enforcement-detection latency against
 	// API-server load.
 	CNIProbeInterval time.Duration
+
+	// RetentionTTL is how long a terminal archive is retained, after
+	// status.archive.finishedAt, before RetentionGC deletes its storage
+	// (#32). 0 disables the retention sweep; orphan cleanup still runs
+	// regardless of this value.
+	RetentionTTL time.Duration
+
+	// RetentionDryRun makes RetentionGC log what it would delete, in both
+	// the retention and orphan sweeps, without deleting anything (#32).
+	RetentionDryRun bool
+
+	// RetentionGCInterval is how often RetentionGC runs a reclamation pass
+	// (#32). Each pass performs one live LIST of SandboxEnvironments plus
+	// one LIST of SandboxClasses, plus a backend List per S3-backed class,
+	// so this trades archive-reclamation latency against API-server/S3
+	// load.
+	RetentionGCInterval time.Duration
 }
 
 // dns1123LabelRE matches a valid DNS-1123 label: lowercase alphanumeric
@@ -115,6 +132,15 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.DurationVar(&c.CNIProbeInterval, "cni-probe-interval",
 		envOrDuration(getenv, "CNI_PROBE_INTERVAL", 5*time.Minute),
 		"how often the CNI enforcement probe runs a pass")
+	fs.DurationVar(&c.RetentionTTL, "retention-ttl",
+		envOrDuration(getenv, "RETENTION_TTL", 168*time.Hour),
+		"how long a terminal archive is retained before its storage is deleted; 0 disables retention (orphan cleanup still runs)")
+	fs.BoolVar(&c.RetentionDryRun, "retention-dry-run",
+		envOrBool(getenv, "RETENTION_DRY_RUN", false),
+		"log what retention GC would delete, in both sweeps, without deleting anything")
+	fs.DurationVar(&c.RetentionGCInterval, "retention-gc-interval",
+		envOrDuration(getenv, "RETENTION_GC_INTERVAL", 30*time.Minute),
+		"how often retention GC runs a reclamation pass")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -158,6 +184,12 @@ func (c Config) Validate() error {
 	}
 	if c.CNIProbeInterval < time.Second || c.CNIProbeInterval > time.Hour {
 		return fmt.Errorf("cni-probe-interval: must be between 1s and 1h, got %s", c.CNIProbeInterval)
+	}
+	if c.RetentionTTL < 0 {
+		return fmt.Errorf("retention-ttl: must be >= 0, got %s", c.RetentionTTL)
+	}
+	if c.RetentionGCInterval < time.Second || c.RetentionGCInterval > time.Hour {
+		return fmt.Errorf("retention-gc-interval: must be between 1s and 1h, got %s", c.RetentionGCInterval)
 	}
 	return nil
 }

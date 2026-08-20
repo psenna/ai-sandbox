@@ -65,11 +65,29 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 	// is a wall-clock-driven, cluster-wide capability check, not a per-object
 	// event. Leader-elected so exactly one instance ever runs cluster-wide,
 	// and it writes the shared cniResult the reconciler reads.
-	return mgr.Add(&controller.CNIProbeRunnable{
+	if err := mgr.Add(&controller.CNIProbeRunnable{
 		Client:    mgr.GetClient(),
 		Namespace: cfg.ClassSecretNamespace,
 		Image:     cfg.SidecarImage,
 		Interval:  cfg.CNIProbeInterval,
 		Result:    cniResult,
+	}); err != nil {
+		return err
+	}
+	// Retention GC is a Runnable for the same reason WarmCacheGC is (#32):
+	// deleting a terminal archive's storage once it is older than the
+	// configured TTL, and reclaiming orphaned storage nothing references any
+	// more, are both wall-clock-driven, cross-object policy decisions, not
+	// per-object events. Same leader-election group, so exactly one instance
+	// ever runs cluster-wide.
+	return mgr.Add(&controller.RetentionGC{
+		Client:          mgr.GetClient(),
+		Reader:          mgr.GetAPIReader(),
+		SecretNamespace: cfg.ClassSecretNamespace,
+		ClusterID:       cfg.ClusterID,
+		TTL:             cfg.RetentionTTL,
+		DryRun:          cfg.RetentionDryRun,
+		Interval:        cfg.RetentionGCInterval,
+		Namespace:       cfg.WatchNamespace,
 	})
 }
