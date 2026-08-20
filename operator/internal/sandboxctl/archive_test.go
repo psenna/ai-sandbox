@@ -252,6 +252,93 @@ func TestArchiveRunner_IncompleteEnv_Errors(t *testing.T) {
 	}
 }
 
+// getFailingBackend wraps a fakeBackend and fails Get for one key with a
+// non-ErrNotFound error -- the transient-outage shape (a throttled or
+// unreachable endpoint), as opposed to the "object genuinely absent" shape
+// the archive is allowed to treat as an honest omission.
+type getFailingBackend struct {
+	*fakeBackend
+	failKey string
+}
+
+func (b getFailingBackend) Get(ctx context.Context, key string) (io.ReadCloser, storage.ObjectInfo, error) {
+	if key == b.failKey {
+		return nil, storage.ObjectInfo{}, &storage.Error{Op: "Get", Backend: "fake", Key: key, Kind: storage.ErrUnreachable}
+	}
+	return b.fakeBackend.Get(ctx, key)
+}
+
+// TestArchiveRunner_AgentHomeReadError_FailsArchive is the error-
+// classification guard the whole "never lose the transcripts" contract rests
+// on: only ErrNotFound means "this snapshot has no agent home". Any other
+// backend error must fail the Job so it retries -- recording a run.json that
+// says the context was omitted would make a transient S3 outage permanently
+// indistinguishable from a never-frozen run, and the controller would then
+// drop the finalizer on that record.
+func TestArchiveRunner_AgentHomeReadError_FailsArchive(t *testing.T) {
+	cfg := testArchiveCfg()
+	env := testArchiveEnv()
+	takenAt := metav1.NewTime(time.Date(2026, 1, 1, 12, 30, 0, 0, time.UTC))
+	env.Status.Snapshot = &v1alpha1.SnapshotStatus{Seq: 0, TakenAt: &takenAt}
+
+	layout, err := snapshotLayout(cfg, env.Namespace, env.Name, string(env.UID))
+	if err != nil {
+		t.Fatalf("snapshotLayout: %v", err)
+	}
+	inner := newFakeBackend()
+	be := getFailingBackend{fakeBackend: inner, failKey: layout.AgentHome(0, takenAt.Time)}
+
+	store := &archiveFakeStore{snap: Snapshot{Env: env}}
+	runner := NewArchiveRunner(store, be, cfg, testArchiveLogger())
+
+	err = runner.Archive(context.Background(), store.snap)
+	if err == nil {
+		t.Fatal("Archive: want an error for a non-NotFound agent-home read failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "agent-home") {
+		t.Errorf("Archive error = %v, want it to name the agent-home read", err)
+	}
+	if store.patched != nil {
+		t.Error("PatchArchive was called despite the backend read failure")
+	}
+	if inner.has(layout.ArchiveRun()) {
+		t.Error("run.json was uploaded despite the backend read failure; the record would claim the context was omitted")
+	}
+}
+
+// TestArchiveRunner_ContextUploadError_FailsArchive covers the other half of
+// the same contract: a failed context.tar.zst upload must not fall through to
+// a run.json + status.archive that together look like a finished archive.
+func TestArchiveRunner_ContextUploadError_FailsArchive(t *testing.T) {
+	cfg := testArchiveCfg()
+	env := testArchiveEnv()
+	takenAt := metav1.NewTime(time.Date(2026, 1, 1, 12, 30, 0, 0, time.UTC))
+	env.Status.Snapshot = &v1alpha1.SnapshotStatus{Seq: 0, TakenAt: &takenAt}
+
+	layout, err := snapshotLayout(cfg, env.Namespace, env.Name, string(env.UID))
+	if err != nil {
+		t.Fatalf("snapshotLayout: %v", err)
+	}
+	be := newFakeBackend()
+	if _, err := be.Put(context.Background(), layout.AgentHome(0, takenAt.Time), strings.NewReader("agent home bytes"), storage.PutOptions{}); err != nil {
+		t.Fatalf("seeding agent-home object: %v", err)
+	}
+	be.failOn = "context.tar.zst"
+
+	store := &archiveFakeStore{snap: Snapshot{Env: env}}
+	runner := NewArchiveRunner(store, be, cfg, testArchiveLogger())
+
+	if err := runner.Archive(context.Background(), store.snap); err == nil {
+		t.Fatal("Archive: want an error for a failed context upload, got nil")
+	}
+	if store.patched != nil {
+		t.Error("PatchArchive was called despite the failed context upload")
+	}
+	if be.has(layout.ArchiveRun()) {
+		t.Error("run.json was uploaded despite the failed context upload")
+	}
+}
+
 func TestBuildArchiveRunner_RejectsNonS3Backend(t *testing.T) {
 	store := &archiveFakeStore{}
 	cfg := Config{Snapshot: SnapshotConfig{Backend: "pvc"}}

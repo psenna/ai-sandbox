@@ -66,6 +66,18 @@ func Apply(env *v1alpha1.SandboxEnvironment, d Decision) *v1alpha1.SandboxEnviro
 			at = d.Conditions[0].LastTransitionTime
 		}
 		s.PhaseHistory = append(s.PhaseHistory, v1alpha1.PhaseTransition{Phase: d.Phase, At: at, Reason: reason})
+		// The CRD caps this list (v1alpha1.MaxPhaseHistoryEntries), and that
+		// cap is enforced by the API server: appending past it would make
+		// EVERY subsequent status update fail validation, wedging the
+		// environment for good -- no further transitions, no terminal archive,
+		// and a finalizer that can never be released. An environment that
+		// freezes and wakes often enough to reach the cap (five transitions
+		// per wake cycle) therefore drops its oldest entries and keeps the
+		// most recent ones, which are the transitions a post-mortem actually
+		// reads.
+		if n := len(s.PhaseHistory); n > v1alpha1.MaxPhaseHistoryEntries {
+			s.PhaseHistory = s.PhaseHistory[n-v1alpha1.MaxPhaseHistoryEntries:]
+		}
 	}
 
 	// Slot: Apply implements only the RELEASE half. #20 owns granting.

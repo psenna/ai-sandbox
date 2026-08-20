@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -10,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
@@ -277,4 +280,74 @@ func TestReconcileDelete_LivePodNoSnapshot_FreezesBeforeArchiving(t *testing.T) 
 	// No archive Job yet: the freeze must land first.
 	names := render.ChildNames(env.Name)
 	assertNoArchiveJob(t, env.Namespace, names.ArchiveJob)
+}
+
+// TestReconcileDelete_PendingPodNoSnapshot_ArchivesWithoutFreezing covers the
+// pod phase the freeze detour must NOT take: a Pending pod runs no sidecar to
+// perform the freeze and holds an agent home the agent never started writing
+// to, so detouring would set phase=Freezing and then wait forever for a
+// snapshot that can never arrive -- holding the finalizer and the slot for
+// good. The archive must go ahead directly instead.
+func TestReconcileDelete_PendingPodNoSnapshot_ArchivesWithoutFreezing(t *testing.T) {
+	mustCreateClass(t)
+	env := mustCreateEnv(t, "pending-pod-archive")
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
+
+	mustCreateOwnedPod(t, env, corev1.PodPending)
+	t.Cleanup(func() {
+		pod := &corev1.Pod{}
+		if err := k8s.Get(ctx, types.NamespacedName{Namespace: env.Namespace, Name: render.ChildNames(env.Name).Pod}, pod); err == nil {
+			_ = k8s.Delete(ctx, pod)
+		}
+	})
+
+	mustAddFinalizerAndDelete(t, getEnv(t, key))
+
+	r := newReconciler(t, newFakeClock(fixedStart), newFactsStore())
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	after := assertEnvStillPresent(t, key)
+	if after.Status.Phase == sandboxv1alpha1.PhaseFreezing {
+		t.Error("Phase = Freezing: a Pending pod must not trigger the freeze detour")
+	}
+	assertArchiveJobExists(t, env.Namespace, render.ChildNames(env.Name).ArchiveJob)
+}
+
+// classGetErrorClient fails every SandboxClass Get with a non-NotFound error,
+// standing in for the transient faults a real cache/API server produces (a
+// cancelled context during shutdown, an unstarted cache, a throttled
+// API server). Every other read/write passes straight through.
+type classGetErrorClient struct {
+	client.Client
+	err error
+}
+
+func (c classGetErrorClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*sandboxv1alpha1.SandboxClass); ok {
+		return c.err
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// TestReconcileDelete_TransientClassError_HoldsFinalizer proves a class Get
+// that fails for any reason OTHER than NotFound never releases the finalizer:
+// the error says nothing about whether archiving is possible, so treating it
+// like a deleted class would silently discard the run's context.
+func TestReconcileDelete_TransientClassError_HoldsFinalizer(t *testing.T) {
+	mustCreateClass(t)
+	env := mustCreateEnv(t, "transient-class-error")
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
+
+	mustAddFinalizerAndDelete(t, getEnv(t, key))
+
+	r := newReconciler(t, newFakeClock(fixedStart), newFactsStore())
+	r.Client = classGetErrorClient{Client: k8s, err: errors.New("etcdserver: request timed out")}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err == nil {
+		t.Fatal("Reconcile: want the class Get error surfaced (so the reconcile retries), got nil")
+	}
+	assertEnvStillPresent(t, key)
+	assertNoArchiveJob(t, env.Namespace, render.ChildNames(env.Name).ArchiveJob)
 }

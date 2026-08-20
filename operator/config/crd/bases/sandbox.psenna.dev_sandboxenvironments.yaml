@@ -359,11 +359,14 @@ spec:
                 type: string
               phaseHistory:
                 description: |-
-                  PhaseHistory is the full phase-transition history with timestamps,
-                  appended on every phase change in lifecycle.Apply. It is the issue's
-                  "full phase-transition history with timestamps" requirement: the Ready
+                  PhaseHistory is the phase-transition history with timestamps, appended
+                  on every phase change in lifecycle.Apply. It is the issue's "full
+                  phase-transition history with timestamps" requirement: the Ready
                   condition only carries the LastTransitionTime for the *current* phase,
                   while this list preserves every transition so run.json can record them.
+                  Capped at MaxPhaseHistoryEntries, oldest first: a long-lived
+                  environment that freezes and wakes repeatedly keeps its most recent
+                  transitions rather than wedging on the maxItems limit.
                 items:
                   description: PhaseTransition records one observed phase change.
                   properties:

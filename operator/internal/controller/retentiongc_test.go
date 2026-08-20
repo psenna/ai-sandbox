@@ -267,6 +267,44 @@ func TestRetentionGC_OrphanCleanup(t *testing.T) {
 	}
 }
 
+// TestRetentionGC_NamespaceScoped_LeavesForeignNamespacesAlone proves the
+// orphan sweep never outruns what it can actually know. liveUIDs is built
+// from an environment List scoped to g.Namespace, while the backend prefix it
+// lists is cluster-wide and spans every namespace. A namespace-scoped
+// operator must therefore skip roots outside its own namespace rather than
+// mistake another namespace's live environments for orphans and delete their
+// storage.
+func TestRetentionGC_NamespaceScoped_LeavesForeignNamespacesAlone(t *testing.T) {
+	mustCreateClass(t)
+	// Two explicit namespaces (testNamespace derives one name from t.Name(),
+	// so it cannot supply a distinct second one).
+	watched, foreign := "ns-gc-watched", "ns-gc-foreign"
+	now := fixedStart
+
+	// A live environment in a namespace this GC does NOT watch: its UID can
+	// never appear in liveUIDs, so only the namespace check protects it.
+	foreignEnv := mustCreateEnvIn(t, foreign, "not-mine", 0)
+
+	be := newFakeGCBackend()
+	foreignRoot := seedRoot(t, be, "", "test-cluster", foreign, foreignEnv.Name, string(foreignEnv.UID))
+	orphanRoot := seedRoot(t, be, "", "test-cluster", watched, "long-gone", "dead-uid-ns")
+
+	g := newRetentionGC(t, watched, now, be, 0, false)
+	stats, err := g.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if stats.OrphansDeleted != 1 {
+		t.Errorf("OrphansDeleted = %d, want 1 (only the watched namespace's orphan)", stats.OrphansDeleted)
+	}
+	if !be.has(foreignRoot) {
+		t.Error("a live environment's root in an unwatched namespace was deleted as an orphan")
+	}
+	if be.has(orphanRoot) {
+		t.Error("the watched namespace's orphan root still present, want deleted")
+	}
+}
+
 // TestRetentionGC_RecreatedEnv_SameNameDifferentUID proves the "delete then
 // recreate with the same name" safety property: a stale root left behind by
 // a since-deleted environment is treated as an orphan and reclaimed, while a

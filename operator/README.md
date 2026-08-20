@@ -392,7 +392,9 @@ whose `EnvUID` belongs to no currently-live environment, regardless of TTL —
 the mechanism that makes deleting an environment and recreating one with the
 *same name* safe (the new object gets a fresh UID and therefore a disjoint
 root; the old UID's root is reclaimed here, not silently inherited or
-colliding). `--retention-dry-run` logs what either sweep would delete
+colliding). Under `--watch-namespace`, orphan cleanup only considers roots in
+that namespace — "currently-live" is only knowable as far as the operator's
+own watch reaches. `--retention-dry-run` logs what either sweep would delete
 without deleting anything.
 
 **The PVC-backend limitation.** Archiving, like freeze, is S3-only: a class
@@ -402,8 +404,13 @@ is the same restriction `internal/storage/doc.go`'s gap analysis already
 documents for freeze/wake; it isn't new here.
 
 **The never-frozen-context limitation.** An environment deleted (or that
-fails) before it ever reaches a pod — `Pending`, or `Ready` still queued —
-has no `agent-home.tar.zst` anywhere to copy from. Its `archive/run.json`
+fails) before its agent container ever starts — `Pending`/`Ready` still
+queued, or a pod stuck `Pending` on an image that will not pull — has no
+`agent-home.tar.zst` anywhere to copy from, and no running sidecar that could
+produce one, so it archives directly instead of taking the freeze detour
+(that is what `PodAliveForArchive` requires a `Running` pod for: detouring
+into `Freezing` with nothing able to complete the snapshot would hold the
+finalizer forever). Its `archive/run.json`
 still gets written (a complete record of what *did* happen: spec, phase
 history, timing), but `context.present` is `false` and `context.reason`
 reads `"no agent home snapshot"`. This is not a bug: there was never a

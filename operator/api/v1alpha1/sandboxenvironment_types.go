@@ -235,11 +235,14 @@ type SandboxEnvironmentStatus struct {
 	// +optional
 	TerminalPhase Phase `json:"terminalPhase,omitempty"`
 
-	// PhaseHistory is the full phase-transition history with timestamps,
-	// appended on every phase change in lifecycle.Apply. It is the issue's
-	// "full phase-transition history with timestamps" requirement: the Ready
+	// PhaseHistory is the phase-transition history with timestamps, appended
+	// on every phase change in lifecycle.Apply. It is the issue's "full
+	// phase-transition history with timestamps" requirement: the Ready
 	// condition only carries the LastTransitionTime for the *current* phase,
 	// while this list preserves every transition so run.json can record them.
+	// Capped at MaxPhaseHistoryEntries, oldest first: a long-lived
+	// environment that freezes and wakes repeatedly keeps its most recent
+	// transitions rather than wedging on the maxItems limit.
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
 	// +listType=atomic
@@ -599,6 +602,15 @@ type RestoredRootStatus struct {
 	// +optional
 	BytesDownloaded int64 `json:"bytesDownloaded,omitempty"`
 }
+
+// MaxPhaseHistoryEntries mirrors PhaseHistory's
+// +kubebuilder:validation:MaxItems marker below. The marker is a HARD API-
+// server limit: a status update carrying more entries is rejected as invalid,
+// which would wedge every subsequent status write for that environment --
+// including the terminal archive and its finalizer removal. Writers must
+// therefore cap the list themselves (see lifecycle.Apply); the marker is the
+// backstop, not the enforcement point.
+const MaxPhaseHistoryEntries = 64
 
 // PhaseTransition records one observed phase change.
 type PhaseTransition struct {

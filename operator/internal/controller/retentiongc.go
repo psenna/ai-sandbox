@@ -30,7 +30,9 @@ import (
 //     the archive) -- TTL==0 disables this sweep entirely.
 //   - Orphan cleanup: List the class's cluster-scoped key prefix and delete
 //     any Root() whose EnvUID does not belong to a currently-live
-//     environment (of ANY class, ANY phase) -- runs regardless of TTL. This
+//     environment (of ANY class, ANY phase) -- restricted to Namespace when
+//     one is set, since that is how far "currently-live" can be known --
+//     runs regardless of TTL. This
 //     is what makes delete+recreate-with-the-same-name safe: the recreated
 //     environment gets a fresh UID and therefore a disjoint Root(), and the
 //     old UID's Root() is picked up here on the next pass rather than lingering
@@ -247,8 +249,17 @@ func (g *RetentionGC) sweepOrphans(ctx context.Context, log logr.Logger, backend
 
 	seen := make(map[string]struct{})
 	for _, o := range objs {
-		root, uid, ok := rootOf(listPrefix, o.Key)
+		root, ns, uid, ok := rootOf(listPrefix, o.Key)
 		if !ok {
+			continue
+		}
+		// liveUIDs is only as wide as the environment List that built it, and
+		// that List is scoped to g.Namespace -- while listPrefix is
+		// cluster-wide, spanning EVERY namespace's roots. A namespace-scoped
+		// operator (Config.WatchNamespace set) would otherwise see every other
+		// namespace's live environments as orphans and delete their storage.
+		// Roots outside the watched namespace belong to whoever watches it.
+		if g.Namespace != "" && ns != g.Namespace {
 			continue
 		}
 		if _, dup := seen[root]; dup {
@@ -286,22 +297,25 @@ func clusterPrefix(s3Prefix, clusterID string) string {
 	return strings.TrimSuffix(s3Prefix, "/") + "/" + clusterID + "/"
 }
 
-// rootOf extracts the environment Root() key and EnvUID from one object key
-// listed under listPrefix (itself clusterPrefix's output): the first three
-// "/"-separated segments after listPrefix are namespace/envName/envUID,
-// mirroring storage.Layout.Root()'s own
-// "<prefix>/<clusterID>/<namespace>/<envName>/<envUID>" shape. ok is false
-// for a key that doesn't even have three segments after the prefix (should
-// not happen for anything this package itself wrote, but a foreign or
-// truncated key must never panic or wrongly match an empty uid).
-func rootOf(listPrefix, key string) (root, uid string, ok bool) {
+// rootOf extracts the environment Root() key, namespace and EnvUID from one
+// object key listed under listPrefix (itself clusterPrefix's output): the
+// first three "/"-separated segments after listPrefix are
+// namespace/envName/envUID, mirroring storage.Layout.Root()'s own
+// "<prefix>/<clusterID>/<namespace>/<envName>/<envUID>" shape. Splitting on
+// "/" (rather than prefix-matching the whole root) is what makes the orphan
+// match exact: the uid is a whole segment, so two environments whose names
+// share a prefix ("foo" and "foo-bar") can never be confused for one another.
+// ok is false for a key that doesn't even have three segments after the
+// prefix (should not happen for anything this package itself wrote, but a
+// foreign or truncated key must never panic or wrongly match an empty uid).
+func rootOf(listPrefix, key string) (root, namespace, uid string, ok bool) {
 	rest := strings.TrimPrefix(key, listPrefix)
 	if rest == key {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.SplitN(rest, "/", 4)
 	if len(parts) < 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return "", "", false
+		return "", "", "", false
 	}
-	return listPrefix + strings.Join(parts[:3], "/"), parts[2], true
+	return listPrefix + strings.Join(parts[:3], "/"), parts[0], parts[2], true
 }

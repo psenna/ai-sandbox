@@ -121,10 +121,18 @@ func (r *Reconciler) observePod(ctx context.Context, env *v1alpha1.SandboxEnviro
 		f.PodPhase = pod.Status.Phase
 		f.PodReady = podReady(&pod)
 		// PodAliveForArchive (#32): a pod whose agent-home emptyDir has not
-		// been captured in a snapshot yet -- Pending or Running only. A
-		// Succeeded/Failed pod is excluded because the agent container is gone
-		// and the sidecar freeze cannot run, so nothing is capturable from it.
-		if env.Status.Snapshot == nil && (pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning) {
+		// been captured in a snapshot yet AND from which a freeze can still
+		// capture it -- Running only. Succeeded/Failed is excluded because the
+		// agent container is already gone. Pending is excluded for two
+		// reasons that point the same way: the agent container has not
+		// started, so the agent home is still empty and there is nothing to
+		// capture; and the sidecar that performs the freeze is not running
+		// either, so terminal()'s detour would set phase=Freezing and then
+		// wait for a snapshot that can never arrive -- holding the slot, never
+		// archiving, and never releasing the delete finalizer. A run that
+		// terminates with a still-Pending pod (an image that will not pull, a
+		// failing restore init container) must archive directly instead.
+		if env.Status.Snapshot == nil && pod.Status.Phase == corev1.PodRunning {
 			f.PodAliveForArchive = true
 		}
 		if pf := podFailure(&pod, r.now()); pf != nil {

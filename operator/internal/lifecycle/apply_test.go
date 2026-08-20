@@ -301,6 +301,50 @@ func TestApply_PhaseHistory(t *testing.T) {
 	})
 }
 
+// TestApply_PhaseHistoryCappedAtCRDLimit drives an environment through more
+// freeze/wake cycles than the CRD's maxItems allows and proves the list never
+// exceeds it. Without the cap the API server would reject every subsequent
+// status update as invalid, wedging the environment permanently -- no further
+// transitions, no terminal archive, and a delete finalizer that can never be
+// released. The newest entries are the ones kept.
+func TestApply_PhaseHistoryCappedAtCRDLimit(t *testing.T) {
+	env := envAt(v1alpha1.PhaseWaiting, withSnapshot(aSnapshot()))
+	// The real wake cycle: Waiting -> Ready -> Restoring -> Running ->
+	// Freezing -> Waiting, five transitions per lap. Enough laps to overshoot
+	// the cap several times over.
+	cycle := []v1alpha1.Phase{
+		v1alpha1.PhaseReady, v1alpha1.PhaseRestoring, v1alpha1.PhaseRunning,
+		v1alpha1.PhaseFreezing, v1alpha1.PhaseWaiting,
+	}
+	var last v1alpha1.Phase
+	for i := 0; i < 200; i++ {
+		next := cycle[i%len(cycle)]
+		d := newBuilder(env, baseFacts(), fixedNow.Add(time.Duration(i)*time.Minute)).
+			phase(next).
+			build()
+		env.Status = *Apply(&env, d)
+		last = next
+	}
+
+	if got := len(env.Status.PhaseHistory); got != v1alpha1.MaxPhaseHistoryEntries {
+		t.Fatalf("len(PhaseHistory) = %d, want exactly the cap %d", got, v1alpha1.MaxPhaseHistoryEntries)
+	}
+	if got := env.Status.PhaseHistory[len(env.Status.PhaseHistory)-1].Phase; got != last {
+		t.Errorf("newest entry = %s, want the most recent transition %s", got, last)
+	}
+	// Truncation must never leave a zero timestamp or two identical adjacent
+	// phases behind: storage.RunRecord.Validate rejects both, and an
+	// unwritable run record would fail the archive Job.
+	for i, e := range env.Status.PhaseHistory {
+		if e.At.IsZero() {
+			t.Errorf("PhaseHistory[%d] has a zero timestamp", i)
+		}
+		if i > 0 && e.Phase == env.Status.PhaseHistory[i-1].Phase {
+			t.Errorf("PhaseHistory[%d] duplicates the previous phase %s", i, e.Phase)
+		}
+	}
+}
+
 // TestApply_TerminalPhaseSetOnce verifies status.terminalPhase is recorded on
 // the first terminal transition and never overwritten, so the freeze-detour
 // return (nextWaiting) always knows which terminal phase to go back to.

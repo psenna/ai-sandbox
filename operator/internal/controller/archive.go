@@ -82,11 +82,19 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, env *v1alpha1.SandboxE
 		return ctrl.Result{}, r.removeFinalizer(ctx, env)
 	}
 
-	// 3. Resolve the class; a missing class or a non-S3 backend is a
-	// documented, deliberate limitation -- archiving is unsupported on a
-	// pvc-backed class exactly like freeze already is, and a class deleted
-	// before its environments leaves no S3 config to archive to.
+	// 3. Resolve the class. A class that genuinely does not exist (NotFound --
+	// deleted before its environments) leaves no S3 config to archive to, and
+	// a non-S3 backend is a documented, deliberate limitation -- archiving is
+	// unsupported on a pvc-backed class exactly like freeze already is. Both
+	// release the finalizer. Any OTHER Get error (a cancelled context during
+	// shutdown, an unstarted cache, an API-server hiccup) says nothing about
+	// whether archiving is possible, so it must hold the finalizer and retry:
+	// treating it like a missing class would silently discard the run's
+	// context for a transient fault.
 	class, err := r.resolveClass(ctx, env)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
 	if err != nil || class.Spec.Storage.Backend.Type != v1alpha1.StorageBackendTypeS3 {
 		return ctrl.Result{}, r.removeFinalizer(ctx, env)
 	}
@@ -133,9 +141,8 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, env *v1alpha1.SandboxE
 }
 
 // podAliveForArchive mirrors observePod's own PodAliveForArchive gate
-// (pod.go): a pod owned by env, Pending or Running. Succeeded/Failed is
-// excluded -- the agent container is already gone from either, so nothing
-// is capturable by freezing it.
+// (pod.go): a pod owned by env and Running. Every other phase is excluded --
+// see that gate for why Pending is no more capturable than Succeeded/Failed.
 func (r *Reconciler) podAliveForArchive(ctx context.Context, env *v1alpha1.SandboxEnvironment) (bool, error) {
 	var pod corev1.Pod
 	key := client.ObjectKey{Namespace: env.Namespace, Name: render.ChildNames(env.Name).Pod}
@@ -149,7 +156,7 @@ func (r *Reconciler) podAliveForArchive(ctx context.Context, env *v1alpha1.Sandb
 	if !ownedByEnv(&pod, env) {
 		return false, nil
 	}
-	return pod.Status.Phase == corev1.PodPending || pod.Status.Phase == corev1.PodRunning, nil
+	return pod.Status.Phase == corev1.PodRunning, nil
 }
 
 // freezeForArchive transitions env into Freezing exactly the way
