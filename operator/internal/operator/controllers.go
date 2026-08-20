@@ -28,7 +28,7 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 		WatchNamespace:       cfg.WatchNamespace,
 		SidecarImage:         cfg.SidecarImage,
 		Probes:               controller.NewProbeEvaluator(),
-		Recorder:             mgr.GetEventRecorderFor("ai-sandbox-operator"),
+		Recorder:             mgr.GetEventRecorder("ai-sandbox-operator"),
 		OperatorIngressLabel: cfg.OperatorIngressLabel,
 		CNI:                  cniResult,
 	}).SetupWithManager(mgr); err != nil {

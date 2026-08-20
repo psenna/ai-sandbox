@@ -136,6 +136,6 @@ func (r *Reconciler) warnIfNetworkNotEnforced(env *v1alpha1.SandboxEnvironment, 
 	if cni != nil && cni.Enforced {
 		return
 	}
-	r.Recorder.Event(env, corev1.EventTypeWarning, "NetworkPolicyNotEnforced",
+	r.Recorder.Eventf(env, nil, corev1.EventTypeWarning, "NetworkPolicyNotEnforced", "",
 		"network isolation is Restricted but the CNI has not verified NetworkPolicy enforcement; egress may not actually be restricted")
 }

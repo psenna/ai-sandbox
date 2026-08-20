@@ -86,7 +86,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
@@ -127,7 +127,7 @@ type Reconciler struct {
 	// Recorder emits Kubernetes events for this environment (#31), used to warn
 	// when Restricted isolation is declared but the CNI has not verified
 	// NetworkPolicy enforcement. Nil in unit tests; guarded at the call site.
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 	// CNI is the latest CNI enforcement probe result (#31), published by the
 	// CNIProbeRunnable and read here to decide the CNIEnforcement condition
 	// and the not-enforced warning event. It is an atomic pointer so the

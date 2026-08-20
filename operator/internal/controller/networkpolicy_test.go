@@ -13,7 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
@@ -778,7 +778,7 @@ func TestWarnIfNetworkNotEnforced(t *testing.T) {
 	}}
 
 	// Restricted + probe never run -> warning.
-	rec := record.NewFakeRecorder(10)
+	rec := events.NewFakeRecorder(10)
 	r := &Reconciler{Recorder: rec, CNI: nil}
 	r.warnIfNetworkNotEnforced(env, restricted)
 	select {
@@ -791,7 +791,7 @@ func TestWarnIfNetworkNotEnforced(t *testing.T) {
 	}
 
 	// Restricted + probe verified -> no warning.
-	rec = record.NewFakeRecorder(10)
+	rec = events.NewFakeRecorder(10)
 	r = &Reconciler{Recorder: rec, CNI: cniResultPtr(CNIProbeResult{Enforced: true, Reason: ReasonCNIEnforced})}
 	r.warnIfNetworkNotEnforced(env, restricted)
 	select {
@@ -801,7 +801,7 @@ func TestWarnIfNetworkNotEnforced(t *testing.T) {
 	}
 
 	// Open + nil CNI -> no warning.
-	rec = record.NewFakeRecorder(10)
+	rec = events.NewFakeRecorder(10)
 	r = &Reconciler{Recorder: rec, CNI: nil}
 	r.warnIfNetworkNotEnforced(env, open)
 	select {
