@@ -34,6 +34,8 @@ func TestLoad_Defaults(t *testing.T) {
 		SchedulerInterval:       5 * time.Second,
 		WarmCacheGCInterval:     time.Minute,
 		SidecarImage:            "ghcr.io/psenna/ai-sandbox-operator:dev",
+		OperatorIngressLabel:    "control-plane=controller-manager",
+		CNIProbeInterval:        5 * time.Minute,
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -397,6 +399,119 @@ func TestWarmCacheGCInterval_FlagBeatsEnv(t *testing.T) {
 	}
 	if c.WarmCacheGCInterval != 30*time.Second {
 		t.Errorf("WarmCacheGCInterval = %s, want 30s (flag should beat env)", c.WarmCacheGCInterval)
+	}
+}
+
+func TestOperatorIngressLabel_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.OperatorIngressLabel != "control-plane=controller-manager" {
+		t.Errorf("OperatorIngressLabel = %q, want the default control-plane=controller-manager", c.OperatorIngressLabel)
+	}
+}
+
+func TestOperatorIngressLabel_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_OPERATOR_INGRESS_LABEL": "app=operator"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.OperatorIngressLabel != "app=operator" {
+		t.Errorf("OperatorIngressLabel = %q, want env override", c.OperatorIngressLabel)
+	}
+}
+
+func TestOperatorIngressLabel_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--operator-ingress-label=app=flag"}, envFrom(map[string]string{"SANDBOX_OPERATOR_OPERATOR_INGRESS_LABEL": "app=env"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.OperatorIngressLabel != "app=flag" {
+		t.Errorf("OperatorIngressLabel = %q, want flag to beat env", c.OperatorIngressLabel)
+	}
+}
+
+func TestValidate_EmptyOperatorIngressLabelErrors(t *testing.T) {
+	c, err := Load([]string{"--operator-ingress-label="}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate() with empty operator-ingress-label: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "operator-ingress-label") {
+		t.Errorf("Validate() error = %v, want it to mention operator-ingress-label", err)
+	}
+}
+
+func TestCNIProbeInterval_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.CNIProbeInterval != 5*time.Minute {
+		t.Errorf("CNIProbeInterval = %s, want 5m", c.CNIProbeInterval)
+	}
+}
+
+func TestCNIProbeInterval_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_CNI_PROBE_INTERVAL": "30s"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.CNIProbeInterval != 30*time.Second {
+		t.Errorf("CNIProbeInterval = %s, want 30s", c.CNIProbeInterval)
+	}
+}
+
+func TestCNIProbeInterval_UnparseableEnvFallsBackToDefault(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_CNI_PROBE_INTERVAL": "not-a-duration"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.CNIProbeInterval != 5*time.Minute {
+		t.Errorf("CNIProbeInterval = %s, want 5m (default) on unparseable env value", c.CNIProbeInterval)
+	}
+}
+
+func TestCNIProbeInterval_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--cni-probe-interval=1m"}, envFrom(map[string]string{"SANDBOX_OPERATOR_CNI_PROBE_INTERVAL": "30s"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.CNIProbeInterval != time.Minute {
+		t.Errorf("CNIProbeInterval = %s, want 1m (flag should beat env)", c.CNIProbeInterval)
+	}
+}
+
+func TestValidate_CNIProbeIntervalBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		wantErr bool
+	}{
+		{"too low", "--cni-probe-interval=500ms", true},
+		{"too high", "--cni-probe-interval=2h", true},
+		{"lower boundary accepted", "--cni-probe-interval=1s", false},
+		{"upper boundary accepted", "--cni-probe-interval=1h", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{tc.flag}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() with %s: expected error, got nil", tc.flag)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() with %s: unexpected error: %v", tc.flag, err)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "cni-probe-interval") {
+				t.Errorf("Validate() error = %v, want it to mention cni-probe-interval", err)
+			}
+		})
 	}
 }
 

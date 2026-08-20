@@ -85,8 +85,11 @@ func validClass(name string) *sandboxv1alpha1.SandboxClass {
 				WarmCacheTTL: "45m",
 			},
 			Network: sandboxv1alpha1.NetworkSpec{
-				Isolation:   sandboxv1alpha1.NetworkIsolationRestricted,
-				ExtraEgress: []string{"1.2.3.4/32", "example.com"},
+				Isolation: sandboxv1alpha1.NetworkIsolationRestricted,
+				ExtraEgress: []sandboxv1alpha1.EgressPeer{
+					{CIDR: "1.2.3.4/32"},
+					{Selector: &sandboxv1alpha1.PeerSelector{Namespace: "ai-sandbox"}},
+				},
 			},
 			Timeouts: sandboxv1alpha1.TimeoutsSpec{
 				Running: "3h",
@@ -315,6 +318,21 @@ func TestClassRejections(t *testing.T) {
 			name: "invalid-duration",
 			mutate: func(c *sandboxv1alpha1.SandboxClass) {
 				c.Spec.Storage.WarmCacheTTL = "6 hours"
+			},
+		},
+		{
+			name: "extraegress-both-cidr-and-selector",
+			mutate: func(c *sandboxv1alpha1.SandboxClass) {
+				c.Spec.Network.ExtraEgress = []sandboxv1alpha1.EgressPeer{{
+					CIDR:     "1.2.3.4/32",
+					Selector: &sandboxv1alpha1.PeerSelector{Namespace: "ai-sandbox"},
+				}}
+			},
+		},
+		{
+			name: "extraegress-neither-cidr-nor-selector",
+			mutate: func(c *sandboxv1alpha1.SandboxClass) {
+				c.Spec.Network.ExtraEgress = []sandboxv1alpha1.EgressPeer{{}}
 			},
 		},
 	}

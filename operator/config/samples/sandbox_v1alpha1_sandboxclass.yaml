@@ -51,8 +51,12 @@ spec:
   network:
     isolation: Restricted
     extraEgress:
-    - github.com
-    - api.anthropic.com
+    - cidr: 140.82.112.0/20   # github.com (example)
+    - selector:
+        namespace: ai-sandbox-e2e
+        podSelector:
+          matchLabels:
+            app: platform-doubles
   timeouts:
     running: 6h
     waiting: 24h

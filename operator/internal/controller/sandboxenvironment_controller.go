@@ -13,6 +13,20 @@ package controller
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//
+// The networking.k8s.io/networkpolicies marker lands with #31: ensureResources
+// applies the Restricted-isolation NetworkPolicy via applyOne (server-side
+// apply, so patch is what SSA's PATCH-verb apply needs) and deletes a stale
+// policy when a class switches to Open isolation; observeCluster checks it;
+// SetupWithManager watches it. The services marker is the same issue's
+// resolveNetworkPeers: it reads the `kubernetes` Service in `default` (the
+// API-server egress peer) and any in-cluster <svc>.<ns>.svc endpoint the
+// class declares. The events marker is the same issue's warning event when
+// Restricted isolation is declared but the CNI has not verified NetworkPolicy
+// enforcement.
 //
 // The batch/jobs marker lands with #28: freezePod creates a one-shot
 // snapshot Job when the pod that should have taken the snapshot is gone but
@@ -63,12 +77,16 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"sync/atomic"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/client-go/tools/record"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
@@ -91,10 +109,45 @@ type Reconciler struct {
 	// SidecarImage mirrors internal/config.Config.SidecarImage; passed into
 	// render.Inputs by ensurePod.
 	SidecarImage string
+	// OperatorIngressLabel mirrors internal/config.Config.OperatorIngressLabel:
+	// the single "key=value" label selector identifying the operator's own
+	// pods, allowed to reach sandbox pods under Restricted isolation (#31).
+	// Empty falls back to control-plane=controller-manager (see network.go).
+	OperatorIngressLabel string
+	// LookupHost resolves a hostname to IP addresses for the external-endpoint
+	// sharp-edge validation (#31): a Restricted class whose external
+	// service/storage endpoint is not covered by an extraEgress CIDR is
+	// rejected. Nil defaults to net.DefaultResolver.LookupHost. Injectable so
+	// tests can fake resolution without DNS.
+	LookupHost func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Probes evaluates an environment's declared wait (status.waitFor) against
 	// the real world (#30). Nil leaves the probe facts at their safe zero
 	// reading -- the honest state before the evaluator is wired up.
 	Probes *ProbeEvaluator
+	// Recorder emits Kubernetes events for this environment (#31), used to warn
+	// when Restricted isolation is declared but the CNI has not verified
+	// NetworkPolicy enforcement. Nil in unit tests; guarded at the call site.
+	Recorder record.EventRecorder
+	// CNI is the latest CNI enforcement probe result (#31), published by the
+	// CNIProbeRunnable and read here to decide the CNIEnforcement condition
+	// and the not-enforced warning event. It is an atomic pointer so the
+	// leader-elected Runnable goroutine and the Reconciler goroutines never
+	// race on the same *CNIProbeResult: the Runnable publishes a whole new
+	// struct each pass via Store, the Reconciler reads via Load. A nil pointer
+	// (Load returns nil) means the probe has not run yet. The field itself may
+	// be nil in unit tests that never wire the probe; cniResult() guards that.
+	CNI *atomic.Pointer[CNIProbeResult]
+}
+
+// cniResult returns the latest CNI probe result, or nil if the probe has not
+// run yet (or the field is unwired, as in unit tests). Safe to call from the
+// Reconciler goroutine; the result pointer is never mutated in place by the
+// publisher, so dereferencing the returned *CNIProbeResult is race-free.
+func (r *Reconciler) cniResult() *CNIProbeResult {
+	if r.CNI == nil {
+		return nil
+	}
+	return r.CNI.Load()
 }
 
 func (r *Reconciler) now() time.Time {
@@ -137,6 +190,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	d := lifecycle.Next(env, facts, r.now())
 	d.Conditions = append(d.Conditions, engineSecurityCondition(&env, class, r.now()))
+	d.Conditions = append(d.Conditions, networkPostureCondition(&env, class, r.now()))
+	d.Conditions = append(d.Conditions, cniEnforcementCondition(&env, r.cniResult(), r.now()))
+	r.warnIfNetworkNotEnforced(&env, class)
 
 	if err := r.performActions(ctx, &env, class, d); err != nil {
 		return ctrl.Result{}, err
@@ -181,6 +237,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// RequeueAfter timer -- up to lifecycle.MaxRequeueAfter (5 minutes)
 		// late.
 		Owns(&corev1.Pod{}).
+		// The NetworkPolicy is watched (#31): a class switching from Restricted
+		// to Open isolation deletes the policy (ensureResources), and a
+		// deletion is exactly the kind of change that should re-reconcile
+		// promptly rather than wait for the RequeueAfter timer.
+		Owns(&networkingv1.NetworkPolicy{}).
 		// Deliberately NOT .Owns(&batchv1.Job{}): the recovery snapshot Job's
 		// (#28) completion arrives as a status.snapshot patch on the
 		// SandboxEnvironment itself (written by the sandboxctl binary running

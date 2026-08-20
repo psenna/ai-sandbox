@@ -354,6 +354,53 @@ type SecretKeyRef struct {
 	Key string `json:"key,omitempty"`
 }
 
+// EgressPeer is one additional egress destination a Restricted sandbox may
+// reach beyond the shared service endpoints. Exactly one of CIDR or
+// Selector must be set.
+// +kubebuilder:validation:XValidation:rule="has(self.cidr) != (has(self.selector) && self.selector != null)",message="network.extraEgress entries must set exactly one of cidr or selector"
+type EgressPeer struct {
+	// CIDR is an IP block (e.g. "1.2.3.4/32", "10.0.0.0/8"). Mutually exclusive
+	// with Selector. External destinations (any host not an in-cluster Service)
+	// MUST use CIDR -- a selector cannot match an off-cluster host, and the
+	// operator rejects a Restricted class whose external service/storage
+	// endpoint is not covered by an extraEgress CIDR.
+	// +optional
+	CIDR string `json:"cidr,omitempty"`
+	// Selector selects in-cluster pods. Namespace must be named; PodSelector is
+	// optional (empty = all pods in the namespace). Mutually exclusive with CIDR.
+	// +optional
+	Selector *PeerSelector `json:"selector,omitempty"`
+	// Ports restricts egress to the listed destination ports. Empty = all ports.
+	// +optional
+	// +listType=atomic
+	Ports []NetworkPolicyPort `json:"ports,omitempty"`
+}
+
+// PeerSelector selects in-cluster pods by namespace and optional labels.
+type PeerSelector struct {
+	// Namespace is the namespace whose pods the selector matches.
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace"`
+	// PodSelector is an optional label selector narrowing the match to a
+	// subset of the namespace's pods; empty matches all pods in the
+	// namespace.
+	// +optional
+	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
+}
+
+// NetworkPolicyPort mirrors the Kubernetes NetworkPolicyPort shape.
+type NetworkPolicyPort struct {
+	// Protocol is the transport protocol the port applies to (TCP, UDP or
+	// SCTP). Empty defaults to TCP.
+	// +kubebuilder:validation:Enum=TCP;UDP;SCTP
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+	// Port is the destination port: a numeric port (e.g. "443") or a named
+	// port (e.g. "https").
+	// +kubebuilder:validation:MinLength=1
+	Port string `json:"port"`
+}
+
 // NetworkSpec configures the network isolation policy applied to sandbox
 // pods.
 type NetworkSpec struct {
@@ -363,14 +410,13 @@ type NetworkSpec struct {
 	// +optional
 	Isolation NetworkIsolation `json:"isolation,omitempty"`
 
-	// ExtraEgress lists additional egress destinations (for example
-	// "1.2.3.4/32" or a DNS name understood by the network policy
-	// controller) sandbox pods may reach beyond the shared service
-	// endpoints declared in spec.services. Only consulted when isolation is
-	// "Restricted".
+	// ExtraEgress lists additional egress destinations (for example an
+	// external host's CIDR, or an in-cluster pod selector) sandbox pods may
+	// reach beyond the shared service endpoints declared in spec.services.
+	// Only consulted when isolation is "Restricted".
 	// +optional
 	// +listType=atomic
-	ExtraEgress []string `json:"extraEgress,omitempty"`
+	ExtraEgress []EgressPeer `json:"extraEgress,omitempty"`
 }
 
 // TimeoutsSpec configures how long a sandbox may remain in various

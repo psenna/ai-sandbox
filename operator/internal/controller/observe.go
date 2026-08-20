@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,6 +75,16 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 		f.ResourcesProblem = err.Error()
 		return f, nil
 	}
+	// The network peers are resolved here (not just in renderFor) so a
+	// misconfigured class -- an external service endpoint with no extraEgress
+	// CIDR, or an unresolvable in-cluster Service -- is reported as a
+	// ResourcesProblem and holds the environment at Pending with a visible
+	// message, exactly like a missing credentials Secret. The peers themselves
+	// are only consumed by renderFor; this call is the validation pass.
+	if _, err := r.resolveNetworkPeers(ctx, class); err != nil {
+		f.ResourcesProblem = err.Error()
+		return f, nil
+	}
 	r.observeProbe(ctx, env, class, creds, &f)
 
 	names := render.ChildNames(env.Name)
@@ -97,6 +108,12 @@ func (r *Reconciler) observeCluster(ctx context.Context, env *v1alpha1.SandboxEn
 	}
 	if class.Spec.Storage.Backend.Type == v1alpha1.StorageBackendTypeS3 {
 		checks = append(checks, resourceCheck{"Secret", names.SnapshotSecret, &corev1.Secret{}})
+	}
+	// The NetworkPolicy is expected only under Restricted isolation (#31);
+	// under Open isolation its absence is the correct state (and a stale
+	// policy is deleted by ensureResources).
+	if class.Spec.Network.Isolation == v1alpha1.NetworkIsolationRestricted {
+		checks = append(checks, resourceCheck{"NetworkPolicy", names.NetworkPolicy, &networkingv1.NetworkPolicy{}})
 	}
 
 	pvc, ok, err := r.observeResources(ctx, env, checks, &f)

@@ -131,6 +131,12 @@ func TestNoSecretLeak_S3SnapshotCredentialsOnlyInSnapshotSecret(t *testing.T) {
 					},
 				},
 			},
+			// See mustCreateClass: the external S3 endpoint needs an
+			// extraEgress CIDR peer under the Restricted default (#31).
+			Network: sandboxv1alpha1.NetworkSpec{
+				Isolation:   sandboxv1alpha1.NetworkIsolationRestricted,
+				ExtraEgress: []sandboxv1alpha1.EgressPeer{{CIDR: "0.0.0.0/0"}},
+			},
 		},
 	}
 	if err := k8s.Create(ctx, class); err != nil {
