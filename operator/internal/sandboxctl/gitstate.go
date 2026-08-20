@@ -34,7 +34,7 @@ var hex40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // truncated.
 func ReadGitStateFile(workspacePath string) (*v1alpha1.GitStateStatus, bool) {
 	p := filepath.Join(workspacePath, gitStateFileName)
-	b, err := os.ReadFile(p)
+	b, err := os.ReadFile(p) //nolint:gosec // G304: workspacePath is caller-controlled and trusted, matching marker.go's own file reads
 	if err != nil {
 		return nil, false
 	}

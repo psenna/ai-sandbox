@@ -215,6 +215,34 @@ func ParseRunRecord(r io.Reader) (RunRecord, error) {
 // environment deleted before its first reconcile is an honest "never
 // observed" record -- the plan (#32) documents that adjustment explicitly.
 func (r RunRecord) Validate() error {
+	if err := r.validateCore(); err != nil {
+		return err
+	}
+	if err := r.validatePhaseHistory(); err != nil {
+		return err
+	}
+	if err := r.validateSnapshots(); err != nil {
+		return err
+	}
+	if err := r.validateContext(); err != nil {
+		return err
+	}
+	if err := r.validateWaitFor(); err != nil {
+		return err
+	}
+	if err := r.validateProbeAttempt(); err != nil {
+		return err
+	}
+	return r.validateGitState()
+}
+
+// validateCore checks the scalar, non-collection fields: schema version,
+// identity, repo/class/image, finalPhase, and the freeze/wake counters.
+// Split out of Validate purely to keep gocyclo's per-function complexity
+// bound happy -- each of these sub-validators covers one self-contained
+// section of the record, matching the section comments already on
+// RunRecord's own field declarations.
+func (r RunRecord) validateCore() error {
 	if r.SchemaVersion != RunRecordSchemaVersion {
 		return fmt.Errorf("%w: run record schemaVersion %d, want %d", ErrInvalid, r.SchemaVersion, RunRecordSchemaVersion)
 	}
@@ -245,6 +273,12 @@ func (r RunRecord) Validate() error {
 	if r.WakeCount < 0 {
 		return fmt.Errorf("%w: run record wakeCount %d must be >= 0", ErrInvalid, r.WakeCount)
 	}
+	return nil
+}
+
+// validatePhaseHistory checks the CRD-mirrored cap, per-entry phase/
+// timestamp validity, and the no-consecutive-duplicate invariant.
+func (r RunRecord) validatePhaseHistory() error {
 	if len(r.PhaseHistory) > maxPhaseHistoryEntries {
 		return fmt.Errorf("%w: run record phaseHistory has %d entries, cap is %d", ErrInvalid, len(r.PhaseHistory), maxPhaseHistoryEntries)
 	}
@@ -264,6 +298,12 @@ func (r RunRecord) Validate() error {
 		}
 		prev = t.Phase
 	}
+	return nil
+}
+
+// validateSnapshots checks each snapshot's seq (non-negative, unique across
+// the record), sha256 shape, size and duration.
+func (r RunRecord) validateSnapshots() error {
 	seenSeq := make(map[int32]struct{}, len(r.Snapshots))
 	for i, s := range r.Snapshots {
 		if s.Seq < 0 {
@@ -283,6 +323,14 @@ func (r RunRecord) Validate() error {
 			return fmt.Errorf("%w: run record snapshots[%d] has negative durationMillis %d", ErrInvalid, i, s.DurationMillis)
 		}
 	}
+	return nil
+}
+
+// validateContext checks the terminal-archive context record: a present
+// context must name its URI and, when set, carry a well-formed size/sha256;
+// an absent context must name its reason (see ContextReasonNoSnapshot/
+// ContextReasonNotInSnapshot in internal/sandboxctl).
+func (r RunRecord) validateContext() error {
 	if r.Context.Present && r.Context.URI == "" {
 		return fmt.Errorf("%w: run record context.present is true but context.uri is empty", ErrInvalid)
 	}
@@ -295,40 +343,59 @@ func (r RunRecord) Validate() error {
 	if !r.Context.Present && r.Context.Reason == "" {
 		return fmt.Errorf("%w: run record context is absent but context.reason is empty", ErrInvalid)
 	}
-	if r.WaitFor != nil {
-		if r.WaitFor.Type == "" {
-			return fmt.Errorf("%w: run record waitFor.type must not be empty", ErrInvalid)
-		}
-		if r.WaitFor.DeclaredAt != nil && r.WaitFor.DeclaredAt.IsZero() {
-			return fmt.Errorf("%w: run record waitFor.declaredAt must not be zero", ErrInvalid)
-		}
+	return nil
+}
+
+// validateWaitFor checks the optional declared-wait record.
+func (r RunRecord) validateWaitFor() error {
+	if r.WaitFor == nil {
+		return nil
 	}
-	if r.ProbeAttempt != nil {
-		if r.ProbeAttempt.Type == "" {
-			return fmt.Errorf("%w: run record probeAttempt.type must not be empty", ErrInvalid)
-		}
-		if r.ProbeAttempt.Phase == "" {
-			return fmt.Errorf("%w: run record probeAttempt.phase must not be empty", ErrInvalid)
-		}
-		if r.ProbeAttempt.Attempts < 0 {
-			return fmt.Errorf("%w: run record probeAttempt.attempts %d must be >= 0", ErrInvalid, r.ProbeAttempt.Attempts)
-		}
-		if r.ProbeAttempt.ConsecutiveErrors < 0 {
-			return fmt.Errorf("%w: run record probeAttempt.consecutiveErrors %d must be >= 0", ErrInvalid, r.ProbeAttempt.ConsecutiveErrors)
-		}
+	if r.WaitFor.Type == "" {
+		return fmt.Errorf("%w: run record waitFor.type must not be empty", ErrInvalid)
 	}
-	if r.GitState != nil {
-		if r.GitState.HeadSHA != "" && !hex40.MatchString(r.GitState.HeadSHA) {
-			return fmt.Errorf("%w: run record gitState.headSHA %q is not 40 hex characters", ErrInvalid, r.GitState.HeadSHA)
-		}
-		if r.GitState.PullRequest != nil {
-			if r.GitState.PullRequest.Repo == "" {
-				return fmt.Errorf("%w: run record gitState.pullRequest.repo must not be empty", ErrInvalid)
-			}
-			if r.GitState.PullRequest.Number < 1 {
-				return fmt.Errorf("%w: run record gitState.pullRequest.number %d must be >= 1", ErrInvalid, r.GitState.PullRequest.Number)
-			}
-		}
+	if r.WaitFor.DeclaredAt != nil && r.WaitFor.DeclaredAt.IsZero() {
+		return fmt.Errorf("%w: run record waitFor.declaredAt must not be zero", ErrInvalid)
+	}
+	return nil
+}
+
+// validateProbeAttempt checks the optional final probe-evaluation record.
+func (r RunRecord) validateProbeAttempt() error {
+	if r.ProbeAttempt == nil {
+		return nil
+	}
+	if r.ProbeAttempt.Type == "" {
+		return fmt.Errorf("%w: run record probeAttempt.type must not be empty", ErrInvalid)
+	}
+	if r.ProbeAttempt.Phase == "" {
+		return fmt.Errorf("%w: run record probeAttempt.phase must not be empty", ErrInvalid)
+	}
+	if r.ProbeAttempt.Attempts < 0 {
+		return fmt.Errorf("%w: run record probeAttempt.attempts %d must be >= 0", ErrInvalid, r.ProbeAttempt.Attempts)
+	}
+	if r.ProbeAttempt.ConsecutiveErrors < 0 {
+		return fmt.Errorf("%w: run record probeAttempt.consecutiveErrors %d must be >= 0", ErrInvalid, r.ProbeAttempt.ConsecutiveErrors)
+	}
+	return nil
+}
+
+// validateGitState checks the optional final git-state record.
+func (r RunRecord) validateGitState() error {
+	if r.GitState == nil {
+		return nil
+	}
+	if r.GitState.HeadSHA != "" && !hex40.MatchString(r.GitState.HeadSHA) {
+		return fmt.Errorf("%w: run record gitState.headSHA %q is not 40 hex characters", ErrInvalid, r.GitState.HeadSHA)
+	}
+	if r.GitState.PullRequest == nil {
+		return nil
+	}
+	if r.GitState.PullRequest.Repo == "" {
+		return fmt.Errorf("%w: run record gitState.pullRequest.repo must not be empty", ErrInvalid)
+	}
+	if r.GitState.PullRequest.Number < 1 {
+		return fmt.Errorf("%w: run record gitState.pullRequest.number %d must be >= 1", ErrInvalid, r.GitState.PullRequest.Number)
 	}
 	return nil
 }
