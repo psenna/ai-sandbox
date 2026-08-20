@@ -644,8 +644,12 @@ func TestReconcile_RestoringToRunningToDone(t *testing.T) {
 		t.Errorf("PodReady condition = %+v, want True/%s", podReadyCond, lifecycle.ReasonPodRunning)
 	}
 
-	// Force the pod Succeeded, reconcile: Running -> Done, and the pod is
-	// deleted (terminalOutcome's deletePod=true for Done).
+	// Force the pod Succeeded, reconcile: Running -> Done. #32 changed the
+	// terminal ordering: the pod is NOT deleted on the Running->Done
+	// transition any more (that would destroy the agent-home emptyDir before
+	// the terminal archive could capture it). terminal() deletes it only once
+	// status.archive is written -- which no archive Job writes in this test --
+	// so the pod must still be present, untouched.
 	mustSetPodStatus(t, podKey, func(s *corev1.PodStatus) {
 		s.Phase = corev1.PodSucceeded
 	})
@@ -655,14 +659,9 @@ func TestReconcile_RestoringToRunningToDone(t *testing.T) {
 		t.Fatalf("final phase = %s, want Done", final.Status.Phase)
 	}
 
-	err := k8s.Get(ctx, podKey, &corev1.Pod{})
-	if err == nil {
-		p := getPod(t, podKey)
-		if p.DeletionTimestamp.IsZero() {
-			t.Error("pod still exists with no DeletionTimestamp after reaching Done")
-		}
-	} else if !apierrors.IsNotFound(err) {
-		t.Errorf("Get pod after Done: err = %v, want NotFound or a terminating pod", err)
+	p := getPod(t, podKey)
+	if !p.DeletionTimestamp.IsZero() {
+		t.Error("pod has a DeletionTimestamp after reaching Done; #32 keeps it alive until the archive is written")
 	}
 }
 

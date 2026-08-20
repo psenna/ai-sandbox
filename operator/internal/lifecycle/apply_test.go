@@ -230,6 +230,151 @@ func TestApply_PreservesUnrelatedCounters(t *testing.T) {
 	}
 }
 
+// TestApply_PhaseHistory covers the #32 phase-transition history: exactly one
+// entry is appended when the phase changes, nothing when it doesn't, the At
+// timestamp mirrors the Decision's condition timestamps, and the Reason comes
+// from the Ready summary condition.
+func TestApply_PhaseHistory(t *testing.T) {
+	t.Run("no entry on an unchanged phase", func(t *testing.T) {
+		env := envAt(v1alpha1.PhasePending)
+		d := Next(env, baseFacts(), fixedNow) // resources not ready: Pending stays
+		s := Apply(&env, d)
+		if len(s.PhaseHistory) != 0 {
+			t.Errorf("PhaseHistory = %+v, want empty on an unchanged phase", s.PhaseHistory)
+		}
+	})
+
+	t.Run("appends a transition on a phase change, and only once", func(t *testing.T) {
+		env := envAt(v1alpha1.PhasePending)
+		f := baseFacts()
+		f.ResourcesReady = true
+		d := Next(env, f, fixedNow)
+		if d.Phase != v1alpha1.PhaseReady {
+			t.Fatalf("setup: want Ready, got %s", d.Phase)
+		}
+		s := Apply(&env, d)
+		if len(s.PhaseHistory) != 1 {
+			t.Fatalf("PhaseHistory = %+v, want 1 entry", s.PhaseHistory)
+		}
+		e := s.PhaseHistory[0]
+		if e.Phase != v1alpha1.PhaseReady {
+			t.Errorf("entry phase = %s, want Ready", e.Phase)
+		}
+		wantAt := d.Conditions[0].LastTransitionTime
+		if !e.At.Equal(&wantAt) {
+			t.Errorf("entry at = %v, want condition timestamp %v", e.At, wantAt)
+		}
+		wantReason := findCond(d, ConditionReady).Reason
+		if e.Reason != wantReason {
+			t.Errorf("entry reason = %q, want Ready condition reason %q", e.Reason, wantReason)
+		}
+
+		// Idempotent re-apply on the settled phase appends nothing.
+		env.Status = *s
+		s2 := Apply(&env, d)
+		if len(s2.PhaseHistory) != 1 {
+			t.Errorf("PhaseHistory grew on a settled re-apply: %d entries", len(s2.PhaseHistory))
+		}
+	})
+
+	t.Run("first reconcile on a fresh environment records the Pending entry", func(t *testing.T) {
+		env := envAt("") // no status written yet
+		d := Next(env, baseFacts(), fixedNow)
+		s := Apply(&env, d)
+		if len(s.PhaseHistory) != 1 || s.PhaseHistory[0].Phase != v1alpha1.PhasePending {
+			t.Errorf("PhaseHistory = %+v, want a single Pending entry", s.PhaseHistory)
+		}
+	})
+
+	t.Run("terminal transition records the terminal phase", func(t *testing.T) {
+		env := envAt(v1alpha1.PhaseRunning)
+		f := baseFacts()
+		f.AgentDone = true
+		d := Next(env, f, fixedNow)
+		if d.Phase != v1alpha1.PhaseDone {
+			t.Fatalf("setup: want Done, got %s", d.Phase)
+		}
+		s := Apply(&env, d)
+		if len(s.PhaseHistory) != 1 || s.PhaseHistory[0].Phase != v1alpha1.PhaseDone {
+			t.Errorf("PhaseHistory = %+v, want a single Done entry", s.PhaseHistory)
+		}
+	})
+}
+
+// TestApply_PhaseHistoryCappedAtCRDLimit drives an environment through more
+// freeze/wake cycles than the CRD's maxItems allows and proves the list never
+// exceeds it. Without the cap the API server would reject every subsequent
+// status update as invalid, wedging the environment permanently -- no further
+// transitions, no terminal archive, and a delete finalizer that can never be
+// released. The newest entries are the ones kept.
+func TestApply_PhaseHistoryCappedAtCRDLimit(t *testing.T) {
+	env := envAt(v1alpha1.PhaseWaiting, withSnapshot(aSnapshot()))
+	// The real wake cycle: Waiting -> Ready -> Restoring -> Running ->
+	// Freezing -> Waiting, five transitions per lap. Enough laps to overshoot
+	// the cap several times over.
+	cycle := []v1alpha1.Phase{
+		v1alpha1.PhaseReady, v1alpha1.PhaseRestoring, v1alpha1.PhaseRunning,
+		v1alpha1.PhaseFreezing, v1alpha1.PhaseWaiting,
+	}
+	var last v1alpha1.Phase
+	for i := 0; i < 200; i++ {
+		next := cycle[i%len(cycle)]
+		d := newBuilder(env, baseFacts(), fixedNow.Add(time.Duration(i)*time.Minute)).
+			phase(next).
+			build()
+		env.Status = *Apply(&env, d)
+		last = next
+	}
+
+	if got := len(env.Status.PhaseHistory); got != v1alpha1.MaxPhaseHistoryEntries {
+		t.Fatalf("len(PhaseHistory) = %d, want exactly the cap %d", got, v1alpha1.MaxPhaseHistoryEntries)
+	}
+	if got := env.Status.PhaseHistory[len(env.Status.PhaseHistory)-1].Phase; got != last {
+		t.Errorf("newest entry = %s, want the most recent transition %s", got, last)
+	}
+	// Truncation must never leave a zero timestamp or two identical adjacent
+	// phases behind: storage.RunRecord.Validate rejects both, and an
+	// unwritable run record would fail the archive Job.
+	for i, e := range env.Status.PhaseHistory {
+		if e.At.IsZero() {
+			t.Errorf("PhaseHistory[%d] has a zero timestamp", i)
+		}
+		if i > 0 && e.Phase == env.Status.PhaseHistory[i-1].Phase {
+			t.Errorf("PhaseHistory[%d] duplicates the previous phase %s", i, e.Phase)
+		}
+	}
+}
+
+// TestApply_TerminalPhaseSetOnce verifies status.terminalPhase is recorded on
+// the first terminal transition and never overwritten, so the freeze-detour
+// return (nextWaiting) always knows which terminal phase to go back to.
+func TestApply_TerminalPhaseSetOnce(t *testing.T) {
+	env := envAt(v1alpha1.PhaseRunning)
+	f := baseFacts()
+	f.AgentDone = true
+	d := Next(env, f, fixedNow)
+	if d.StatusPatch.SetTerminalPhase != v1alpha1.PhaseDone {
+		t.Fatalf("setup: SetTerminalPhase = %q, want Done", d.StatusPatch.SetTerminalPhase)
+	}
+	s := Apply(&env, d)
+	if s.TerminalPhase != v1alpha1.PhaseDone {
+		t.Fatalf("TerminalPhase = %q, want Done", s.TerminalPhase)
+	}
+
+	// A later decision (e.g. a spurious Freezing detour patch) must not
+	// overwrite it.
+	env.Status = *s
+	d2 := newBuilder(env, baseFacts(), fixedNow).
+		phase(v1alpha1.PhaseFreezing).
+		slot(true).
+		patch(StatusPatch{SetTerminalPhase: v1alpha1.PhaseFailed}).
+		build()
+	s2 := Apply(&env, d2)
+	if s2.TerminalPhase != v1alpha1.PhaseDone {
+		t.Errorf("TerminalPhase overwritten to %q, want Done (set-once)", s2.TerminalPhase)
+	}
+}
+
 func TestApply_ConditionOrderStable(t *testing.T) {
 	envs := []v1alpha1.SandboxEnvironment{
 		envAt(v1alpha1.PhasePending),

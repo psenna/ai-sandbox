@@ -36,6 +36,9 @@ func TestLoad_Defaults(t *testing.T) {
 		SidecarImage:            "ghcr.io/psenna/ai-sandbox-operator:dev",
 		OperatorIngressLabel:    "control-plane=controller-manager",
 		CNIProbeInterval:        5 * time.Minute,
+		RetentionTTL:            168 * time.Hour,
+		RetentionDryRun:         false,
+		RetentionGCInterval:     30 * time.Minute,
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -541,6 +544,171 @@ func TestValidate_WarmCacheGCIntervalBounds(t *testing.T) {
 			}
 			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "warm-cache-gc-interval") {
 				t.Errorf("Validate() error = %v, want it to mention warm-cache-gc-interval", err)
+			}
+		})
+	}
+}
+
+func TestRetentionTTL_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionTTL != 168*time.Hour {
+		t.Errorf("RetentionTTL = %s, want 168h", c.RetentionTTL)
+	}
+}
+
+func TestRetentionTTL_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_TTL": "24h"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionTTL != 24*time.Hour {
+		t.Errorf("RetentionTTL = %s, want 24h", c.RetentionTTL)
+	}
+}
+
+func TestRetentionTTL_UnparseableEnvFallsBackToDefault(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_TTL": "not-a-duration"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionTTL != 168*time.Hour {
+		t.Errorf("RetentionTTL = %s, want 168h (default) on unparseable env value", c.RetentionTTL)
+	}
+}
+
+func TestRetentionTTL_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--retention-ttl=1h"}, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_TTL": "24h"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionTTL != time.Hour {
+		t.Errorf("RetentionTTL = %s, want 1h (flag should beat env)", c.RetentionTTL)
+	}
+}
+
+func TestRetentionTTL_ZeroDisablesRetentionButIsValid(t *testing.T) {
+	c, err := Load([]string{"--retention-ttl=0"}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() with retention-ttl=0: unexpected error: %v", err)
+	}
+}
+
+func TestValidate_RetentionTTLRejectsNegative(t *testing.T) {
+	c, err := Load([]string{"--retention-ttl=-1h"}, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	err = c.Validate()
+	if err == nil {
+		t.Fatal("Validate() with retention-ttl=-1h: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "retention-ttl") {
+		t.Errorf("Validate() error = %v, want it to mention retention-ttl", err)
+	}
+}
+
+func TestRetentionDryRun_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionDryRun {
+		t.Error("RetentionDryRun default = true, want false")
+	}
+}
+
+func TestRetentionDryRun_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_DRY_RUN": "true"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !c.RetentionDryRun {
+		t.Error("RetentionDryRun = false, want true")
+	}
+}
+
+func TestRetentionDryRun_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--retention-dry-run=false"}, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_DRY_RUN": "true"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionDryRun {
+		t.Error("RetentionDryRun = true, want false (flag should beat env)")
+	}
+}
+
+func TestRetentionGCInterval_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionGCInterval != 30*time.Minute {
+		t.Errorf("RetentionGCInterval = %s, want 30m", c.RetentionGCInterval)
+	}
+}
+
+func TestRetentionGCInterval_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_GC_INTERVAL": "5m"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionGCInterval != 5*time.Minute {
+		t.Errorf("RetentionGCInterval = %s, want 5m", c.RetentionGCInterval)
+	}
+}
+
+func TestRetentionGCInterval_UnparseableEnvFallsBackToDefault(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_GC_INTERVAL": "not-a-duration"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionGCInterval != 30*time.Minute {
+		t.Errorf("RetentionGCInterval = %s, want 30m (default) on unparseable env value", c.RetentionGCInterval)
+	}
+}
+
+func TestRetentionGCInterval_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--retention-gc-interval=1m"}, envFrom(map[string]string{"SANDBOX_OPERATOR_RETENTION_GC_INTERVAL": "5m"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.RetentionGCInterval != time.Minute {
+		t.Errorf("RetentionGCInterval = %s, want 1m (flag should beat env)", c.RetentionGCInterval)
+	}
+}
+
+func TestValidate_RetentionGCIntervalBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		wantErr bool
+	}{
+		{"too low", "--retention-gc-interval=500ms", true},
+		{"too high", "--retention-gc-interval=2h", true},
+		{"lower boundary accepted", "--retention-gc-interval=1s", false},
+		{"upper boundary accepted", "--retention-gc-interval=1h", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{tc.flag}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() with %s: expected error, got nil", tc.flag)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() with %s: unexpected error: %v", tc.flag, err)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "retention-gc-interval") {
+				t.Errorf("Validate() error = %v, want it to mention retention-gc-interval", err)
 			}
 		})
 	}

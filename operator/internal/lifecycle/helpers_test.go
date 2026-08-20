@@ -82,6 +82,10 @@ func withFinishedAt(t time.Time) envOption {
 	return func(e *v1alpha1.SandboxEnvironment) { mt := metav1.NewTime(t); e.Status.FinishedAt = &mt }
 }
 
+func withTerminalPhase(p v1alpha1.Phase) envOption {
+	return func(e *v1alpha1.SandboxEnvironment) { e.Status.TerminalPhase = p }
+}
+
 func withQueuedSince(t time.Time) envOption {
 	return func(e *v1alpha1.SandboxEnvironment) { mt := metav1.NewTime(t); e.Status.QueuedSince = &mt }
 }

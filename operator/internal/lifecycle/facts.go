@@ -188,6 +188,13 @@ type ClusterFacts struct {
 	ArchiveWritten bool
 	// ArchiveURI is where it was written, mirrored into status.archiveURI.
 	ArchiveURI string
+	// PodAliveForArchive reports that a pod exists whose agent-home emptyDir
+	// has not yet been captured in a snapshot: PodExists && PodPhase is
+	// Pending or Running && status.snapshot == nil. terminal() uses this to
+	// decide whether to take a freeze detour before archiving -- the only way
+	// to capture the transcripts of a run that never froze is to freeze the
+	// live pod first.
+	PodAliveForArchive bool
 }
 
 // WithAllObserved returns a copy of f with every *Observed flag set. Exists so

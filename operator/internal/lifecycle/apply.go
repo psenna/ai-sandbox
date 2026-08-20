@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
@@ -40,8 +41,43 @@ func Apply(env *v1alpha1.SandboxEnvironment, d Decision) *v1alpha1.SandboxEnviro
 	if d.StatusPatch.SetArchiveURI != "" {
 		s.ArchiveURI = d.StatusPatch.SetArchiveURI
 	}
+	if d.StatusPatch.SetTerminalPhase != "" && s.TerminalPhase == "" {
+		s.TerminalPhase = d.StatusPatch.SetTerminalPhase
+	}
 	if d.StatusPatch.SetProbeAttempt != nil {
 		s.ProbeAttempt = d.StatusPatch.SetProbeAttempt.DeepCopy()
+	}
+
+	// PhaseHistory: append exactly one transition whenever the phase changes,
+	// and never when it doesn't, so repeated reconciles on a settled phase
+	// cannot grow the list. The first reconcile on a fresh environment (whose
+	// status.phase is "" until now) appends the creation->Pending entry --
+	// the "creation entry" run.json documents. The timestamp reuses the
+	// conditions' LastTransitionTime, which build() stamps with the decision
+	// moment for every Decision. Reason is the Ready summary condition's
+	// reason at the transition, per the field's contract.
+	if d.Phase != env.Status.Phase {
+		reason := ""
+		if c := apimeta.FindStatusCondition(d.Conditions, ConditionReady); c != nil {
+			reason = c.Reason
+		}
+		var at metav1.Time
+		if len(d.Conditions) > 0 {
+			at = d.Conditions[0].LastTransitionTime
+		}
+		s.PhaseHistory = append(s.PhaseHistory, v1alpha1.PhaseTransition{Phase: d.Phase, At: at, Reason: reason})
+		// The CRD caps this list (v1alpha1.MaxPhaseHistoryEntries), and that
+		// cap is enforced by the API server: appending past it would make
+		// EVERY subsequent status update fail validation, wedging the
+		// environment for good -- no further transitions, no terminal archive,
+		// and a finalizer that can never be released. An environment that
+		// freezes and wakes often enough to reach the cap (five transitions
+		// per wake cycle) therefore drops its oldest entries and keeps the
+		// most recent ones, which are the transitions a post-mortem actually
+		// reads.
+		if n := len(s.PhaseHistory); n > v1alpha1.MaxPhaseHistoryEntries {
+			s.PhaseHistory = s.PhaseHistory[n-v1alpha1.MaxPhaseHistoryEntries:]
+		}
 	}
 
 	// Slot: Apply implements only the RELEASE half. #20 owns granting.

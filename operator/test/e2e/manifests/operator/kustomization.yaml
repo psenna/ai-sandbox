@@ -37,6 +37,12 @@ patches:
           # test-viable window. This op REPLACES the whole args array, so
           # omitting the flag would silently leave the 1m default.
           - --warm-cache-gc-interval=5s
+          # #32: same reasoning as --warm-cache-gc-interval above -- a short
+          # interval and TTL so a retention-GC e2e spec can observe a
+          # TTL-based reclamation pass within a test-viable window, rather
+          # than the 30m/168h defaults.
+          - --retention-gc-interval=5s
+          - --retention-ttl=2m
           - --sidecar-image=ai-sandbox-operator:e2e
       - op: add
         path: /spec/template/spec/containers/0/imagePullPolicy

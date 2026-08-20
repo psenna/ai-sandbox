@@ -1,0 +1,107 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app.kubernetes.io/component: sandbox-environment
+    app.kubernetes.io/instance: none-minimal
+    app.kubernetes.io/managed-by: ai-sandbox-operator
+    app.kubernetes.io/name: ai-sandbox
+    app.kubernetes.io/part-of: ai-sandbox
+    sandbox.psenna.dev/class: default
+    sandbox.psenna.dev/environment: none-minimal
+  name: none-minimal-archive
+  namespace: default
+  ownerReferences:
+  - apiVersion: sandbox.psenna.dev/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SandboxEnvironment
+    name: none-minimal
+    uid: 11111111-1111-1111-1111-111111111111
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: sandbox-environment
+        app.kubernetes.io/instance: none-minimal
+        app.kubernetes.io/managed-by: ai-sandbox-operator
+        app.kubernetes.io/name: ai-sandbox
+        app.kubernetes.io/part-of: ai-sandbox
+        sandbox.psenna.dev/class: default
+        sandbox.psenna.dev/environment: none-minimal
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - archive
+        - --environment=none-minimal
+        - --namespace=default
+        - --engine=none
+        - --cluster-id=test-cluster
+        - --agent-image=ghcr.io/psenna/ai-sandbox-agent:v1
+        - --workspace-path=/workspace
+        - --agent-home-path=/home/node/.claude-sandbox
+        - --snapshot-backend=s3
+        - --s3-endpoint=https://s3.example.com
+        - --s3-bucket=sandbox-snapshots
+        - --s3-force-path-style=true
+        - --snapshot-credentials-dir=/var/run/secrets/ai-sandbox/snapshot
+        - --quiesce-delay=2s
+        - --snapshot-retries=4
+        - --snapshot-step-timeout=2m
+        command:
+        - /sandboxctl
+        image: test-sidecar:test
+        name: sandboxctl
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /var/run/secrets/ai-sandbox/snapshot
+          name: snapshot-credentials
+          readOnly: true
+        - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          name: sandboxctl-token
+          readOnly: true
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: none-minimal-agent
+      volumes:
+      - name: snapshot-credentials
+        secret:
+          defaultMode: 256
+          optional: false
+          secretName: none-minimal-snapshot
+      - name: sandboxctl-token
+        projected:
+          defaultMode: 292
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: kube-root-ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  fieldPath: metadata.namespace
+                path: namespace
+  ttlSecondsAfterFinished: 3600

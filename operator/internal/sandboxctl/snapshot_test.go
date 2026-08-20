@@ -167,6 +167,7 @@ func (s *fakeSnapshotStore) RecordRestoreAttempt(_ context.Context, a RestoreAtt
 	s.restoreAttempts = append(s.restoreAttempts, a)
 	return nil
 }
+func (s *fakeSnapshotStore) PatchArchive(context.Context, ArchivePatch) error { return nil }
 
 func noSleep(context.Context, time.Duration) error { return nil }
 

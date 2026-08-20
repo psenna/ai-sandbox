@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-02-01T12:30:00Z",
+  "clusterID": "cluster-a",
+  "namespace": "ns-a",
+  "name": "env-a",
+  "uid": "uid-a",
+  "generation": 3,
+  "repo": "owner/repo",
+  "task": {
+    "prompt": "implement the feature",
+    "issueRef": {
+      "repo": "owner/repo",
+      "number": 42
+    }
+  },
+  "classRef": "class-a",
+  "agentImage": "ghcr.io/example/agent:v1",
+  "agentImageDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "finalPhase": "Done",
+  "finalReason": "agent reported success",
+  "phaseHistory": [
+    {
+      "phase": "Pending",
+      "at": "2026-02-01T10:00:00Z",
+      "reason": "Created"
+    },
+    {
+      "phase": "Ready",
+      "at": "2026-02-01T10:00:01Z"
+    },
+    {
+      "phase": "Restoring",
+      "at": "2026-02-01T10:00:05Z"
+    },
+    {
+      "phase": "Running",
+      "at": "2026-02-01T10:00:07Z"
+    },
+    {
+      "phase": "Freezing",
+      "at": "2026-02-01T11:00:00Z",
+      "reason": "SnapshotInProgress"
+    },
+    {
+      "phase": "Waiting",
+      "at": "2026-02-01T11:01:00Z",
+      "reason": "WaitDeclared"
+    },
+    {
+      "phase": "Restoring",
+      "at": "2026-02-01T11:10:00Z"
+    },
+    {
+      "phase": "Running",
+      "at": "2026-02-01T11:10:02Z"
+    },
+    {
+      "phase": "Done",
+      "at": "2026-02-01T12:30:00Z",
+      "reason": "ArchiveWritten"
+    }
+  ],
+  "queuedDurationMillis": 1000,
+  "runningDurationMillis": 5400000,
+  "waitingDurationMillis": 540000,
+  "slotWaitMillis": 500,
+  "freezeCount": 1,
+  "wakeCount": 1,
+  "snapshots": [
+    {
+      "seq": 1,
+      "uri": "s3://bucket/cluster-a/ns-a/env-a/uid-a/snapshots/00001-2026-02-01t11_00_00z",
+      "sizeBytes": 1234,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "takenAt": "2026-02-01T11:00:05Z",
+      "durationMillis": 5000
+    }
+  ],
+  "waitFor": {
+    "type": "NotBefore",
+    "reason": "waiting for approval",
+    "declaredAt": "2026-02-01T11:01:00Z",
+    "params": {
+      "notBefore": "2026-02-01T11:10:00Z"
+    }
+  },
+  "probeAttempt": {
+    "type": "NotBefore",
+    "phase": "Satisfied",
+    "attempts": 3,
+    "lastResult": "satisfied",
+    "reason": "ProbeSatisfied",
+    "message": "notBefore reached"
+  },
+  "gitState": {
+    "branch": "feat/feature",
+    "headSHA": "cccccccccccccccccccccccccccccccccccccccc",
+    "pullRequest": {
+      "repo": "owner/repo",
+      "number": 7
+    }
+  },
+  "context": {
+    "present": true,
+    "uri": "s3://bucket/cluster-a/ns-a/env-a/uid-a/archive/context.tar.zst",
+    "sizeBytes": 4321,
+    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+}

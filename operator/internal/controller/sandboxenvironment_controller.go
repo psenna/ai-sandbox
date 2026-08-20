@@ -173,7 +173,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !env.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil // finalizer + archive-on-delete is #32
+		return r.reconcileDelete(ctx, &env)
+	}
+	if err := r.ensureFinalizer(ctx, &env); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	class, classErr := r.resolveClass(ctx, &env)

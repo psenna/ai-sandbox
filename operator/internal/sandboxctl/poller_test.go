@@ -48,6 +48,7 @@ func (s *sequenceStore) RecordSnapshot(context.Context, SnapshotRecord, time.Tim
 func (s *sequenceStore) RecordRestoreAttempt(context.Context, RestoreAttempt, time.Time) error {
 	return nil
 }
+func (s *sequenceStore) PatchArchive(context.Context, ArchivePatch) error { return nil }
 
 type countingHook struct {
 	mu    sync.Mutex

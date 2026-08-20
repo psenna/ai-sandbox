@@ -172,6 +172,13 @@ func (h *SnapshotHook) Freeze(ctx context.Context, s Snapshot) error {
 		return fmt.Errorf("sandboxctl: writing teardown markers: %w", err)
 	}
 
+	// 6b. Best-effort git-state capture: if the agent's skill wrote
+	// /workspace/.sandbox/git-state.json, carry it into status.gitState so
+	// the terminal archive's run.json can record the final branch/HEAD/PR
+	// even after this workspace is gone (see gitstate.go). Absent or
+	// malformed is NOT a failure -- gitState is simply omitted.
+	gitState, _ := ReadGitStateFile(h.Cfg.WorkspacePath)
+
 	// 7. Archive, one storage.ArchiveTo call per root, each retried.
 	var wsInfo, ahInfo storage.ObjectInfo
 	attempts := 0
@@ -289,6 +296,7 @@ func (h *SnapshotHook) Freeze(ctx context.Context, s Snapshot) error {
 		SHA256:         mInfo.SHA256,
 		TakenAt:        at,
 		DurationMillis: now().Sub(start).Milliseconds(),
+		GitState:       gitState,
 	}, now()); err != nil {
 		h.Log.Info("recording successful snapshot failed", "error", err.Error())
 		return fmt.Errorf("sandboxctl: recording snapshot: %w", err)

@@ -78,6 +78,87 @@ func (r *Reconciler) resolveCredentials(ctx context.Context, class *v1alpha1.San
 	return creds, nil
 }
 
+// archiveBackend builds the S3 storage.Backend for class's storage
+// configuration, reusing the exact credential resolution every other S3
+// call site (ensureSnapshotJob, ensureArchiveJob, renderFor) already goes
+// through. Returns an error for a non-S3 class -- callers must check
+// class.Spec.Storage.Backend.Type themselves first; this is a defensive
+// re-check, not the primary guard -- or when credentials cannot be resolved
+// or the S3 client cannot be constructed. NewS3 dials nothing itself, so a
+// genuinely unreachable endpoint is NOT detected here, only obviously-bad
+// configuration (a missing/malformed credentials Secret, an empty bucket).
+func (r *Reconciler) archiveBackend(ctx context.Context, class *v1alpha1.SandboxClass) (storage.Backend, error) {
+	b := class.Spec.Storage.Backend
+	if b.Type != v1alpha1.StorageBackendTypeS3 || b.S3 == nil {
+		return nil, fmt.Errorf("archiveBackend: class %s does not declare an s3 storage backend", class.Name)
+	}
+	creds, err := r.resolveCredentials(ctx, class)
+	if err != nil {
+		return nil, err
+	}
+	forcePathStyle := true
+	if b.S3.ForcePathStyle != nil {
+		forcePathStyle = *b.S3.ForcePathStyle
+	}
+	be, err := storage.NewS3(storage.S3Config{
+		Endpoint:       b.S3.Endpoint,
+		Bucket:         b.S3.Bucket,
+		Region:         b.S3.Region,
+		ForcePathStyle: forcePathStyle,
+	}, storage.Credentials{
+		AccessKeyID:     creds.SnapshotAccessKeyID,
+		SecretAccessKey: storage.Secret(creds.SnapshotSecretAccessKey),
+		SessionToken:    storage.Secret(creds.SnapshotSessionToken),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building s3 backend: %w", err)
+	}
+	return be, nil
+}
+
+// buildS3BackendForClass builds the S3 storage.Backend for class directly
+// from a plain client.Client and secretNamespace, with no Reconciler
+// involved. It exists for RetentionGC (retentiongc.go), which -- like
+// WarmCacheGC -- is a manager.Runnable, not a reconciler, and so has no
+// Reconciler receiver to hang archiveBackend off of. Reads only the S3
+// credentials Secret (never the gitProxy one resolveCredentials also
+// handles), since that is all a backend construction ever needs.
+func buildS3BackendForClass(ctx context.Context, c client.Client, secretNamespace string, class *v1alpha1.SandboxClass) (storage.Backend, error) {
+	b := class.Spec.Storage.Backend
+	if b.Type != v1alpha1.StorageBackendTypeS3 || b.S3 == nil {
+		return nil, fmt.Errorf("buildS3BackendForClass: class %s does not declare an s3 storage backend", class.Name)
+	}
+	var sec corev1.Secret
+	ref := b.S3.CredentialsSecretRef
+	if err := c.Get(ctx, client.ObjectKey{Namespace: secretNamespace, Name: ref.Name}, &sec); err != nil {
+		return nil, fmt.Errorf("reading class-referenced s3 credentials secret %s/%s: %w", secretNamespace, ref.Name, err)
+	}
+	ak := sec.Data[storage.SecretKeyAccessKeyID]
+	sk := sec.Data[storage.SecretKeySecretAccessKey]
+	if len(ak) == 0 || len(sk) == 0 {
+		return nil, fmt.Errorf("secret %s/%s must have non-empty keys %q and %q",
+			secretNamespace, ref.Name, storage.SecretKeyAccessKeyID, storage.SecretKeySecretAccessKey)
+	}
+	forcePathStyle := true
+	if b.S3.ForcePathStyle != nil {
+		forcePathStyle = *b.S3.ForcePathStyle
+	}
+	be, err := storage.NewS3(storage.S3Config{
+		Endpoint:       b.S3.Endpoint,
+		Bucket:         b.S3.Bucket,
+		Region:         b.S3.Region,
+		ForcePathStyle: forcePathStyle,
+	}, storage.Credentials{
+		AccessKeyID:     string(ak),
+		SecretAccessKey: storage.Secret(sk),
+		SessionToken:    storage.Secret(sec.Data[storage.SecretKeySessionToken]),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building s3 backend: %w", err)
+	}
+	return be, nil
+}
+
 // renderFor resolves credentials and network peers, then renders every child
 // object for env against class. Rendering is pure and cheap -- callers must
 // re-render on every reconcile rather than caching or reusing a

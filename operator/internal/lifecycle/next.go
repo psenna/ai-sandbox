@@ -64,6 +64,16 @@ func decide(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Time, 
 	if d, ok := agentOrPodTerminal(env, facts, now, phase); ok {
 		return d
 	}
+	// A FinishedAt with a non-terminal phase can only mean the #32 freeze
+	// detour is in flight: the run already terminated (Done/Failed) and is
+	// capturing the agent home before archiving. Timeouts are moot once the
+	// run is over -- a long-running agent finishing just before the total
+	// timeout must not be failed mid-detour because the freeze took a while.
+	// Without this, timeoutFired could fail a done environment during the
+	// detour's Freezing phase.
+	if env.Status.FinishedAt != nil {
+		return dispatchPhase(env, facts, now, phase)
+	}
 	if d, ok := timeoutFired(env, facts, now, phase); ok {
 		return d
 	}
@@ -96,19 +106,56 @@ func dispatchPhase(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time
 }
 
 // terminal handles an already-terminal environment (Done/Failed). The phase
-// never changes -- terminal phases are sticky. Conditions are still
-// recomputed every call so Archived can flip True once #32 writes the
-// archive; the other five condition types have phase/facts-derived defaults
-// that reproduce the same value every call for a terminal phase (or, for
-// PodReady/Ready on Failed, carry the original failure reason forward via
-// carryForwardOr), so this never perturbs an already-settled status.
+// never changes — terminal phases are sticky — EXCEPT for the #32 freeze
+// detour below. Conditions are still recomputed every call so Archived can
+// flip True once the archive is written; the other conditions have
+// phase/facts-derived defaults that reproduce the same value every call for
+// a terminal phase (or, for PodReady/Ready on Failed, carry the original
+// failure reason forward via carryForwardOr), so this never perturbs an
+// already-settled status.
+//
+// The archive ordering (#32):
+//   - Archive not yet written and the agent home has never been snapshotted
+//     but a live pod exists (facts.PodAliveForArchive): return a Freezing
+//     detour -- set phase=Freezing and freeze the pod so the transcripts are
+//     captured BEFORE the pod is deleted. nextFreezing completes the freeze,
+//     deletes the pod, and moves to Waiting; nextWaiting's FinishedAt guard
+//     then returns the environment to status.terminalPhase rather than
+//     re-running the agent.
+//   - Archive not yet written and the snapshot exists (or the pod is gone, so
+//     there is nothing left to capture): emit ActionArchive; the one-shot
+//     sandboxctl archive Job does the upload.
+//   - Archive written and phase Done: only now is the pod deleted (the pod is
+//     kept alive through archiving so a last-minute freeze stays possible).
+//     For Failed the pod is kept for log retrieval, unchanged.
 func terminal(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Time, phase v1alpha1.Phase) Decision {
 	b := newBuilder(env, facts, now).
 		phase(phase).
 		slot(false).
-		patch(StatusPatch{SetFinishedAt: newMetaTime(now), SetArchiveURI: facts.ArchiveURI})
+		patch(StatusPatch{SetFinishedAt: newMetaTime(now), SetArchiveURI: facts.ArchiveURI, SetTerminalPhase: phase})
 	if !facts.ArchiveWritten {
+		if env.Status.Snapshot == nil && facts.PodAliveForArchive {
+			// Freeze detour: the run is over but the agent home has never been
+			// snapshotted and the pod is still alive -- the ONLY way to capture
+			// the transcripts is to freeze it now, before the archive. The
+			// SetFinishedAt/SetTerminalPhase fields are set-once and idempotent,
+			// so carrying them into the detour's patch (rather than only into
+			// b's) is harmless and self-healing: every detour entry point --
+			// terminalOutcome, timeoutFired, nextWaiting's probe failure --
+			// leaves a status that will reach terminal() again, and this patch
+			// guarantees the record is complete even if that entry point failed
+			// to set it.
+			return newBuilder(env, facts, now).
+				phase(v1alpha1.PhaseFreezing).
+				slot(true).
+				act(ActionFreezePod).
+				patch(StatusPatch{SetFinishedAt: newMetaTime(now), SetArchiveURI: facts.ArchiveURI, SetTerminalPhase: phase}).
+				cond(ConditionFrozen, metav1.ConditionFalse, ReasonSnapshotInProgress, "").
+				build()
+		}
 		b.act(ActionArchive)
+	} else if phase == v1alpha1.PhaseDone {
+		b.act(ActionDeletePod)
 	}
 	return b.build()
 }
@@ -162,15 +209,24 @@ func agentOrPodTerminal(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now
 }
 
 // terminalOutcome builds the common shape shared by every agentOrPodTerminal
-// branch: slot released, finishedAt set-once, and -- only for Done, never
-// for Failed (the pod is kept around for log retrieval; #32 owns cleanup) --
-// a pod deletion.
+// branch: slot released, finished_at set-once, the terminal phase recorded
+// (SetTerminalPhase, read back by nextWaiting's freeze-detour guard), and --
+// only for Done, never for Failed (the pod is kept around for log retrieval;
+// #32 owns cleanup) AND only once the archive is written -- a pod deletion.
+//
+// The deletePod gate matters for #32: deleting the pod the moment the agent
+// reports Done would destroy the agent-home emptyDir before the terminal
+// archive could capture it. terminal() makes the deletion decision on the
+// next reconcile, once the archive exists (or the freeze detour has
+// captured the home). A fresh transition always has ArchiveWritten==false,
+// so this never deletes the pod today; the gate is a defensive re-check for
+// a terminalOutcome reached on a re-reconcile.
 func terminalOutcome(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Time, phase v1alpha1.Phase, deletePod bool) Decision {
 	b := newBuilder(env, facts, now).
 		phase(phase).
 		slot(false).
-		patch(StatusPatch{SetFinishedAt: newMetaTime(now)})
-	if deletePod {
+		patch(StatusPatch{SetFinishedAt: newMetaTime(now), SetTerminalPhase: phase})
+	if deletePod && facts.ArchiveWritten {
 		b.act(ActionDeletePod)
 	}
 	return b.build()
@@ -368,6 +424,22 @@ func nextFreezing(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.
 // once suspend is cleared. An unevaluatable probe fails the environment
 // rather than hanging forever.
 func nextWaiting(env v1alpha1.SandboxEnvironment, facts ClusterFacts, now time.Time) Decision {
+	// Freeze-detour return (#32): a run that already terminated once reaches
+	// Waiting only through terminal()'s freeze detour (Done/Failed ->
+	// Freezing -> Waiting), never through a real wait -- status.waitFor is nil
+	// on that journey. Return to the recorded terminal phase rather than
+	// re-running the agent. This is checked before WaitProbeFailure so a stale
+	// probe record can never fail a run that already succeeded.
+	if env.Status.FinishedAt != nil {
+		termPhase := v1alpha1.PhaseDone
+		if env.Status.TerminalPhase == v1alpha1.PhaseFailed {
+			termPhase = v1alpha1.PhaseFailed
+		}
+		return newBuilder(env, facts, now).
+			phase(termPhase).
+			slot(false).
+			build()
+	}
 	switch {
 	case facts.WaitProbeFailure != nil:
 		reason := SanitizeReason(facts.WaitProbeFailure.Reason, StepFailureReasons, ReasonProbeFailed)

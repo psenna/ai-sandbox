@@ -4,26 +4,17 @@ import (
 	"context"
 	"fmt"
 
-	ctrl "sigs.k8s.io/controller-runtime"
-
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
 )
 
 type actionFunc func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error
 
-func notImplemented(name string, issue int) actionFunc {
-	return func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, _ *v1alpha1.SandboxClass) error {
-		ctrl.LoggerFrom(ctx).V(1).Info("action not implemented yet", "action", name, "issue", issue, "environment", env.Name)
-		return nil
-	}
-}
-
-// actions is the single place "not implemented yet" lives. Each entry logs
-// at V(1) and returns nil -- returning an error would wedge the reconcile
-// loop in backoff for machinery that simply doesn't exist yet; silently doing
-// nothing with no log would hide it. Replace entries as the referenced issues
-// land.
+// actions is the single dispatch map from lifecycle.Action to its handler.
+// Every entry in lifecycle.AllActions must have one here -- performActions
+// errors out on a missing entry rather than silently doing nothing, so a
+// newly declared Action with no wired handler fails loudly instead of
+// wedging the reconcile loop in a way that looks like a hang.
 var actions = map[lifecycle.Action]actionFunc{
 	lifecycle.ActionEnsureResources: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
 		return r.ensureResources(ctx, env, class)
@@ -37,7 +28,9 @@ var actions = map[lifecycle.Action]actionFunc{
 	lifecycle.ActionDeletePod: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
 		return r.deletePod(ctx, env, class)
 	},
-	lifecycle.ActionArchive: notImplemented("Archive", 32),
+	lifecycle.ActionArchive: func(ctx context.Context, r *Reconciler, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
+		return r.archive(ctx, env, class)
+	},
 }
 
 func (r *Reconciler) performActions(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass, d lifecycle.Decision) error {

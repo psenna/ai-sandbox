@@ -128,7 +128,13 @@ func TestSlotScheduler_NoSlotLeakOverManyCycles(t *testing.T) {
 				newReadyEnv()
 			}
 		case 3: // deletion: slot never released through the normal status
-			// path -- it just stops existing.
+			// path -- it just stops existing. #32's FinalizerArchiveOnDelete
+			// means the object stays Terminating until its terminal archive is
+			// written, so simulate the sandboxctl archive Job's own
+			// status.archive write (nothing in this suite runs real Jobs) and
+			// reconcile once more so reconcileDelete's "already archived" step
+			// clears the finalizer and the object is actually GC'd -- exactly
+			// what a real archive Job completing would eventually cause.
 			for _, key := range granted {
 				env := &sandboxv1alpha1.SandboxEnvironment{}
 				if err := k8s.Get(ctx, key, env); err != nil {
@@ -137,6 +143,15 @@ func TestSlotScheduler_NoSlotLeakOverManyCycles(t *testing.T) {
 				if err := k8s.Delete(ctx, env); err != nil {
 					t.Fatalf("cycle %d: Delete(%s): %v", cycle, key, err)
 				}
+				fresh := &sandboxv1alpha1.SandboxEnvironment{}
+				if err := k8s.Get(ctx, key, fresh); err != nil {
+					t.Fatalf("cycle %d: Get(%s) after delete: %v", cycle, key, err)
+				}
+				fresh.Status.Archive = &sandboxv1alpha1.ArchiveStatus{URI: "s3://sandbox-snapshots/fake-archive"}
+				if err := k8s.Status().Update(ctx, fresh); err != nil {
+					t.Fatalf("cycle %d: faking archive completion for %s: %v", cycle, key, err)
+				}
+				reconcileOnce(t, r, key) // reconcileDelete: archive present -> finalizer cleared -> object GC'd
 				newReadyEnv()
 			}
 		}
