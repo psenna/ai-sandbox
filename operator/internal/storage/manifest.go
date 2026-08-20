@@ -52,6 +52,9 @@ type FileEntry struct {
 
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// hex40 matches a 40-hex-character lowercase SHA-1 (a git commit-ish).
+var hex40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
 // Marshal serializes m deterministically: Files sorted by Name, 2-space
 // indent, HTML escaping disabled, a single trailing newline. Calling
 // Marshal twice on equal values always produces byte-identical output --
