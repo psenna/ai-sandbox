@@ -21,6 +21,7 @@ const (
 	SuffixSnapshotSecret = "-snapshot"  // Secret (S3 snapshot credentials projection, #28)
 	SuffixSnapshotJob    = "-freeze"    // Job (recovery snapshot Job, #28)
 	SuffixNetworkPolicy  = "-netpolicy" // NetworkPolicy (#31)
+	SuffixArchiveJob     = "-archive"   // Job (terminal archive Job, #32)
 )
 
 // Names holds every child object name deterministically derived from one
@@ -36,6 +37,7 @@ type Names struct {
 	SnapshotSecret string
 	SnapshotJob    string
 	NetworkPolicy  string
+	ArchiveJob     string
 }
 
 // ChildNames computes every child object name for envName.
@@ -51,6 +53,7 @@ func ChildNames(envName string) Names {
 		SnapshotSecret: childName(envName, SuffixSnapshotSecret),
 		SnapshotJob:    childName(envName, SuffixSnapshotJob),
 		NetworkPolicy:  childName(envName, SuffixNetworkPolicy),
+		ArchiveJob:     childName(envName, SuffixArchiveJob),
 	}
 }
 
