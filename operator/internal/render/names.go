@@ -20,6 +20,7 @@ const (
 	SuffixPod            = "-run"       // Pod -- NOT "-agent", already taken by SuffixServiceAccount
 	SuffixSnapshotSecret = "-snapshot"  // Secret (S3 snapshot credentials projection, #28)
 	SuffixSnapshotJob    = "-freeze"    // Job (recovery snapshot Job, #28)
+	SuffixNetworkPolicy  = "-netpolicy" // NetworkPolicy (#31)
 )
 
 // Names holds every child object name deterministically derived from one
@@ -34,6 +35,7 @@ type Names struct {
 	Pod            string
 	SnapshotSecret string
 	SnapshotJob    string
+	NetworkPolicy  string
 }
 
 // ChildNames computes every child object name for envName.
@@ -48,6 +50,7 @@ func ChildNames(envName string) Names {
 		Pod:            childName(envName, SuffixPod),
 		SnapshotSecret: childName(envName, SuffixSnapshotSecret),
 		SnapshotJob:    childName(envName, SuffixSnapshotJob),
+		NetworkPolicy:  childName(envName, SuffixNetworkPolicy),
 	}
 }
 

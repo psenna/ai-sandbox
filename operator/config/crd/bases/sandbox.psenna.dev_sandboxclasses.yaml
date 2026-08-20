@@ -196,13 +196,119 @@ spec:
                 properties:
                   extraEgress:
                     description: |-
-                      ExtraEgress lists additional egress destinations (for example
-                      "1.2.3.4/32" or a DNS name understood by the network policy
-                      controller) sandbox pods may reach beyond the shared service
-                      endpoints declared in spec.services. Only consulted when isolation is
-                      "Restricted".
+                      ExtraEgress lists additional egress destinations (for example an
+                      external host's CIDR, or an in-cluster pod selector) sandbox pods may
+                      reach beyond the shared service endpoints declared in spec.services.
+                      Only consulted when isolation is "Restricted".
                     items:
-                      type: string
+                      description: |-
+                        EgressPeer is one additional egress destination a Restricted sandbox may
+                        reach beyond the shared service endpoints. Exactly one of CIDR or
+                        Selector must be set.
+                      properties:
+                        cidr:
+                          description: |-
+                            CIDR is an IP block (e.g. "1.2.3.4/32", "10.0.0.0/8"). Mutually exclusive
+                            with Selector. External destinations (any host not an in-cluster Service)
+                            MUST use CIDR -- a selector cannot match an off-cluster host, and the
+                            operator rejects a Restricted class whose external service/storage
+                            endpoint is not covered by an extraEgress CIDR.
+                          type: string
+                        ports:
+                          description: Ports restricts egress to the listed destination
+                            ports. Empty = all ports.
+                          items:
+                            description: NetworkPolicyPort mirrors the Kubernetes
+                              NetworkPolicyPort shape.
+                            properties:
+                              port:
+                                description: |-
+                                  Port is the destination port: a numeric port (e.g. "443") or a named
+                                  port (e.g. "https").
+                                minLength: 1
+                                type: string
+                              protocol:
+                                description: |-
+                                  Protocol is the transport protocol the port applies to (TCP, UDP or
+                                  SCTP). Empty defaults to TCP.
+                                enum:
+                                - TCP
+                                - UDP
+                                - SCTP
+                                type: string
+                            required:
+                            - port
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        selector:
+                          description: |-
+                            Selector selects in-cluster pods. Namespace must be named; PodSelector is
+                            optional (empty = all pods in the namespace). Mutually exclusive with CIDR.
+                          properties:
+                            namespace:
+                              description: Namespace is the namespace whose pods the
+                                selector matches.
+                              minLength: 1
+                              type: string
+                            podSelector:
+                              description: |-
+                                PodSelector is an optional label selector narrowing the match to a
+                                subset of the namespace's pods; empty matches all pods in the
+                                namespace.
+                              properties:
+                                matchExpressions:
+                                  description: matchExpressions is a list of label
+                                    selector requirements. The requirements are ANDed.
+                                  items:
+                                    description: |-
+                                      A label selector requirement is a selector that contains values, a key, and an operator that
+                                      relates the key and values.
+                                    properties:
+                                      key:
+                                        description: key is the label key that the
+                                          selector applies to.
+                                        type: string
+                                      operator:
+                                        description: |-
+                                          operator represents a key's relationship to a set of values.
+                                          Valid operators are In, NotIn, Exists and DoesNotExist.
+                                        type: string
+                                      values:
+                                        description: |-
+                                          values is an array of string values. If the operator is In or NotIn,
+                                          the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                          the values array must be empty. This array is replaced during a strategic
+                                          merge patch.
+                                        items:
+                                          type: string
+                                        type: array
+                                        x-kubernetes-list-type: atomic
+                                    required:
+                                    - key
+                                    - operator
+                                    type: object
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                matchLabels:
+                                  additionalProperties:
+                                    type: string
+                                  description: |-
+                                    matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                    map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                    operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                  type: object
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          required:
+                          - namespace
+                          type: object
+                      type: object
+                      x-kubernetes-validations:
+                      - message: network.extraEgress entries must set exactly one
+                          of cidr or selector
+                        rule: has(self.cidr) != (has(self.selector) && self.selector
+                          != null)
                     type: array
                     x-kubernetes-list-type: atomic
                   isolation:

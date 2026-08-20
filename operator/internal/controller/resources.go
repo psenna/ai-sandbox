@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,13 +78,17 @@ func (r *Reconciler) resolveCredentials(ctx context.Context, class *v1alpha1.San
 	return creds, nil
 }
 
-// renderFor resolves credentials and renders every child object for env
-// against class. Rendering is pure and cheap -- callers must re-render on
-// every reconcile rather than caching or reusing a previously-applied
-// object (see applyOne's doc comment on why a rendered object must never be
-// reused after an Apply call).
+// renderFor resolves credentials and network peers, then renders every child
+// object for env against class. Rendering is pure and cheap -- callers must
+// re-render on every reconcile rather than caching or reusing a
+// previously-applied object (see applyOne's doc comment on why a rendered
+// object must never be reused after an Apply call).
 func (r *Reconciler) renderFor(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) (render.Objects, error) {
 	creds, err := r.resolveCredentials(ctx, class)
+	if err != nil {
+		return render.Objects{}, err
+	}
+	netPeers, err := r.resolveNetworkPeers(ctx, class)
 	if err != nil {
 		return render.Objects{}, err
 	}
@@ -97,6 +102,7 @@ func (r *Reconciler) renderFor(ctx context.Context, env *v1alpha1.SandboxEnviron
 		Credentials: creds,
 		ClusterID:   r.ClusterID,
 		SpecHash:    specHash,
+		Network:     netPeers,
 	})
 }
 
@@ -156,7 +162,45 @@ func (r *Reconciler) ensureResources(ctx context.Context, env *v1alpha1.SandboxE
 			return err
 		}
 	}
+	// The NetworkPolicy is nil for Open isolation (or an unrenderable class):
+	// apply it when present, delete any stale policy otherwise. The delete is
+	// ownership-guarded and idempotent, exactly like deletePod.
+	if objs.NetworkPolicy != nil {
+		if err := r.applyOne(ctx, env, "NetworkPolicy", client.ObjectKey{Namespace: env.Namespace, Name: names.NetworkPolicy}, &networkingv1.NetworkPolicy{}, objs.NetworkPolicy); err != nil {
+			return err
+		}
+	} else {
+		r.deleteOwnedChild(ctx, env, "NetworkPolicy", names.NetworkPolicy, &networkingv1.NetworkPolicy{})
+	}
 	return nil
+}
+
+// deleteOwnedChild deletes a child object this environment owns, idempotently
+// (no-op if already gone or already terminating) and only when the existing
+// object's controller owner reference points at env -- a foreign object
+// squatting the name is never touched. Mirrors deletePod's ownership-guarded
+// delete for the non-Pod children that can legitimately disappear (the
+// NetworkPolicy when a class switches from Restricted to Open isolation).
+func (r *Reconciler) deleteOwnedChild(ctx context.Context, env *v1alpha1.SandboxEnvironment, kind, name string, obj client.Object) {
+	log := ctrl.LoggerFrom(ctx)
+	key := client.ObjectKey{Namespace: env.Namespace, Name: name}
+	if err := r.Get(ctx, key, obj); err != nil {
+		if !apierrors.IsNotFound(err) {
+			log.V(1).Info("delete check failed", "kind", kind, "name", name, "error", err)
+		}
+		return
+	}
+	if !ownedByEnv(obj, env) {
+		log.V(1).Info("skipping delete: object is not owned by this environment", "kind", kind, "name", name)
+		return
+	}
+	if !obj.GetDeletionTimestamp().IsZero() {
+		return
+	}
+	uid := obj.GetUID()
+	if err := r.Delete(ctx, obj, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+		log.V(1).Info("delete failed", "kind", kind, "name", name, "error", err)
+	}
 }
 
 // applyOne applies a single rendered child object, guarded by an explicit

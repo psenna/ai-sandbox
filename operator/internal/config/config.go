@@ -52,6 +52,19 @@ type Config struct {
 	// kept in sync with the deployed operator image tag -- see
 	// operator/README.md.
 	SidecarImage string
+
+	// OperatorIngressLabel is the single "key=value" label selector
+	// identifying the operator's own pods, allowed to reach sandbox pods
+	// under Restricted isolation (#31). Defaults to
+	// "control-plane=controller-manager" (the label the operator's own
+	// Deployment carries -- see config/manager/manager.yaml).
+	OperatorIngressLabel string
+
+	// CNIProbeInterval is how often the CNI enforcement probe runs a pass
+	// (#31). Each pass creates two short-lived probe pods in the operator's
+	// own namespace, so this trades enforcement-detection latency against
+	// API-server load.
+	CNIProbeInterval time.Duration
 }
 
 // dns1123LabelRE matches a valid DNS-1123 label: lowercase alphanumeric
@@ -96,6 +109,12 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.SidecarImage, "sidecar-image",
 		envOr(getenv, "SIDECAR_IMAGE", "ghcr.io/psenna/ai-sandbox-operator:dev"),
 		"container image for the always-present sandboxctl control-channel sidecar; must match the deployed operator image tag")
+	fs.StringVar(&c.OperatorIngressLabel, "operator-ingress-label",
+		envOr(getenv, "OPERATOR_INGRESS_LABEL", "control-plane=controller-manager"),
+		"single key=value label selector identifying the operator's own pods, allowed to reach sandbox pods under Restricted isolation")
+	fs.DurationVar(&c.CNIProbeInterval, "cni-probe-interval",
+		envOrDuration(getenv, "CNI_PROBE_INTERVAL", 5*time.Minute),
+		"how often the CNI enforcement probe runs a pass")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -133,6 +152,12 @@ func (c Config) Validate() error {
 	}
 	if c.SidecarImage == "" {
 		return fmt.Errorf("sidecar-image: must not be empty")
+	}
+	if c.OperatorIngressLabel == "" {
+		return fmt.Errorf("operator-ingress-label: must not be empty")
+	}
+	if c.CNIProbeInterval < time.Second || c.CNIProbeInterval > time.Hour {
+		return fmt.Errorf("cni-probe-interval: must be between 1s and 1h, got %s", c.CNIProbeInterval)
 	}
 	return nil
 }

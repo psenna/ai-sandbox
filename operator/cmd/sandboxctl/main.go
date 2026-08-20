@@ -16,6 +16,10 @@
 //	restore      restore a snapshot into the mounted workspace/agent-home
 //	             and exit (the restore init container's entire program;
 //	             #29, see internal/sandboxctl/runrestore.go)
+//	probe-tcp    dial host:port and exit 0/1 (the CNI enforcement probe's
+//	             client; #31, see internal/sandboxctl/cniprobe.go)
+//	probe-listen  listen on :port forever (the CNI enforcement probe's server;
+//	             the pod-to-pod dial target; #31, see internal/sandboxctl/cniprobe.go)
 package main
 
 import (
@@ -35,7 +39,7 @@ func main() {
 
 func run(args []string) int {
 	if len(args) < 2 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore> [flags]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|probe-tcp|probe-listen> [flags]")
 		return 2
 	}
 
@@ -52,8 +56,28 @@ func run(args []string) int {
 		return runFreezeOnce(args[2:])
 	case "restore":
 		return runRestore(args[2:])
+	case "probe-tcp":
+		if len(args) < 3 {
+			_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl probe-tcp <host:port>")
+			return 2
+		}
+		if err := sandboxctl.ProbeTCP(args[2]); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "probe-tcp: "+err.Error())
+			return 1
+		}
+		return 0
+	case "probe-listen":
+		if len(args) < 3 {
+			_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl probe-listen <port>")
+			return 2
+		}
+		if err := sandboxctl.ProbeListen(args[2]); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, "probe-listen: "+err.Error())
+			return 1
+		}
+		return 0
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore> [flags]\n", args[1])
+		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|probe-tcp|probe-listen> [flags]\n", args[1])
 		return 2
 	}
 }

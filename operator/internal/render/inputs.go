@@ -5,6 +5,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	acorev1 "k8s.io/client-go/applyconfigurations/core/v1"
+	anetworkingv1 "k8s.io/client-go/applyconfigurations/networking/v1"
 	acrbacv1 "k8s.io/client-go/applyconfigurations/rbac/v1"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
@@ -42,6 +43,28 @@ type Credentials struct {
 	SnapshotAccessKeyID     string
 	SnapshotSecretAccessKey string
 	SnapshotSessionToken    string
+}
+
+// NetworkInputs is the caller-resolved set of peers the Restricted policy
+// allows egress to, plus the operator ingress selector. Render cannot resolve
+// URLs to selectors/CIDRs itself; the controller does (resolveNetworkPeers,
+// internal/controller/network.go), exactly like Credentials. Zero-value (all
+// nil) is valid for Open isolation (no policy rendered).
+type NetworkInputs struct {
+	Egress []ResolvedPeer
+	// OperatorIngress is the pod selector (in the operator's own namespace)
+	// allowed to reach sandbox pods. nil means "no ingress rules" -- the
+	// policy's empty Ingress list is default-deny ingress.
+	OperatorIngress *v1alpha1.PeerSelector
+}
+
+// ResolvedPeer is one egress destination the Restricted policy allows,
+// resolved by the controller from a service URL or an extraEgress entry.
+// Exactly one of CIDR or Selector is set (render validates this too).
+type ResolvedPeer struct {
+	CIDR     string
+	Selector *v1alpha1.PeerSelector
+	Ports    []v1alpha1.NetworkPolicyPort
 }
 
 // SkillFile is a reserved seam for future image-independent skill delivery
@@ -87,6 +110,13 @@ type Inputs struct {
 	// RenderPod emits no restore init container at all. Only consulted by
 	// RenderPod, not by Render.
 	Restore *RestorePlan
+
+	// Network is the caller-resolved set of peers the Restricted policy
+	// allows egress to, plus the operator ingress selector (#31). Render
+	// cannot resolve URLs to selectors/CIDRs itself; the controller does
+	// (resolveNetworkPeers). Zero-value (all nil) is valid for Open
+	// isolation (no policy rendered).
+	Network NetworkInputs
 }
 
 // RestorePlan describes the snapshot a wake must restore, computed by
@@ -108,19 +138,26 @@ type Objects struct {
 	Secret         *acorev1.SecretApplyConfiguration
 	// SnapshotSecret is nil unless the class's storage backend is S3 (#28).
 	SnapshotSecret *acorev1.SecretApplyConfiguration
+	// NetworkPolicy is nil for Open isolation (or an unrenderable class);
+	// non-nil for Restricted (#31).
+	NetworkPolicy *anetworkingv1.NetworkPolicyApplyConfiguration
 }
 
 // All returns every child object in a fixed order (ServiceAccount, Role,
-// RoleBinding, PVC, ConfigMap, Secret, SnapshotSecret), safe to apply in
-// sequence. SnapshotSecret is appended ONLY when non-nil: a typed-nil
-// *acorev1.SecretApplyConfiguration stored in a
+// RoleBinding, PVC, ConfigMap, Secret, SnapshotSecret, NetworkPolicy), safe
+// to apply in sequence. SnapshotSecret and NetworkPolicy are appended ONLY
+// when non-nil: a typed-nil *acorev1.SecretApplyConfiguration (or
+// *anetworkingv1.NetworkPolicyApplyConfiguration) stored in a
 // []runtime.ApplyConfiguration interface slice is NOT an interface nil (a
 // classic Go footgun), so an unconditional append would apply a nil object
-// whenever the backend isn't S3.
+// whenever the backend isn't S3 or the isolation is Open.
 func (o Objects) All() []runtime.ApplyConfiguration {
 	all := []runtime.ApplyConfiguration{o.ServiceAccount, o.Role, o.RoleBinding, o.PVC, o.ConfigMap, o.Secret}
 	if o.SnapshotSecret != nil {
 		all = append(all, o.SnapshotSecret)
+	}
+	if o.NetworkPolicy != nil {
+		all = append(all, o.NetworkPolicy)
 	}
 	return all
 }
@@ -164,6 +201,10 @@ func Render(in Inputs) (Objects, error) {
 	}
 	secret := renderSecret(in)
 	snapshotSecret := renderSnapshotSecret(in)
+	np, err := RenderNetworkPolicy(in)
+	if err != nil {
+		return Objects{}, fmt.Errorf("render: NetworkPolicy: %w", err)
+	}
 
 	return Objects{
 		ServiceAccount: sa,
@@ -173,5 +214,6 @@ func Render(in Inputs) (Objects, error) {
 		ConfigMap:      cm,
 		Secret:         secret,
 		SnapshotSecret: snapshotSecret,
+		NetworkPolicy:  np,
 	}, nil
 }

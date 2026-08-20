@@ -188,6 +188,13 @@ func WithEngine(t sandboxv1alpha1.EngineType) ClassOption {
 	return func(c *sandboxv1alpha1.SandboxClass) { c.Spec.Engine.Type = t }
 }
 
+// WithNetworkIsolation sets the class's network isolation posture (#31):
+// Restricted (a NetworkPolicy default-denies egress except for the resolved
+// peers) or Open (no policy, unrestricted egress).
+func WithNetworkIsolation(isolation sandboxv1alpha1.NetworkIsolation) ClassOption {
+	return func(c *sandboxv1alpha1.SandboxClass) { c.Spec.Network.Isolation = isolation }
+}
+
 func WithAgentImage(image string) ClassOption {
 	return func(c *sandboxv1alpha1.SandboxClass) { c.Spec.Agent.Image = image }
 }

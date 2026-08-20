@@ -16,6 +16,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,6 +62,7 @@ func TestMain(m *testing.M) {
 	_ = rbacv1.AddToScheme(scheme)
 	_ = batchv1.AddToScheme(scheme)
 	_ = authorizationv1.AddToScheme(scheme)
+	_ = networkingv1.AddToScheme(scheme) // #31: ensureResources applies/observes NetworkPolicies
 	_ = sandboxv1alpha1.AddToScheme(scheme)
 
 	k8s, err = client.New(k8sCfg, client.Options{Scheme: scheme})
@@ -245,6 +247,14 @@ func mustCreateClass(t *testing.T) *sandboxv1alpha1.SandboxClass {
 					},
 				},
 			},
+			// The S3 endpoint is external (no <svc>.<ns>.svc match), so under
+			// the CRD's Restricted default resolveNetworkPeers requires an
+			// extraEgress CIDR peer (#31) -- 0.0.0.0/0 keeps the fixture's
+			// focus on resource creation, not network isolation.
+			Network: sandboxv1alpha1.NetworkSpec{
+				Isolation:   sandboxv1alpha1.NetworkIsolationRestricted,
+				ExtraEgress: []sandboxv1alpha1.EgressPeer{{CIDR: "0.0.0.0/0"}},
+			},
 		},
 	}
 	if err := k8s.Create(ctx, class); err != nil {
@@ -279,6 +289,12 @@ func mustCreateClassWithEngine(t *testing.T, engineType sandboxv1alpha1.EngineTy
 						},
 					},
 				},
+			},
+			// See mustCreateClass: the external S3 endpoint needs an
+			// extraEgress CIDR peer under the Restricted default (#31).
+			Network: sandboxv1alpha1.NetworkSpec{
+				Isolation:   sandboxv1alpha1.NetworkIsolationRestricted,
+				ExtraEgress: []sandboxv1alpha1.EgressPeer{{CIDR: "0.0.0.0/0"}},
 			},
 		},
 	}
@@ -338,6 +354,15 @@ func mustCreateClassWithGitProxy(t *testing.T, secretNamespace, secretName, key 
 						},
 					},
 				},
+			},
+			// The S3 endpoint and the bare-hostname git-proxy URLs are all
+			// external (no <svc>.<ns>.svc match), so under the CRD's
+			// Restricted default resolveNetworkPeers requires an extraEgress
+			// CIDR peer (#31) -- 0.0.0.0/0 keeps the fixture's focus on
+			// resource creation, not network isolation.
+			Network: sandboxv1alpha1.NetworkSpec{
+				Isolation:   sandboxv1alpha1.NetworkIsolationRestricted,
+				ExtraEgress: []sandboxv1alpha1.EgressPeer{{CIDR: "0.0.0.0/0"}},
 			},
 			Services: sandboxv1alpha1.ServicesSpec{
 				GitProxy: &sandboxv1alpha1.GitProxyService{
