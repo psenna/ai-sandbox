@@ -43,7 +43,7 @@ func ProbeListen(port string) error {
 	if err != nil {
 		return fmt.Errorf("listen on :%s: %w", port, err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
