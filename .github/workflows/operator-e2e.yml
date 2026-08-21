@@ -63,10 +63,11 @@ jobs:
     name: kind e2e
     needs: matrix
     runs-on: ubuntu-latest
-    # e2e-up (~3m) + e2e-run (ginkgo --timeout=25m, see operator/Makefile
-    # E2E_TIMEOUT) + e2e-collect/e2e-down (~1m). Raised from 25 to keep the job
-    # step timeout ahead of the raised ginkgo suite timeout.
-    timeout-minutes: 35
+    # e2e-up (~3m) + e2e-run (ginkgo --timeout=32m, see operator/Makefile
+    # E2E_TIMEOUT) + e2e-collect/e2e-down (~1m). Raised from 35 (which was
+    # itself raised from 25 for the same reason) to keep the job step
+    # timeout ahead of #33's raised ginkgo suite timeout.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
