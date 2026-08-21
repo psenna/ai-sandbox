@@ -15,6 +15,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
 	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
@@ -56,6 +57,10 @@ type ProbeEvaluator struct {
 	MaxConsecutiveErrors int32
 	Backoff              []time.Duration
 	NewS3Backend         func(cfg storage.S3Config, creds storage.Credentials) (storage.Backend, error)
+
+	// Metrics records probe_evaluations_total by wait type and outcome
+	// (#33). Nil-guarded, matching Reconciler.Metrics.
+	Metrics *metrics.Collectors
 }
 
 // NewProbeEvaluator returns a ProbeEvaluator with every field defaulted.
@@ -119,6 +124,7 @@ func (e *ProbeEvaluator) Evaluate(ctx context.Context, env *v1alpha1.SandboxEnvi
 	}
 	now := e.now()
 	if prev := env.Status.ProbeAttempt; prev != nil && prev.NextEligibleAt != nil && now.Before(prev.NextEligibleAt.Time) {
+		e.Metrics.RecordProbeEvaluation(w.Type, metrics.ResultSkipped)
 		return lifecycle.ClusterFacts{ProbeObserved: true}, nil, nil
 	}
 
@@ -136,6 +142,19 @@ func (e *ProbeEvaluator) Evaluate(ctx context.Context, env *v1alpha1.SandboxEnvi
 
 	f := lifecycle.ClusterFacts{ProbeObserved: true}
 	satisfied, err := e.evaluateOne(ctx, env, w, class, creds)
+	// result is this evaluation's OWN outcome, computed explicitly here --
+	// never read back from attempt.LastResult, which the err!=nil branch
+	// below may downgrade from "error" to "pending" once the attempt is
+	// still within the retry budget. That downgrade is about what the NEXT
+	// evaluation should do; it must not retroactively relabel this one.
+	result := metrics.ResultPending
+	switch {
+	case err != nil:
+		result = metrics.ResultError
+	case satisfied:
+		result = metrics.ResultSatisfied
+	}
+	defer func() { e.Metrics.RecordProbeEvaluation(w.Type, result) }()
 	switch {
 	case err != nil:
 		unevaluatable, reason, message := lifecycle.ClassifyError(err)

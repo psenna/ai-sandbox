@@ -15,6 +15,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 )
 
 // probePodLabel is the label identifying the CNI probe's own pods and
@@ -90,6 +92,11 @@ type CNIProbeRunnable struct {
 	// probeFn is the probe implementation, overridable for tests. nil defaults
 	// to ProbeCNIEnforcement, so production wiring is unchanged.
 	probeFn func(ctx context.Context, c client.Client, namespace, image string) (CNIProbeResult, error)
+
+	// Metrics records a reconcile_errors_total increment when a probe pass
+	// fails to run to completion (#33). Nil-guarded, matching
+	// Reconciler.Metrics.
+	Metrics *metrics.Collectors
 }
 
 var (
@@ -130,6 +137,7 @@ func (p *CNIProbeRunnable) runAndStore(ctx context.Context, log logr.Logger) {
 	res, err := probe(ctx, p.Client, p.Namespace, p.Image)
 	if err != nil {
 		log.Error(err, "CNI enforcement probe failed")
+		p.Metrics.RecordReconcileError(metrics.ControllerCNIProbe)
 		// Transient/unconfirmed: the probe could not run to completion. Publish
 		// a whole new struct (never mutate in place) so concurrent Reconciler
 		// readers see a consistent value. Enforced=false with

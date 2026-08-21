@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
 
@@ -72,6 +73,14 @@ type RetentionGC struct {
 	// without dialing a real S3 endpoint -- mirrors Reconciler.Observe's own
 	// injectable-field pattern.
 	BackendFor func(ctx context.Context, class *v1alpha1.SandboxClass) (storage.Backend, error)
+
+	// OnPass is the extension point #33 wires Prometheus metrics into,
+	// added for symmetry with SlotScheduler.OnPass/WarmCacheGC.OnPass. Nil
+	// is a no-op.
+	OnPass func(RetentionStats)
+	// Metrics records deletion counts and per-pass reconcile errors (#33).
+	// Nil-guarded, matching Reconciler.Metrics.
+	Metrics *metrics.Collectors
 }
 
 func (g *RetentionGC) backendFor(ctx context.Context, class *v1alpha1.SandboxClass) (storage.Backend, error) {
@@ -132,11 +141,22 @@ func (g *RetentionGC) runAndLog(ctx context.Context, log logr.Logger) {
 	stats, err := g.RunOnce(ctx)
 	if err != nil {
 		log.Error(err, "retention gc pass failed")
+		g.Metrics.RecordReconcileError(metrics.ControllerRetentionGC)
 		return
 	}
 	if stats.Deleted > 0 || stats.WouldDelete > 0 || stats.OrphansDeleted > 0 || stats.Errors > 0 {
 		log.V(1).Info("retention gc pass", "scanned", stats.Scanned, "deleted", stats.Deleted,
 			"wouldDelete", stats.WouldDelete, "orphansDeleted", stats.OrphansDeleted, "errors", stats.Errors)
+	}
+	// DryRun's WouldDelete is deliberately NOT counted here: #13 is what was
+	// actually deleted, and a dry-run pass never calls DeletePrefix.
+	g.Metrics.AddRetentionDeleted(metrics.SweepRetention, stats.Deleted)
+	g.Metrics.AddRetentionDeleted(metrics.SweepOrphan, stats.OrphansDeleted)
+	for i := 0; i < stats.Errors; i++ {
+		g.Metrics.RecordReconcileError(metrics.ControllerRetentionGC)
+	}
+	if g.OnPass != nil {
+		g.OnPass(stats)
 	}
 }
 

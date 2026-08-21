@@ -274,6 +274,7 @@ func (r *Reconciler) observeArchivedEvent(obj *v1alpha1.SandboxEnvironment, prev
 	if pc := apimeta.FindStatusCondition(prev.Conditions, lifecycle.ConditionArchived); pc != nil && pc.Status == metav1.ConditionTrue {
 		return
 	}
+	r.Metrics.RecordArchive(metrics.ResultSucceeded)
 	emitEvent(r.Recorder, obj, corev1.EventTypeNormal, ReasonArchived, "Archive",
 		"terminal archive written to %s", next.ArchiveURI)
 }

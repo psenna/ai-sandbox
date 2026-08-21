@@ -6,15 +6,18 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/scheduler"
 )
 
@@ -43,6 +46,15 @@ type SlotScheduler struct {
 	// (queue depth, occupancy/utilisation, per-grant wait time). Nil is a
 	// no-op. This issue emits no metrics itself.
 	OnPass func(PassStats)
+
+	// Metrics records queue-wait observations and per-pass reconcile errors
+	// (#33). Nil-guarded, matching Reconciler.Metrics; the gauges
+	// (occupancy/capacity/queue depth) are recomputed separately by
+	// MetricsCollector (metricscollector.go), not here.
+	Metrics *metrics.Collectors
+	// Recorder emits the SlotGranted Event on this environment when a grant
+	// lands (#33). Nil-guarded, matching Reconciler.Recorder.
+	Recorder events.EventRecorder
 }
 
 // PassStats summarizes one admission pass, for OnPass and for tests.
@@ -101,11 +113,25 @@ func (s *SlotScheduler) runAndLog(ctx context.Context, log logr.Logger) {
 	stats, err := s.RunOnce(ctx)
 	if err != nil {
 		log.Error(err, "admission pass failed")
+		s.Metrics.RecordReconcileError(metrics.ControllerSlotScheduler)
 		return
 	}
 	if stats.Admitted > 0 || stats.Errors > 0 {
 		log.V(1).Info("admission pass", "capacity", stats.Capacity, "occupancy", stats.Occupancy,
 			"queueDepth", stats.QueueDepth, "admitted", stats.Admitted, "skipped", stats.Skipped, "errors", stats.Errors)
+	}
+	// Per-grant queue-wait observations (#5) and per-item admission errors
+	// (#11) -- a List-level failure above is one reconcile_errors_total
+	// increment; a per-grant error inside an otherwise-successful pass is one
+	// increment per erroring item, since PassStats.Errors already counts them
+	// individually.
+	for _, g := range stats.Grants {
+		if g.Granted && g.Waited > 0 {
+			s.Metrics.ObserveQueueWait(g.Waited)
+		}
+	}
+	for i := 0; i < stats.Errors; i++ {
+		s.Metrics.RecordReconcileError(metrics.ControllerSlotScheduler)
 	}
 	if s.OnPass != nil {
 		s.OnPass(stats)
@@ -137,7 +163,16 @@ func (s *SlotScheduler) RunOnce(ctx context.Context) (PassStats, error) {
 // applyGrant attempts one grant and folds the outcome into stats.
 func (s *SlotScheduler) applyGrant(ctx context.Context, g scheduler.Grant, candidates []v1alpha1.SandboxEnvironment, now time.Time, stats *PassStats) {
 	queuedSince := queuedSinceFor(candidates, g.UID)
-	granted, err := s.grant(ctx, g, now)
+	waited := time.Duration(0)
+	if queuedSince != nil {
+		waited = now.Sub(*queuedSince)
+	}
+	// occupancyAfter approximates this environment's occupancy position once
+	// its grant lands: the pass-start occupancy plus this grant's 1-based
+	// position among this pass's own grants. Advisory only -- it's the
+	// SlotGranted event's message, not a metric.
+	occupancyAfter := stats.Occupancy + g.Position
+	granted, err := s.grant(ctx, g, now, waited, occupancyAfter)
 	if err != nil {
 		stats.Errors++
 		return
@@ -146,10 +181,6 @@ func (s *SlotScheduler) applyGrant(ctx context.Context, g scheduler.Grant, candi
 		stats.Admitted++
 	} else {
 		stats.Skipped++
-	}
-	waited := time.Duration(0)
-	if queuedSince != nil {
-		waited = now.Sub(*queuedSince)
 	}
 	stats.Grants = append(stats.Grants, GrantResult{Namespace: g.Namespace, Name: g.Name, Waited: waited, Granted: granted})
 }
@@ -172,7 +203,7 @@ func queuedSinceFor(candidates []v1alpha1.SandboxEnvironment, uid types.UID) *ti
 // unset: nothing in this codebase creates a real coordination.k8s.io/Lease
 // object, and populating it with a synthetic string would advertise an
 // object that doesn't exist.
-func (s *SlotScheduler) grant(ctx context.Context, g scheduler.Grant, now time.Time) (granted bool, err error) {
+func (s *SlotScheduler) grant(ctx context.Context, g scheduler.Grant, now time.Time, waited time.Duration, occupancyAfter int) (granted bool, err error) {
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := &v1alpha1.SandboxEnvironment{}
 		getErr := s.Reader.Get(ctx, client.ObjectKey{Namespace: g.Namespace, Name: g.Name}, fresh)
@@ -193,6 +224,12 @@ func (s *SlotScheduler) grant(ctx context.Context, g scheduler.Grant, now time.T
 			return updErr
 		}
 		granted = true
+		// SlotGranted (#33): only the attempt that actually lands emits the
+		// event, mirroring writeStatus/observeTransition's own
+		// only-fire-on-success discipline. fresh is the object as of the
+		// successful write, exactly what Eventf's "regarding" needs.
+		emitEvent(s.Recorder, fresh, corev1.EventTypeNormal, ReasonSlotGranted, "Schedule",
+			"scheduling slot granted after %s in the queue (occupancy %d of %d)", waited, occupancyAfter, s.Capacity)
 		return nil
 	})
 	return granted, err

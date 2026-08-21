@@ -179,7 +179,21 @@ func (r *Reconciler) resolveClass(ctx context.Context, env *v1alpha1.SandboxEnvi
 	return &class, nil
 }
 
+// Reconcile is a thin wrapper around reconcile that records
+// reconcile_errors_total{controller=sandboxenvironment} (#33) on the errors
+// that actually escape it -- keeping the metric-recording concern out of
+// reconcile's own control flow, and off ctrl.Reconciler's documented
+// signature/behavior (this wrapper has the exact same signature, so nothing
+// relying on the standard interface notices the difference).
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	if err != nil {
+		r.Metrics.RecordReconcileError(metrics.ControllerSandboxEnvironment)
+	}
+	return res, err
+}
+
+func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var env v1alpha1.SandboxEnvironment
 	if err := r.Get(ctx, req.NamespacedName, &env); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)

@@ -323,7 +323,7 @@ func TestSlotScheduler_UIDMismatchSkipsGrant(t *testing.T) {
 	s.Namespace = ns
 
 	g := scheduler.Grant{Namespace: ns, Name: env.Name, UID: staleUID}
-	granted, err := s.grant(ctx, g, fixedStart)
+	granted, err := s.grant(ctx, g, fixedStart, 0, 1)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestSlotScheduler_GrantRetriesOnConflict(t *testing.T) {
 
 	s := &SlotScheduler{Client: wrapped, Reader: k8s, Capacity: 1, Clock: func() time.Time { return fixedStart }}
 	g := scheduler.Grant{Namespace: ns, Name: env.Name, UID: fresh.UID}
-	granted, err := s.grant(ctx, g, fixedStart)
+	granted, err := s.grant(ctx, g, fixedStart, 0, 1)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestSlotScheduler_GrantSkipsWhenInterloperGrantsFirst(t *testing.T) {
 
 	s := &SlotScheduler{Client: wrapped, Reader: k8s, Capacity: 1, Clock: func() time.Time { return fixedStart }}
 	g := scheduler.Grant{Namespace: ns, Name: env.Name, UID: fresh.UID}
-	granted, err := s.grant(ctx, g, fixedStart)
+	granted, err := s.grant(ctx, g, fixedStart, 0, 1)
 	if err != nil {
 		t.Fatalf("grant: %v", err)
 	}
