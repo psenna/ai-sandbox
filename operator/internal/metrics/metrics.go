@@ -130,7 +130,7 @@ type Collectors struct {
 func New() *Collectors {
 	fqName := func(name string) string { return prometheus.BuildFQName(namespace, subsystem, name) }
 
-	return &Collectors{
+	c := &Collectors{
 		environments: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: fqName("environments"),
 			Help: "Number of SandboxEnvironments currently observed in each lifecycle phase, within the operator's watch scope.",
@@ -188,6 +188,42 @@ func New() *Collectors {
 			Help: "Storage roots deleted by retention GC, by sweep.",
 		}, []string{"sweep"}),
 	}
+
+	// Pre-touch every closed label combination on every *Vec collector.
+	// client_golang only emits a label combination's series once something
+	// has called WithLabelValues for it -- an untouched CounterVec/
+	// HistogramVec is completely ABSENT from a scrape, not present with a
+	// zero value. On a freshly started operator (or one that has simply
+	// never hit a particular result/type/controller/sweep combination yet),
+	// that absence breaks any rate()/alerting query written against "the
+	// series exists, value 0" rather than "no data for this series" -- and
+	// is what a fresh e2e scrape immediately after operator startup caught
+	// (all five of these families were missing entirely from the very first
+	// scrape). Every allowlist here is a closed, finite enum (see each
+	// var's own doc comment above), so this is a fixed, small, one-time cost
+	// at construction, never a source of unbounded cardinality.
+	for _, p := range v1alpha1.AllPhases {
+		c.environments.WithLabelValues(string(p))
+	}
+	for _, s := range wakeSourceAllowlist {
+		c.wakeDuration.WithLabelValues(s)
+	}
+	for _, t := range waitTypeAllowlist {
+		for _, r := range probeResultAllowlist {
+			c.probeEvaluations.WithLabelValues(t, r)
+		}
+	}
+	for _, r := range archiveResultAllowlist {
+		c.archives.WithLabelValues(r)
+	}
+	for _, ctrl := range controllerAllowlist {
+		c.reconcileErrors.WithLabelValues(ctrl)
+	}
+	for _, s := range sweepAllowlist {
+		c.retentionDeleted.WithLabelValues(s)
+	}
+
+	return c
 }
 
 // MustRegister registers every series in c into r, panicking on a duplicate
