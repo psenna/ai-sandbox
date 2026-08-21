@@ -209,7 +209,21 @@ var _ = Describe("operator metrics", func() {
 		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 8", "SCRIPT:sandbox-done success ok"))
 		key := client.ObjectKey{Namespace: ns, Name: env.Name}
 
-		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+		// status.finishedAt (not h.WaitForPhase(Done)) is the reliable "the
+		// run completed" signal: it is set once, on the FIRST entry to Done,
+		// and the #32 archive detour that follows (Done -> Freezing ->
+		// Waiting -> Done) never changes it. A phase-equality poll races the
+		// detour -- the very next reconcile after Done can already move the
+		// phase to Freezing (ArchiveWritten starts false), so a poll can
+		// easily miss the narrow window phase==Done is true in, and then has
+		// to wait for the ENTIRE archive detour to complete a second time
+		// before phase reads Done again. Confirmed reproducible in CI: this
+		// exact call previously used h.WaitForPhase(Done) and failed with
+		// "never reached phase Done" after status.phase had already cycled
+		// to Freezing.
+		EventuallyWithOffset(1, func() bool {
+			return h.GetEnv(ctx, key).Status.FinishedAt != nil
+		}, h.Cfg.PhaseTimeout, h.Cfg.Poll).Should(BeTrue(), "environment %s never recorded status.finishedAt", key)
 
 		// The Archived event -- like the Done phase itself -- can only fire
 		// once the #32 terminal-archive detour (Done -> Freezing -> Waiting
