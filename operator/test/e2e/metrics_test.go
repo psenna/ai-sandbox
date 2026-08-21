@@ -192,7 +192,7 @@ var _ = Describe("operator metrics", func() {
 
 	It("runs an environment to completion and records the full plain-run Event reason set with secret-free messages", func() {
 		class := h.CreateClass(ctx)
-		// A brief sleep before sandbox-done, not an immediate one: Started
+		// A sleep before sandbox-done, not an immediate completion: Started
 		// fires only on the Restoring->Running transition (nextRestoring,
 		// gated on the pod being observed Running+Ready), and
 		// agentOrPodTerminal's own doc comment notes a fast-enough agent can
@@ -200,11 +200,32 @@ var _ = Describe("operator metrics", func() {
 		// skipping straight from Restoring to Done and never firing Started.
 		// This is correct, common production behavior for a truly
 		// instantaneous script -- not a bug -- so the fix belongs in this
-		// spec's fixture, not in the state machine.
-		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 2", "SCRIPT:sandbox-done success ok"))
+		// spec's fixture, not in the state machine. 8s (not 2s) leaves real
+		// margin for the reconciler to observe PodReady even when it is
+		// competing for CPU/API-server bandwidth against three other ginkgo
+		// processes (this suite runs --procs=4 in CI) -- confirmed
+		// reproducible at 2s under that contention: the phase history
+		// recorded Ready->Restoring->Done directly, Started never fired.
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 8", "SCRIPT:sandbox-done success ok"))
 		key := client.ObjectKey{Namespace: ns, Name: env.Name}
 
 		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+
+		// The Archived event -- like the Done phase itself -- can only fire
+		// once the #32 terminal-archive detour (Done -> Freezing -> Waiting
+		// -> Done, capturing the agent home before archiving) has actually
+		// completed: a real snapshot upload, an archive Job, and the archive
+		// subcommand's own run. That pipeline is slower under --procs=4
+		// contention than h.Cfg.PhaseTimeout has budget left for if it must
+		// share the same window WaitForPhase(Done) above already spent --
+		// confirmed reproducible: the env reached Done, but status.archive
+		// was still nil when the Event-accumulation Eventually below gave
+		// up. Waiting on status.archive directly, with its OWN fresh
+		// PhaseTimeout budget, decouples the two so a slow archive is never
+		// starved by however long reaching Done itself took.
+		EventuallyWithOffset(1, func() bool {
+			return h.GetEnv(ctx, key).Status.Archive != nil
+		}, h.Cfg.PhaseTimeout, h.Cfg.Poll).Should(BeTrue(), "environment %s never recorded status.archive", key)
 		final := h.GetEnv(ctx, key)
 
 		// The event broadcaster (client-go/tools/events) delivers Eventf calls
