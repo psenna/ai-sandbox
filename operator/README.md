@@ -416,6 +416,102 @@ history, timing), but `context.present` is `false` and `context.reason`
 reads `"no agent home snapshot"`. This is not a bug: there was never a
 session transcript to lose.
 
+### Observability (#33)
+
+The manager's `/metrics` listener (`--metrics-bind-address`, default
+`:8080`) already existed and was already unauthenticated before #33 — #33 is
+the first issue to put anything *on* it. `internal/metrics` registers every
+series into `sigs.k8s.io/controller-runtime/pkg/metrics`'s own `Registry`,
+so this rides the existing listener: no new server, no new flag, no new
+auth. `config/manager/metrics_service.yaml` exposes it as a stable
+`ClusterIP` Service; `config/prometheus/monitor.yaml` is a
+`monitoring.coreos.com/v1` `ServiceMonitor` scraping it, referenced (commented
+out) from `config/default/kustomization.yaml` since it requires the
+Prometheus Operator's CRDs, which the e2e kind cluster does not install. A
+chart-native `ServiceMonitor` template is **#34's** job once a Helm chart
+exists — none does today.
+
+**The metric catalogue.** Every series is `sandbox_operator_<name>`
+(`prometheus.BuildFQName("sandbox", "operator", name)`). No metric ever
+carries an environment name, namespace, or UID as a label — a deliberate,
+permanent cardinality bound — and every label value that could conceivably
+carry unexpected data passes through a closed allowlist
+(`internal/metrics`'s `sanitize`, mirroring `lifecycle.SanitizeReason`) that
+collapses an unrecognized value to `"other"` rather than creating an
+unbounded new series.
+
+| name | type | labels | what it means |
+|---|---|---|---|
+| `sandbox_operator_environments` | Gauge | `phase` | environments currently in each lifecycle phase, in the watch scope — every phase is set on every pass (including 0), so an emptied phase drops to 0 rather than sticking |
+| `sandbox_operator_slot_capacity` | Gauge | — | configured `--slot-capacity` |
+| `sandbox_operator_slots_used` | Gauge | — | occupied scheduling slots (`scheduler.Occupies`) |
+| `sandbox_operator_queue_depth` | Gauge | — | environments queued for a slot (`scheduler.IsCandidate`) |
+| `sandbox_operator_queue_wait_seconds` | Histogram | — | time queued before a slot was granted |
+| `sandbox_operator_freeze_duration_seconds` | Histogram | — | freeze-hook-to-published-snapshot duration |
+| `sandbox_operator_wake_duration_seconds` | Histogram | `source` (`warm`/`cold`/`unknown`) | wake-restore duration, by warm-cache hit or cold download |
+| `sandbox_operator_snapshot_size_bytes` | Histogram | — | published freeze snapshot size, uncompressed |
+| `sandbox_operator_probe_evaluations_total` | Counter | `type`, `result` | wait-probe evaluations, by wait type and outcome (`satisfied`/`pending`/`error`/`skipped`) |
+| `sandbox_operator_archives_total` | Counter | `result` (`succeeded`/`failed`/`skipped`) | terminal archive outcomes |
+| `sandbox_operator_reconcile_errors_total` | Counter | `controller` | errors from a reconcile or control-loop pass, by controller/`Runnable` |
+| `sandbox_operator_warm_cache_reclaimed_total` | Counter | — | workspace PVCs reclaimed by the warm-cache TTL GC |
+| `sandbox_operator_retention_deleted_total` | Counter | `sweep` (`retention`/`orphan`) | storage roots deleted by retention GC |
+
+**`archives_total`'s honest limitation.** The primary reconciler does not
+`.Owns(&batchv1.Job{})` (see the child-resources note above), so an archive
+Job's own failure is invisible except via the operator's dispatch-side
+checks: `succeeded` is the `Archived` condition flipping `True`; `failed` is
+`ensureArchiveJob` returning an error, one of its "not resolvable/
+computable/renderable" soft-fail branches, or the escape-hatch path; `skipped`
+is `archive()`'s no-op for a `nil`/non-`S3` class. `failed` therefore
+increments **once per reconcile** an archive stays broken, not once per
+distinct failure — the counter's rate, not a single crossing, is the signal
+to alert on.
+
+**The gauge/counter split.** `internal/controller/metricscollector.go`'s
+`MetricsCollector` recomputes the four gauges above periodically
+(`--metrics-collect-interval`, default 15s, valid 1s–5m) from one **cached**
+List — the only `manager.Runnable` in this codebase whose
+`NeedLeaderElection()` returns `false`, deliberately: every replica must keep
+its own `/metrics` endpoint's gauges live, not just the leader's (see that
+file's doc comment for why leader-electing it would be wrong, not merely
+different). Every other metric is a point-in-time observation recorded
+exactly where the thing happens — `slotscheduler.go`'s grant, the status-write
+transition hook, `probe.go`'s `Evaluate`, `archive.go`, and each GC loop's
+pass completion.
+
+**Kubernetes Events.** The reconciler's status-write path
+(`internal/controller/events.go`'s `observeTransition`, called from
+`status.go`'s `writeStatus` right after a successful `Status().Update` —
+never from `actions.go`, which re-issues every reconcile and is not
+exactly-once) emits one `Event` per meaningful phase/condition transition:
+`SlotGranted` (from `slotscheduler.go`'s own grant — the one Event this issue
+emits outside the status-write hook, since granting is decided there, not in
+`Reconcile`), `Starting`/`Waking` (cold start vs. resuming from a snapshot),
+`Started`, `Freezing`/`Frozen`/`SnapshotFailed`, `WaitSatisfied`,
+`Completed`/`Failed`, `Archived`. Every Event is also logged at `V(1)` for
+free by controller-runtime's own recorder provider. RBAC needed a new
+marker: `mgr.GetEventRecorder` sinks through controller-runtime's
+`events.EventBroadcaster`, which talks to the `events.k8s.io/v1` API, not
+the legacy core `""`-group `events` resource the pre-#33 `ClusterRole`
+already granted — both markers are present now (`make manifests` merged them
+into one `role.yaml` rule with two `apiGroups`).
+
+**Structured logging.** `internal/controller/logkeys.go` states the
+verbosity convention this whole package follows: `Error` is an actionable
+failure; `V(0)`/`Info` is rare, significant, and irreversible (process
+start/stop, permanent storage deletion — `retentiongc.go`'s own
+deletion/dry-run lines are exactly that, and #33 leaves their verbosity
+untouched); `V(1)` is per-reconcile/per-pass detail, including the one new
+phase-transition line the status-write hook adds. #33 adds **no** new `V(0)`
+output — new default-verbosity signal comes from Events, not logs. The
+verbosity a shipped binary actually emits at was, before #33, silently stuck
+at `V(0)` regardless of any `-v`-shaped flag: `cmd/main.go` hardcoded
+`slog.NewJSONHandler(os.Stderr, nil)`, and logr's slog bridge maps `V(n)` to
+`slog.Level(-n)` — `nil` options default to `slog.LevelInfo`, so every
+`log.V(1)` line in the repository was unreachable in production. The new
+`--log-verbosity` flag (`LOG_VERBOSITY` env, default 0, valid 0–4) now
+actually reaches the handler.
+
 ### `make manifests` / `make generate`: `hack/tools`
 
 Unlike `go install pkg@version`, a Go **module**'s own `go.mod` requires
