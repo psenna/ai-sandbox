@@ -44,6 +44,11 @@ patches:
           - --retention-gc-interval=5s
           - --retention-ttl=2m
           - --sidecar-image=ai-sandbox-operator:e2e
+          # #33: 2s (not the 15s default) so a metrics e2e spec can observe a
+          # freshly-recomputed gauge (slots_used/queue_depth/environments)
+          # within a test-viable window after driving a state change,
+          # instead of waiting up to 15s for the next collection pass.
+          - --metrics-collect-interval=2s
       - op: add
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent

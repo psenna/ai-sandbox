@@ -1,0 +1,22 @@
+# metrics_service.yaml exposes the manager's existing /metrics listener
+# (internal/config.Config.MetricsAddr, already unauthenticated -- see #33's
+# design record §0.1) as a stable ClusterIP Service, so a ServiceMonitor
+# (config/prometheus/monitor.yaml) or any other in-cluster scraper has a
+# name to target instead of a Pod IP. This adds no new server and no new
+# port: containerPort 8080 already exists on manager.yaml's Deployment.
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller-manager-metrics-service
+  namespace: system
+  labels:
+    app.kubernetes.io/name: ai-sandbox-operator
+    control-plane: controller-manager
+spec:
+  selector:
+    control-plane: controller-manager
+  ports:
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: metrics
