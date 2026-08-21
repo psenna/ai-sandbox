@@ -267,12 +267,12 @@ func (r *Reconciler) deleteOwnedChild(ctx context.Context, env *v1alpha1.Sandbox
 	key := client.ObjectKey{Namespace: env.Namespace, Name: name}
 	if err := r.Get(ctx, key, obj); err != nil {
 		if !apierrors.IsNotFound(err) {
-			log.V(1).Info("delete check failed", "kind", kind, "name", name, "error", err)
+			log.V(1).Info("delete check failed", LogKeyChildKind, kind, LogKeyChildName, name, "error", err.Error())
 		}
 		return
 	}
 	if !ownedByEnv(obj, env) {
-		log.V(1).Info("skipping delete: object is not owned by this environment", "kind", kind, "name", name)
+		log.V(1).Info("skipping delete: object is not owned by this environment", LogKeyChildKind, kind, LogKeyChildName, name)
 		return
 	}
 	if !obj.GetDeletionTimestamp().IsZero() {
@@ -280,7 +280,7 @@ func (r *Reconciler) deleteOwnedChild(ctx context.Context, env *v1alpha1.Sandbox
 	}
 	uid := obj.GetUID()
 	if err := r.Delete(ctx, obj, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
-		log.V(1).Info("delete failed", "kind", kind, "name", name, "error", err)
+		log.V(1).Info("delete failed", LogKeyChildKind, kind, LogKeyChildName, name, "error", err.Error())
 	}
 }
 
@@ -308,7 +308,7 @@ func (r *Reconciler) applyOne(ctx context.Context, env *v1alpha1.SandboxEnvironm
 	switch {
 	case err == nil:
 		if !ownedByEnv(existing, env) {
-			log.V(1).Info("skipping apply: existing object is not owned by this environment", "kind", kind, "name", key.Name)
+			log.V(1).Info("skipping apply: existing object is not owned by this environment", LogKeyChildKind, kind, LogKeyChildName, key.Name)
 			return nil
 		}
 	case apierrors.IsNotFound(err):
@@ -319,7 +319,7 @@ func (r *Reconciler) applyOne(ctx context.Context, env *v1alpha1.SandboxEnvironm
 
 	if err := r.Apply(ctx, ac, client.FieldOwner(fieldManager), client.ForceOwnership); err != nil {
 		if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) {
-			log.V(1).Info("child resource apply rejected (permanent, e.g. immutable field)", "kind", kind, "name", key.Name)
+			log.V(1).Info("child resource apply rejected (permanent, e.g. immutable field)", LogKeyChildKind, kind, LogKeyChildName, key.Name)
 			return nil
 		}
 		return fmt.Errorf("applying %s %s: %w", kind, key.Name, err)

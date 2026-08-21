@@ -201,7 +201,7 @@ func (r *Reconciler) observeResources(ctx context.Context, env *v1alpha1.Sandbox
 func (r *Reconciler) observeQueuePosition(ctx context.Context, env *v1alpha1.SandboxEnvironment, f *lifecycle.ClusterFacts) {
 	var list v1alpha1.SandboxEnvironmentList
 	if err := r.List(ctx, &list, client.InNamespace(r.WatchNamespace)); err != nil {
-		ctrl.LoggerFrom(ctx).V(1).Info("queue position unavailable", "error", err)
+		ctrl.LoggerFrom(ctx).V(1).Info("queue position unavailable", "error", err.Error())
 		return
 	}
 	_, candidates := scheduler.Partition(list.Items)

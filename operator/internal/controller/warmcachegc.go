@@ -160,7 +160,7 @@ func (g *WarmCacheGC) RunOnce(ctx context.Context) (GCStats, error) {
 		stats.Eligible++
 		if err := g.reclaim(ctx, env, class, now, &stats); err != nil {
 			stats.Errors++
-			ctrl.LoggerFrom(ctx).V(1).Info("warm-cache reclaim failed", "env", env.Name, "namespace", env.Namespace, "error", err.Error())
+			ctrl.LoggerFrom(ctx).V(1).Info("warm-cache reclaim failed", LogKeyEnvironment, env.Name, LogKeyNamespace, env.Namespace, "error", err.Error())
 		}
 	}
 	stats.Duration = g.now().Sub(start)

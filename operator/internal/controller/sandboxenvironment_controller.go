@@ -166,12 +166,17 @@ func (r *Reconciler) resolveClass(ctx context.Context, env *v1alpha1.SandboxEnvi
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := ctrl.LoggerFrom(ctx)
-
 	var env v1alpha1.SandboxEnvironment
 	if err := r.Get(ctx, req.NamespacedName, &env); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// Enrich the context logger once, right after the successful Get, so
+	// every downstream call in this reconcile (performActions, writeStatus,
+	// the observers) inherits uid/phase without repeating them (#33). See
+	// logkeys.go's envLogValues for why namespace/name are deliberately NOT
+	// duplicated here.
+	log := logForEnv(ctx, &env)
+	ctx = ctrl.LoggerInto(ctx, log)
 	if !env.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, &env)
 	}

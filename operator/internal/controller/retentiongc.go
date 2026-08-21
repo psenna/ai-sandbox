@@ -212,24 +212,24 @@ func (g *RetentionGC) sweepRetention(ctx context.Context, log logr.Logger, backe
 		})
 		if err != nil {
 			stats.Errors++
-			log.V(1).Info("layout unbuildable", "environment", e.Namespace+"/"+e.Name, "error", err.Error())
+			log.V(1).Info("layout unbuildable", LogKeyNamespace, e.Namespace, LogKeyEnvironment, e.Name, "error", err.Error())
 			continue
 		}
 		root := layout.Root()
 		if g.DryRun {
 			stats.WouldDelete++
-			log.Info("retention gc dry-run: would delete archive", "uri", arc.URI, "environment", e.Namespace+"/"+e.Name,
+			log.Info("retention gc dry-run: would delete archive", "uri", arc.URI, LogKeyNamespace, e.Namespace, LogKeyEnvironment, e.Name,
 				"finishedAt", arc.FinishedAt.Time, "age", age)
 			continue
 		}
 		n, err := backend.DeletePrefix(ctx, root)
 		if err != nil {
 			stats.Errors++
-			log.V(1).Info("retention delete failed", "environment", e.Namespace+"/"+e.Name, "root", root, "error", err.Error())
+			log.V(1).Info("retention delete failed", LogKeyNamespace, e.Namespace, LogKeyEnvironment, e.Name, "root", root, "error", err.Error())
 			continue
 		}
 		stats.Deleted++
-		log.Info("retention gc: deleted archive", "uri", arc.URI, "environment", e.Namespace+"/"+e.Name,
+		log.Info("retention gc: deleted archive", "uri", arc.URI, LogKeyNamespace, e.Namespace, LogKeyEnvironment, e.Name,
 			"finishedAt", arc.FinishedAt.Time, "age", age, "objects", n)
 	}
 }

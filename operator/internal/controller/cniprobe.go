@@ -352,11 +352,11 @@ func probeCleanup(ctx context.Context, c client.Client, namespace string) {
 	for _, name := range []string{"cni-probe-server", "cni-probe-baseline", "cni-probe-deny"} {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
 		if err := c.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
-			ctrl.LoggerFrom(ctx).V(1).Info("cni probe cleanup: pod delete failed", "name", name, "error", err)
+			ctrl.LoggerFrom(ctx).V(1).Info("cni probe cleanup: pod delete failed", LogKeyChildName, name, "error", err.Error())
 		}
 	}
 	np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "cni-probe-deny", Namespace: namespace}}
 	if err := c.Delete(ctx, np); err != nil && !apierrors.IsNotFound(err) {
-		ctrl.LoggerFrom(ctx).V(1).Info("cni probe cleanup: networkpolicy delete failed", "error", err)
+		ctrl.LoggerFrom(ctx).V(1).Info("cni probe cleanup: networkpolicy delete failed", "error", err.Error())
 	}
 }
