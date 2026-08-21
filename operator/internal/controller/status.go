@@ -74,7 +74,17 @@ func (r *Reconciler) writeStatus(ctx context.Context, env *v1alpha1.SandboxEnvir
 		if apiequality.Semantic.DeepEqual(&fresh.Status, desired) {
 			return nil // idempotent: nothing changed, no update issued
 		}
+		// prevStatus is captured here, not outside the retry closure: only
+		// the attempt that actually succeeds may observe a transition, and
+		// on a genuine conflict retry, fresh (and therefore prevStatus) is
+		// re-read from the server each time -- observeTransition must never
+		// compare against a status a different writer has since superseded.
+		prevStatus := fresh.Status.DeepCopy()
 		fresh.Status = *desired
-		return r.Status().Update(ctx, fresh)
+		if err := r.Status().Update(ctx, fresh); err != nil {
+			return err
+		}
+		r.observeTransition(ctx, fresh, prevStatus, desired)
+		return nil
 	})
 }
