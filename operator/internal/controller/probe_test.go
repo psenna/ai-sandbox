@@ -14,6 +14,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
 	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
@@ -699,6 +700,78 @@ func TestObserveProbe(t *testing.T) {
 		}
 		if f.ProbeAttempt == nil || f.ProbeAttempt.Attempts != 1 {
 			t.Errorf("ProbeAttempt = %+v, want Attempts=1", f.ProbeAttempt)
+		}
+	})
+}
+
+// TestProbeEvaluator_RecordsProbeEvaluationsTotal drives Evaluate across
+// every metrics.Result* outcome -- skipped (the backoff early return),
+// satisfied, pending, and error -- asserting probe_evaluations_total{type,
+// result} lands on the EXPLICIT per-evaluation outcome, not a value read
+// back from attempt.LastResult (which the error branch can downgrade to
+// "pending" while still within the retry budget -- see probe.go's
+// Evaluate).
+func TestProbeEvaluator_RecordsProbeEvaluationsTotal(t *testing.T) {
+	now := probeFixedNow
+
+	t.Run("skipped: backoff window", func(t *testing.T) {
+		m := metrics.New()
+		ev := &ProbeEvaluator{Clock: func() time.Time { return now }, Metrics: m}
+		env := probeEnv(gitProxyWait("refs/heads/feat/x"))
+		future := metav1.NewTime(now.Add(time.Minute))
+		env.Status.ProbeAttempt = &v1alpha1.ProbeAttemptStatus{Type: v1alpha1.WaitTypeGitProxyCheck, NextEligibleAt: &future}
+
+		if _, _, err := ev.Evaluate(context.Background(), env, gitProxyClass("http://example.invalid"), probeCreds()); err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		reg := newTestRegistry(t, m)
+		if n := mustMetricValue(t, reg, "sandbox_operator_probe_evaluations_total", map[string]string{"type": v1alpha1.WaitTypeGitProxyCheck, "result": metrics.ResultSkipped}); n != 1 {
+			t.Errorf("probe_evaluations_total{type=GitProxyCheck,result=skipped} = %v, want 1", n)
+		}
+	})
+
+	t.Run("satisfied: NotBefore already elapsed", func(t *testing.T) {
+		m := metrics.New()
+		ev := &ProbeEvaluator{Clock: func() time.Time { return now }, Metrics: m}
+		w := &v1alpha1.WaitForStatus{Type: v1alpha1.WaitTypeNotBefore, Params: map[string]string{"time": now.Add(-time.Minute).Format(time.RFC3339)}}
+		env := probeEnv(w)
+
+		if _, _, err := ev.Evaluate(context.Background(), env, nil, probeCreds()); err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		reg := newTestRegistry(t, m)
+		if n := mustMetricValue(t, reg, "sandbox_operator_probe_evaluations_total", map[string]string{"type": v1alpha1.WaitTypeNotBefore, "result": metrics.ResultSatisfied}); n != 1 {
+			t.Errorf("probe_evaluations_total{type=NotBefore,result=satisfied} = %v, want 1", n)
+		}
+	})
+
+	t.Run("pending: NotBefore not yet elapsed", func(t *testing.T) {
+		m := metrics.New()
+		ev := &ProbeEvaluator{Clock: func() time.Time { return now }, Metrics: m}
+		w := &v1alpha1.WaitForStatus{Type: v1alpha1.WaitTypeNotBefore, Params: map[string]string{"time": now.Add(time.Minute).Format(time.RFC3339)}}
+		env := probeEnv(w)
+
+		if _, _, err := ev.Evaluate(context.Background(), env, nil, probeCreds()); err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		reg := newTestRegistry(t, m)
+		if n := mustMetricValue(t, reg, "sandbox_operator_probe_evaluations_total", map[string]string{"type": v1alpha1.WaitTypeNotBefore, "result": metrics.ResultPending}); n != 1 {
+			t.Errorf("probe_evaluations_total{type=NotBefore,result=pending} = %v, want 1", n)
+		}
+	})
+
+	t.Run("error: GitProxyCheck with no gitProxy service on the class", func(t *testing.T) {
+		m := metrics.New()
+		ev := &ProbeEvaluator{Clock: func() time.Time { return now }, Metrics: m}
+		env := probeEnv(gitProxyWait("refs/heads/feat/x"))
+		class := &v1alpha1.SandboxClass{} // no Services.GitProxy -> unevaluatable
+
+		if _, _, err := ev.Evaluate(context.Background(), env, class, probeCreds()); err != nil {
+			t.Fatalf("Evaluate: %v", err)
+		}
+		reg := newTestRegistry(t, m)
+		if n := mustMetricValue(t, reg, "sandbox_operator_probe_evaluations_total", map[string]string{"type": v1alpha1.WaitTypeGitProxyCheck, "result": metrics.ResultError}); n != 1 {
+			t.Errorf("probe_evaluations_total{type=GitProxyCheck,result=error} = %v, want 1", n)
 		}
 	})
 }

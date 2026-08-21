@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/scheduler"
 )
 
@@ -580,4 +582,34 @@ func TestSlotScheduler_OnPassReportsStats(t *testing.T) {
 	if waited != 3*time.Minute {
 		t.Errorf("env-a Waited = %v, want 3m (GrantedAt - QueuedSince)", waited)
 	}
+}
+
+// TestSlotScheduler_RecordsQueueWaitAndSlotGrantedEvent extends the same
+// fixture shape as TestSlotScheduler_OnPassReportsStats with Metrics/
+// Recorder wired (#33), asserting the queue_wait_seconds observation and
+// the SlotGranted Event that a real grant produces.
+func TestSlotScheduler_RecordsQueueWaitAndSlotGrantedEvent(t *testing.T) {
+	mustCreateClass(t)
+	ns := testNamespace(t)
+	queuedAt := fixedStart.Add(-3 * time.Minute)
+	mustCreateEnvIn(t, ns, "env-a", 10)
+	mustSetPhase(t, types.NamespacedName{Namespace: ns, Name: "env-a"}, sandboxv1alpha1.PhaseReady, false, queuedAt)
+
+	clk := newFakeClock(fixedStart)
+	s := newSlotScheduler(t, 1, clk)
+	s.Namespace = ns
+	m := metrics.New()
+	s.Metrics = m
+	capture := newEventCapture()
+	s.Recorder = capture
+
+	s.runAndLog(ctx, logr.Discard())
+
+	reg := newTestRegistry(t, m)
+	if n := mustMetricValue(t, reg, "sandbox_operator_queue_wait_seconds", nil); n != 1 {
+		t.Errorf("queue_wait_seconds sample count = %v, want 1", n)
+	}
+
+	got := requireOneEvent(t, capture, ReasonSlotGranted)
+	assertEvent(t, got, corev1.EventTypeNormal, "Schedule", "3m0s", "in the queue")
 }

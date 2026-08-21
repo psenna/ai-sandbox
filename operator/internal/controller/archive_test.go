@@ -16,6 +16,7 @@ import (
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
 )
 
@@ -350,4 +351,68 @@ func TestReconcileDelete_TransientClassError_HoldsFinalizer(t *testing.T) {
 	}
 	assertEnvStillPresent(t, key)
 	assertNoArchiveJob(t, env.Namespace, render.ChildNames(env.Name).ArchiveJob)
+}
+
+// TestArchive_RecordsArchivesTotal_Skipped drives archive() directly (the
+// ActionArchive handler) for a nil class -- the "unresolvable class"
+// no-op path -- and asserts archives_total{result=skipped} (#33).
+func TestArchive_RecordsArchivesTotal_Skipped(t *testing.T) {
+	env := mustCreateEnv(t, "archive-skipped")
+	m := metrics.New()
+	r := newReconciler(t, newFakeClock(fixedStart), newFactsStore())
+	r.Metrics = m
+
+	if err := r.archive(ctx, env, nil); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	reg := newTestRegistry(t, m)
+	if n := mustMetricValue(t, reg, "sandbox_operator_archives_total", map[string]string{"result": metrics.ResultSkipped}); n != 1 {
+		t.Errorf("archives_total{result=skipped} = %v, want 1", n)
+	}
+}
+
+// TestArchive_RecordsArchivesTotal_Failed drives archive() directly for an
+// S3-backed class whose credentials Secret does not exist, exercising
+// ensureArchiveJob's "credentials not resolvable" soft-fail branch, and
+// asserts archives_total{result=failed} (#33).
+func TestArchive_RecordsArchivesTotal_Failed(t *testing.T) {
+	class := &sandboxv1alpha1.SandboxClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "archive-failed-class"},
+		Spec: sandboxv1alpha1.SandboxClassSpec{
+			Agent: sandboxv1alpha1.AgentSpec{Image: "ghcr.io/psenna/ai-sandbox-agent:v1"},
+			Storage: sandboxv1alpha1.StorageSpec{
+				Backend: sandboxv1alpha1.BackendSpec{
+					Type: sandboxv1alpha1.StorageBackendTypeS3,
+					S3: &sandboxv1alpha1.S3Backend{
+						Endpoint: "https://s3.example.com",
+						Bucket:   "sandbox-snapshots",
+						CredentialsSecretRef: sandboxv1alpha1.SecretKeyRef{
+							Name: "does-not-exist",
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := k8s.Create(ctx, class); err != nil {
+		t.Fatalf("creating SandboxClass: %v", err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(ctx, class) })
+
+	ns := testNamespace(t)
+	env := mustCreateEnvInWithClass(t, ns, "archive-failed-env", class.Name, 0)
+
+	m := metrics.New()
+	r := newReconciler(t, newFakeClock(fixedStart), newFactsStore())
+	r.Metrics = m
+
+	if err := r.archive(ctx, env, class); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	reg := newTestRegistry(t, m)
+	if n := mustMetricValue(t, reg, "sandbox_operator_archives_total", map[string]string{"result": metrics.ResultFailed}); n != 1 {
+		t.Errorf("archives_total{result=failed} = %v, want 1", n)
+	}
 }

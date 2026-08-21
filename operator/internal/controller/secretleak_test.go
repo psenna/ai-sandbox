@@ -55,6 +55,15 @@ func TestNoSecretLeak_LogsEventsStatusConfigMap(t *testing.T) {
 		t.Errorf("sentinel token leaked into captured logs:\n%s", capture.String())
 	}
 
+	// #33: r.Recorder is now a wired eventCapture (suite_test.go's
+	// newResourceReconciler), so this assertion is no longer vacuous the
+	// way the plan's research found it to be before -- a nil Recorder made
+	// every Eventf call site (warnIfNetworkNotEnforced, the archive escape
+	// hatch, and now observeTransition's whole Event table) a silent no-op.
+	if ec, ok := r.Recorder.(*eventCapture); ok && ec.Contains(sentinelToken) {
+		t.Errorf("sentinel token leaked into a captured Event:\n%s", ec.String())
+	}
+
 	for _, ns := range []string{env.Namespace, classSecretNS} {
 		var events corev1.EventList
 		if err := k8s.List(ctx, &events, client.InNamespace(ns)); err != nil {
@@ -160,6 +169,10 @@ func TestNoSecretLeak_S3SnapshotCredentialsOnlyInSnapshotSecret(t *testing.T) {
 
 	if capture.Contains(s3SentinelSecretAccessKey) {
 		t.Errorf("s3 sentinel leaked into captured logs:\n%s", capture.String())
+	}
+
+	if ec, ok := r.Recorder.(*eventCapture); ok && ec.Contains(s3SentinelSecretAccessKey) {
+		t.Errorf("s3 sentinel leaked into a captured Event:\n%s", ec.String())
 	}
 
 	for _, ns := range []string{env.Namespace, classSecretNS} {

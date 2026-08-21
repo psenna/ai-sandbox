@@ -166,6 +166,13 @@ func newResourceReconciler(t *testing.T, clk *fakeClock) *Reconciler {
 		ClassSecretNamespace: "default",
 		ClusterID:            "test",
 		SidecarImage:         "ai-sandbox-operator:test",
+		// Recorder is an eventCapture (eventcapture_test.go), not nil (#33):
+		// secretleak_test.go's Event-half assertions were vacuous before this
+		// -- a nil Recorder makes every Eventf call site a silent no-op, so
+		// there was never anything for those assertions to actually find. A
+		// test that wants to inspect what was captured type-asserts
+		// r.Recorder.(*eventCapture).
+		Recorder: newEventCapture(),
 	}
 	r.Observe = r.observeCluster
 	return r
