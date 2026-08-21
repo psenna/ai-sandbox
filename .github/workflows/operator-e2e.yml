@@ -63,11 +63,13 @@ jobs:
     name: kind e2e
     needs: matrix
     runs-on: ubuntu-latest
-    # e2e-up (~3m) + e2e-run (ginkgo --timeout=32m, see operator/Makefile
-    # E2E_TIMEOUT) + e2e-collect/e2e-down (~1m). Raised from 35 (which was
-    # itself raised from 25 for the same reason) to keep the job step
-    # timeout ahead of #33's raised ginkgo suite timeout.
-    timeout-minutes: 40
+    # e2e-up (~3m) + e2e-run (ginkgo --timeout=40m via the "e2e run" step's
+    # own E2E_TIMEOUT=40m override -- see that step's comment on why this CI
+    # job runs at E2E_PROCS=2, not the Makefile's E2E_TIMEOUT=32m local-dev
+    # default) + e2e-collect/e2e-down (~1m). Raised from 40 (itself raised
+    # from 35, itself raised from 25, each time for the same reason: keep
+    # the job step timeout ahead of the ginkgo suite timeout).
+    timeout-minutes: 48
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +101,18 @@ jobs:
         run: make IN_CONTAINER=1 E2E_BIN_DIR=$PWD/.e2e-bin E2E_KUBECONFIG=$PWD/.e2e-kubeconfig e2e-up
 
       - name: e2e run
-        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig e2e-run
+        # E2E_PROCS=2, not the Makefile's local-dev default of 4: ubuntu-latest
+        # is a 2-vCPU runner, so 4 parallel ginkgo processes each managing
+        # their own pods/reconciles against one shared kind cluster
+        # oversubscribes it -- observed directly on #33's PR (a plain-run env
+        # got stuck in Freezing for the full 300s phase timeout and never
+        # completed its terminal archive, while a sibling process's identical
+        # archive detour completed fine in the same run -- i.e. contention-
+        # dependent, not a deterministic bug). 2 matches the actual core
+        # count. E2E_TIMEOUT is raised accordingly: less parallelism means a
+        # longer wall-clock total even though each individual spec sees less
+        # contention and is less likely to itself stall.
+        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig E2E_PROCS=2 E2E_TIMEOUT=40m e2e-run
 
       - name: e2e collect (diagnostics)
         if: always()
