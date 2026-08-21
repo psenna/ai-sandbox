@@ -92,19 +92,26 @@ var _ = Describe("operator metrics", func() {
 		class := h.CreateClass(ctx)
 		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
 			"SCRIPT:write hello.txt world",
+			// This spec (unlike every other freeze/wait spec, which uses
+			// "1h" and force-clears via h.ClearWaitFor) lets a short wait
+			// elapse and satisfy itself for real -- it cares about the
+			// probe_evaluations_total{result="satisfied"} metric, which only
+			// records on a real evaluation, not on the wait being
+			// force-cleared out from under it. h.WaitForWakeCount below (not
+			// an intermediate h.WaitForPhase(Waiting) poll) is what proves
+			// the freeze/wake cycle actually happened: WakeCount increments
+			// only on Restoring->Running with a non-nil snapshot (next.go),
+			// so it cannot be satisfied any other way. A phase poll here
+			// would race -- a short enough NotBefore can let the environment
+			// pass all the way through Waiting to Done between two 2s polls.
 			`SCRIPT:unless-file /workspace/.sandbox/last-wake.json SCRIPT:sandbox-wait {"type":"NotBefore","reason":"e2e metrics test","params":{"duration":"5s"}}`,
 			"SCRIPT:unless-file /workspace/.sandbox/last-wake.json SCRIPT:sleep 300",
 			"SCRIPT:if-file /workspace/.sandbox/last-wake.json SCRIPT:sandbox-done success resumed",
 		))
 		key := client.ObjectKey{Namespace: ns, Name: env.Name}
 
-		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseWaiting, h.Cfg.PhaseTimeout)
-		// The 5s NotBefore wait is left to elapse and satisfy itself (no
-		// h.ClearWaitFor race needed -- this spec cares about the probe
-		// evaluation metric, which only records on a real evaluation, not on
-		// the wait being force-cleared out from under it).
-		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseRunning, h.Cfg.PhaseTimeout)
 		h.WaitForWakeCount(ctx, key, 1)
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
 		h.ExpectAgentExitCode(ctx, key, 0)
 
 		Eventually(func() (float64, error) {
@@ -185,22 +192,47 @@ var _ = Describe("operator metrics", func() {
 
 	It("runs an environment to completion and records the full plain-run Event reason set with secret-free messages", func() {
 		class := h.CreateClass(ctx)
-		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sandbox-done success ok"))
+		// A brief sleep before sandbox-done, not an immediate one: Started
+		// fires only on the Restoring->Running transition (nextRestoring,
+		// gated on the pod being observed Running+Ready), and
+		// agentOrPodTerminal's own doc comment notes a fast-enough agent can
+		// report /v1/done before the controller ever observes the pod ready,
+		// skipping straight from Restoring to Done and never firing Started.
+		// This is correct, common production behavior for a truly
+		// instantaneous script -- not a bug -- so the fix belongs in this
+		// spec's fixture, not in the state machine.
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 2", "SCRIPT:sandbox-done success ok"))
 		key := client.ObjectKey{Namespace: ns, Name: env.Name}
 
 		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
 		final := h.GetEnv(ctx, key)
 
-		var eventsList corev1.EventList
-		Expect(h.Client.List(ctx, &eventsList, client.InNamespace(ns))).To(Succeed())
-
+		// The event broadcaster (client-go/tools/events) delivers Eventf calls
+		// through a buffered channel and an async flush loop, so an Event that
+		// was emitted the instant the environment reached Done is not
+		// guaranteed to be visible to a List issued immediately after --
+		// Eventually, not a single point-in-time List, is required.
 		byReason := map[string]corev1.Event{}
-		for _, e := range eventsList.Items {
-			if e.InvolvedObject.UID != final.UID {
-				continue
+		Eventually(func() bool {
+			var eventsList corev1.EventList
+			if err := h.Client.List(ctx, &eventsList, client.InNamespace(ns)); err != nil {
+				return false
 			}
-			byReason[e.Reason] = e
-		}
+			byReason = map[string]corev1.Event{}
+			for _, e := range eventsList.Items {
+				if e.InvolvedObject.UID != final.UID {
+					continue
+				}
+				byReason[e.Reason] = e
+			}
+			for _, reason := range expectedEventReasonsPlainRun {
+				if _, ok := byReason[reason]; !ok {
+					return false
+				}
+			}
+			return true
+		}, h.Cfg.PhaseTimeout, h.Cfg.Poll).Should(BeTrue(),
+			"environment %s/%s never accumulated all expected Event reasons %v (have %v)", ns, env.Name, expectedEventReasonsPlainRun, byReason)
 
 		for _, reason := range expectedEventReasonsPlainRun {
 			e, ok := byReason[reason]

@@ -207,13 +207,23 @@ func MetricHelp(families map[string]*MetricFamily, name string) (string, bool) {
 	return f.Help, true
 }
 
-// MetricValue returns the value of the sample in family name whose label
-// set matches labels exactly (nil/empty matches an unlabeled sample), and
-// whether one was found. For a histogram/counter, pass name with the
-// "_count" suffix to read how many observations landed (SampleCount is a
-// convenience wrapper for exactly that).
+// MetricValue returns the value of the sample named exactly name (which may
+// carry a "_bucket"/"_sum"/"_count" suffix for a histogram) whose label set
+// matches labels exactly (nil/empty matches an unlabeled sample), and
+// whether one was found. ParsePromText files every "_bucket"/"_sum"/"_count"
+// sample under its BASE family name (see its own doc comment), so a
+// histogram's "_count" sample is looked up inside families[name] -- the base
+// family -- never under a families[name+"_count"] key, which ParsePromText
+// never creates.
 func MetricValue(families map[string]*MetricFamily, name string, labels map[string]string) (float64, bool) {
-	f, ok := families[name]
+	base := name
+	for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+		if strings.HasSuffix(name, suffix) {
+			base = strings.TrimSuffix(name, suffix)
+			break
+		}
+	}
+	f, ok := families[base]
 	if !ok {
 		return 0, false
 	}
