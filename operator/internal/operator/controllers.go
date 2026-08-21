@@ -22,13 +22,19 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 	// leader-elected Runnable goroutine. A nil Load (before the first pass
 	// completes) routes the CNIEnforcement condition to Unknown.
 	cniResult := &atomic.Pointer[controller.CNIProbeResult]{}
+	// Built through the constructor, not a bare struct literal: today
+	// NewProbeEvaluator returns the zero value (every ProbeEvaluator field
+	// is lazily defaulted by its own accessor), but a literal here would
+	// silently stop picking up any default the constructor grows later.
+	probes := controller.NewProbeEvaluator()
+	probes.Metrics = metrics.Default
 	if err := (&controller.Reconciler{
 		Client:               mgr.GetClient(),
 		ClassSecretNamespace: cfg.ClassSecretNamespace,
 		ClusterID:            cfg.ClusterID,
 		WatchNamespace:       cfg.WatchNamespace,
 		SidecarImage:         cfg.SidecarImage,
-		Probes:               &controller.ProbeEvaluator{Metrics: metrics.Default},
+		Probes:               probes,
 		Recorder:             mgr.GetEventRecorder("ai-sandbox-operator"),
 		OperatorIngressLabel: cfg.OperatorIngressLabel,
 		CNI:                  cniResult,

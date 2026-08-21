@@ -171,11 +171,17 @@ func TestObserveTransition_EventTable(t *testing.T) {
 		}
 	})
 
+	// prev carries no finishedAt and next does, exactly as
+	// lifecycle.terminalOutcome's set-once SetFinishedAt produces on the
+	// completion write -- the guard in observeTransition reads prev, so a
+	// fixture that stamped both would silently stop exercising this row.
 	t.Run("Completed: *->Done", func(t *testing.T) {
 		r, capture, _ := newObserveTransitionFixture()
+		finished := metav1.Now()
 		prev := &sandboxv1alpha1.SandboxEnvironmentStatus{Phase: sandboxv1alpha1.PhaseRunning}
 		next := &sandboxv1alpha1.SandboxEnvironmentStatus{
 			Phase:      sandboxv1alpha1.PhaseDone,
+			FinishedAt: &finished,
 			Conditions: []metav1.Condition{condition(lifecycle.ConditionReady, metav1.ConditionFalse, lifecycle.ReasonSucceeded, "")},
 		}
 		r.observeTransition(ctx, newTestEnv("e1"), prev, next)
@@ -186,15 +192,62 @@ func TestObserveTransition_EventTable(t *testing.T) {
 
 	t.Run("Failed: *->Failed", func(t *testing.T) {
 		r, capture, _ := newObserveTransitionFixture()
+		finished := metav1.Now()
 		prev := &sandboxv1alpha1.SandboxEnvironmentStatus{Phase: sandboxv1alpha1.PhaseRunning}
 		next := &sandboxv1alpha1.SandboxEnvironmentStatus{
 			Phase:      sandboxv1alpha1.PhaseFailed,
+			FinishedAt: &finished,
 			Conditions: []metav1.Condition{condition(lifecycle.ConditionReady, metav1.ConditionFalse, lifecycle.ReasonPodFailed, "container exited 1")},
 		}
 		r.observeTransition(ctx, newTestEnv("e1"), prev, next)
 
 		got := requireOneEvent(t, capture, ReasonFailed)
 		assertEvent(t, got, corev1.EventTypeWarning, "Complete", lifecycle.ReasonPodFailed, "container exited 1")
+	})
+
+	// The #32 freeze detour makes a terminal phase reachable TWICE for one
+	// run: Running -> Done (the completion) -> Freezing -> Waiting -> Done
+	// (nextWaiting's FinishedAt guard returning to status.terminalPhase).
+	// Only the first entry may emit Completed/Failed -- the detour return is
+	// bookkeeping, not a second completion. status.finishedAt is what tells
+	// them apart: nil on the completion write, already stamped on the
+	// return.
+	t.Run("Completed: does not re-fire on the freeze-detour return Waiting->Done", func(t *testing.T) {
+		r, capture, _ := newObserveTransitionFixture()
+		finished := metav1.Now()
+		prev := &sandboxv1alpha1.SandboxEnvironmentStatus{
+			Phase: sandboxv1alpha1.PhaseWaiting, FinishedAt: &finished,
+			TerminalPhase: sandboxv1alpha1.PhaseDone,
+			Conditions:    []metav1.Condition{condition(lifecycle.ConditionReady, metav1.ConditionFalse, lifecycle.ReasonSucceeded, "")},
+		}
+		next := &sandboxv1alpha1.SandboxEnvironmentStatus{
+			Phase: sandboxv1alpha1.PhaseDone, FinishedAt: &finished,
+			TerminalPhase: sandboxv1alpha1.PhaseDone,
+			Conditions:    []metav1.Condition{condition(lifecycle.ConditionReady, metav1.ConditionFalse, lifecycle.ReasonSucceeded, "")},
+		}
+		r.observeTransition(ctx, newTestEnv("e1"), prev, next)
+		if got := capture.ByReason(ReasonCompleted); len(got) != 0 {
+			t.Errorf("Completed re-fired on the freeze-detour return (the run already completed once): %+v", got)
+		}
+	})
+
+	t.Run("Failed: does not re-fire on the freeze-detour return Waiting->Failed", func(t *testing.T) {
+		r, capture, _ := newObserveTransitionFixture()
+		finished := metav1.Now()
+		prev := &sandboxv1alpha1.SandboxEnvironmentStatus{
+			Phase: sandboxv1alpha1.PhaseWaiting, FinishedAt: &finished,
+			TerminalPhase: sandboxv1alpha1.PhaseFailed,
+			Conditions:    []metav1.Condition{condition(lifecycle.ConditionReady, metav1.ConditionFalse, lifecycle.ReasonPodFailed, "container exited 1")},
+		}
+		next := &sandboxv1alpha1.SandboxEnvironmentStatus{
+			Phase: sandboxv1alpha1.PhaseFailed, FinishedAt: &finished,
+			TerminalPhase: sandboxv1alpha1.PhaseFailed,
+			Conditions:    []metav1.Condition{condition(lifecycle.ConditionReady, metav1.ConditionFalse, lifecycle.ReasonPodFailed, "container exited 1")},
+		}
+		r.observeTransition(ctx, newTestEnv("e1"), prev, next)
+		if got := capture.ByReason(ReasonFailed); len(got) != 0 {
+			t.Errorf("Failed re-fired on the freeze-detour return (the run already failed once): %+v", got)
+		}
 	})
 
 	t.Run("Archived: Archived condition becomes True, records archives_total succeeded", func(t *testing.T) {

@@ -103,11 +103,29 @@ func (r *Reconciler) observeTransition(ctx context.Context, obj *v1alpha1.Sandbo
 	if prevPhase == v1alpha1.PhaseRestoring && nextPhase != v1alpha1.PhaseRestoring {
 		r.observeWakeComplete(next)
 	}
-	// Completed/Failed fire once, on the fresh entry into a terminal phase --
-	// never on a settled terminal environment's later self-loop passes
-	// (terminal()'s own archive/detour bookkeeping), which carry the same
-	// phase on both prev and next.
-	if prevPhase != nextPhase && (nextPhase == v1alpha1.PhaseDone || nextPhase == v1alpha1.PhaseFailed) {
+	// Completed/Failed fire once, on the FRESH entry into a terminal phase.
+	// Two shapes must not re-fire them. The first is a settled terminal
+	// environment's later self-loop passes (terminal()'s own archive
+	// bookkeeping), which carry the same phase on both prev and next. The
+	// second is a genuine phase change and needs its own guard: the #32
+	// freeze detour's RETURN. A run that terminates with a live, never-
+	// snapshotted pod travels Done/Failed -> Freezing -> Waiting ->
+	// Done/Failed (terminal()'s detour out, nextWaiting's FinishedAt guard
+	// back), so the terminal phase is entered a SECOND time, from Waiting,
+	// for a completion whose Event already fired on the original
+	// Running/Restoring -> Done/Failed edge. That detour is the common path
+	// for any run that never froze, not a rare corner.
+	//
+	// prev.FinishedAt separates the two: lifecycle.Apply sets finishedAt
+	// set-once, on the very write that first records the run as finished,
+	// and every path that first enters a terminal phase (terminalOutcome,
+	// timeoutFired, nextWaiting's probe failure) is reachable only while
+	// status.finishedAt is still nil -- decide() routes an environment that
+	// already has one straight to dispatchPhase. So prev.FinishedAt == nil
+	// means "this write is the completion", and non-nil means "this is the
+	// detour coming back".
+	if prevPhase != nextPhase && prev.FinishedAt == nil &&
+		(nextPhase == v1alpha1.PhaseDone || nextPhase == v1alpha1.PhaseFailed) {
 		r.observeTerminal(obj, next, nextPhase)
 	}
 
