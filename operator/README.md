@@ -312,7 +312,7 @@ spec:
     prompt: |
       SCRIPT:echo hello from the sandbox
       SCRIPT:write REPORT.md the agent wrote this
-      SCRIPT:sandbox-done Succeeded wrote REPORT.md
+      SCRIPT:sandbox-done success wrote REPORT.md
       SCRIPT:exit 0
 EOF
 ```
@@ -339,11 +339,11 @@ Expect nine conditions, roughly:
 
 ```console
 Scheduled       True    Terminal
-PodReady        False   PodSucceeded
+PodReady        False   AgentReportedSuccess
 Frozen          False   NotFrozen
 WaitSatisfied   False   NoWaitDeclared
 Archived        True    ArchiveWritten
-Ready           False   Succeeded
+Ready           False   AgentReportedSuccess
 EngineSecurityRelaxed  False   NoRelaxation
 NetworkPosture         False   Open
 CNIEnforcement         Unknown Unconfirmed

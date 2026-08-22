@@ -432,8 +432,8 @@ condition(s) it can be set on.
 
 | Reason | On | Status | What it means | What to do |
 |---|---|---|---|---|
-| `AgentReportedSuccess` | PodReady, Ready | False (phase `Done`) | `POST /v1/done {"outcome":"Succeeded"}`. | — |
-| `AgentReportedFailure` | Ready | False (phase `Failed`) | `POST /v1/done {"outcome":"Failed"}`. Message is the agent's own text, truncated to 512 bytes. | Read the message, then the agent logs. |
+| `AgentReportedSuccess` | PodReady, Ready | False (phase `Done`) | `POST /v1/done {"outcome":"success"}`. | — |
+| `AgentReportedFailure` | Ready | False (phase `Failed`) | `POST /v1/done {"outcome":"failure"}`. Message is the agent's own text, truncated to 512 bytes. | Read the message, then the agent logs. |
 
 **Timeouts** (precedence Total -> Running -> Waiting):
 

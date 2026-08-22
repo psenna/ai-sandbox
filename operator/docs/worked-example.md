@@ -192,7 +192,7 @@ The agent merges the PR through the broker, then reports:
 
 ```
 POST http://127.0.0.1:9099/v1/done
-{"outcome":"Succeeded"}
+{"outcome":"success"}
 ```
 
 -> `Done` -> the terminal archive Job runs -> `Archived=True`.
