@@ -1,0 +1,29 @@
+# Prometheus-Operator integration path. Requires monitoring.coreos.com/v1
+# CRDs in the target cluster; the template is gated on this value alone, NOT
+# on .Capabilities, so this fixture's render assertion is never vacuous.
+image:
+  tag: v0.1.0
+
+replicaCount: 2
+
+metrics:
+  enabled: true
+  port: 8080
+  service:
+    port: 8080
+    labels:
+      monitoring: enabled
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    scrapeTimeout: 10s
+    honorLabels: true
+    labels:
+      release: prometheus
+    relabelings:
+      - sourceLabels: [__meta_kubernetes_pod_node_name]
+        targetLabel: node
+    metricRelabelings:
+      - sourceLabels: [__name__]
+        regex: go_gc_.*
+        action: drop

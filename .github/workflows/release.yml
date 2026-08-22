@@ -1,0 +1,128 @@
+name: release
+
+# Build the operator's Docker image and Helm chart and publish both to the
+# GitHub Container Registry (GHCR) when a GitHub Release is published.
+#
+#   docker-publish: ghcr.io/<owner>/ai-sandbox-operator:<release tag>
+#   helm-publish:   oci://ghcr.io/<owner>/charts/ai-sandbox-operator
+#                   (needs: docker-publish -- a chart is only worth
+#                   publishing once the image tag its default values.yaml
+#                   resolves to actually exists)
+#
+# Structure and every step copied from git-proxy's own .github/workflows/
+# release.yml, retargeted at operator/ (context, Dockerfile path, chart
+# path) -- see that file for the line-by-line precedent. As of #34, no
+# image has ever been published to ghcr.io/psenna/ai-sandbox-operator (the
+# CI-only operator.yml docker-build job is push: false); this is the first
+# workflow that can publish one.
+#
+# Safety: only runs on the canonical repository AND only for releases cut
+# from `main`. Forks and releases created from other branches are skipped
+# (each job's own `if:` no-ops them).
+#
+# NOT exercised by ordinary push/PR CI -- only a real `release: published`
+# event runs this workflow at all, so it is verified by structure/review,
+# not by a green check on every PR.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read    # checkout the tagged commit
+  packages: write   # push the image and chart to ghcr.io
+
+jobs:
+  docker-publish:
+    name: publish docker image to GHCR
+    runs-on: ubuntu-latest
+    # Only the canonical repo, and only releases whose target branch is
+    # main. github.event.release.target_commitish is the branch the release
+    # was created from; a release cut from a feature branch is skipped.
+    if: github.repository == 'psenna/ai-sandbox' && github.event.release.target_commitish == 'main'
+    steps:
+      - name: checkout release tag
+        # actions/checkout defaults to the ref that triggered the event --
+        # for a release, that is the tag's commit (detached HEAD). We build
+        # exactly the tagged source, not whatever main points at when the
+        # run starts.
+        uses: actions/checkout@v4
+
+      - name: set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: operator
+          file: operator/Dockerfile
+          push: true
+          # Build and push both architectures as a multi-arch manifest list
+          # (operator/Dockerfile cross-compiles from BUILDPLATFORM, so
+          # linux/arm64 needs no QEMU emulation for the build itself; QEMU
+          # here is only for docker/build-push-action's own multi-platform
+          # plumbing).
+          platforms: linux/amd64,linux/arm64
+          # The release tag verbatim, as the image tag -- matches
+          # values.yaml's image.tag: "" -> Chart.AppVersion fallback
+          # convention, which is set to the SAME string at release time
+          # (see the helm-publish job's appVersion check below).
+          tags: ghcr.io/${{ github.repository_owner }}/ai-sandbox-operator:${{ github.event.release.tag_name }}
+          # Keep the manifest a plain multi-arch manifest list (no
+          # provenance or SBOM attestations), matching what a local `docker
+          # build` produces.
+          provenance: false
+
+  helm-publish:
+    name: publish helm chart to GHCR (OCI)
+    runs-on: ubuntu-latest
+    needs: docker-publish
+    if: github.repository == 'psenna/ai-sandbox' && github.event.release.target_commitish == 'main'
+    steps:
+      - name: checkout release tag
+        uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: assert Chart.yaml appVersion matches the release tag
+        run: |
+          set -eu
+          want="${{ github.event.release.tag_name }}"
+          got="$(helm show chart operator/deploy/helm/ai-sandbox-operator | awk -F': ' '/^appVersion:/ {print $2}')"
+          if [ "$got" != "$want" ]; then
+            echo "Chart.yaml appVersion ('$got') does not match the release tag ('$want') -- bump operator/deploy/helm/ai-sandbox-operator/Chart.yaml's appVersion before releasing."
+            exit 1
+          fi
+
+      - name: log in to GHCR (helm)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: assert this chart version is not already published
+        run: |
+          set -eu
+          version="$(helm show chart operator/deploy/helm/ai-sandbox-operator | awk -F': ' '/^version:/ {print $2}')"
+          if helm show chart "oci://ghcr.io/${{ github.repository_owner }}/charts/ai-sandbox-operator" --version "$version" >/dev/null 2>&1; then
+            echo "chart version $version is already published to oci://ghcr.io/${{ github.repository_owner }}/charts/ai-sandbox-operator -- bump operator/deploy/helm/ai-sandbox-operator/Chart.yaml's version before releasing."
+            exit 1
+          fi
+
+      - name: package chart
+        run: helm package operator/deploy/helm/ai-sandbox-operator -d dist
+
+      - name: push chart
+        run: helm push dist/ai-sandbox-operator-*.tgz "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+      - name: first-publish notice
+        run: echo "::notice::If this is the first publish, the GHCR package ghcr.io/${{ github.repository_owner }}/charts/ai-sandbox-operator is created PRIVATE. Flip it to public at https://github.com/users/${{ github.repository_owner }}/packages/container/charts%2Fai-sandbox-operator/settings or consumers cannot install it."

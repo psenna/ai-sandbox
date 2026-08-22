@@ -1,0 +1,18 @@
+{{- if and .Values.rbac.create .Values.leaderElection.enabled }}
+# Deliberately NARROWER than config/rbac/leader_election_role.yaml, which also
+# grants `configmaps` (inherited kubebuilder scaffolding for the long-dead
+# configmapsleases lock -- controller-runtime has defaulted to "leases" since
+# v0.11) and `events` (already covered by the ClusterRole's events rule).
+# Both are dropped here; leases are all the manager actually uses.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}-leader-election
+  namespace: {{ .Values.leaderElection.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- end }}

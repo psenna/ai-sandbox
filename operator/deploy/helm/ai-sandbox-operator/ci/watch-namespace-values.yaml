@@ -1,0 +1,11 @@
+# Namespace-scoped install: watch one namespace, and deliberately point the
+# class Secrets at that namespace instead of the operator's own. The
+# unsafeAllow... switch is what suppresses guard G14 -- see the README's
+# "Network isolation" section for the ingress caveat it acknowledges.
+image:
+  tag: v0.1.0
+
+watchNamespace: sandboxes
+classSecretNamespace: sandboxes
+unsafeAllowForeignClassSecretNamespace: true
+clusterID: staging

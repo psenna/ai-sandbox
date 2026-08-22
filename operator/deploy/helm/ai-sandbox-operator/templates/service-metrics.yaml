@@ -1,0 +1,32 @@
+{{- if .Values.metrics.enabled }}
+# A plain ClusterIP Service is the right shape here even with replicaCount > 1:
+# internal/controller/metricscollector.go's MetricsCollector deliberately
+# returns NeedLeaderElection() == false (leader-electing it would leave the
+# non-leader replicas' gauges permanently zero), so EVERY replica serves live
+# gauges. A ServiceMonitor scrapes the Endpoints behind this Service, not the
+# VIP, so every replica is scraped. No headless Service, no PodMonitor needed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+    {{- with .Values.metrics.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.metrics.service.type }}
+  selector:
+    {{- include "ai-sandbox-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.service.port }}
+      protocol: TCP
+      targetPort: metrics
+{{- end }}

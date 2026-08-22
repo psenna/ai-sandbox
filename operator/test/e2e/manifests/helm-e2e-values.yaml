@@ -1,0 +1,43 @@
+# Helm-chart equivalent of test/e2e/manifests/operator/kustomization.yaml's
+# patch over config/default -- the values file `E2E_DEPLOY=helm` installs with.
+# Every value below has a direct counterpart in that kustomization's `patches:`
+# args-array replacement; see its comments for why each interval/TTL is
+# shortened from its production default. Keep the two in lockstep.
+#
+# fullnameOverride makes the Helm deploy path produce the SAME Deployment name
+# as the kustomize path, so test/e2e/harness.go and hack/e2e-collect.sh need no
+# changes to work with either.
+fullnameOverride: ai-sandbox-operator-controller-manager
+
+image:
+  repository: ai-sandbox-operator
+  tag: e2e
+  pullPolicy: IfNotPresent
+
+# "" would resolve to the same ai-sandbox-operator:e2e ref anyway; spelled out
+# to mirror the kustomize overlay's explicit --sidecar-image argument.
+sidecarImage: "ai-sandbox-operator:e2e"
+
+# Single replica; no lease-acquisition latency in the critical path of every
+# e2e run.
+leaderElection:
+  enabled: false
+
+slots:
+  capacity: 8
+  schedulerInterval: 2s
+
+warmCache:
+  gcInterval: 5s
+
+retention:
+  ttl: 2m
+  gcInterval: 5s
+
+metrics:
+  collectInterval: 2s
+
+# The e2e suite builds its own SandboxClass per spec (test/e2e/harness.go's
+# BuildSandboxClass/WithS3Endpoint), not one shipped by this chart.
+defaultClass:
+  create: false

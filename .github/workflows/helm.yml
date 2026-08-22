@@ -1,0 +1,398 @@
+name: helm
+
+# CI for operator/deploy/helm/ai-sandbox-operator (#34). Three jobs:
+#   lint-and-template   -- helm lint/template, CRD+RBAC drift, kubeconform,
+#                           render assertions, the fail() guard matrix.
+#   ct-lint              -- chart-testing's own lint pass (Chart.yaml
+#                           conventions, version bump, etc).
+#   kind-install-upgrade -- a real kind cluster: helm install, `helm test`,
+#                           the existing Ginkgo lifecycle suite, `helm
+#                           upgrade`, `helm uninstall`, reinstall. See
+#                           operator/hack/helm-kind-walkthrough.sh.
+#
+# Structure and conventions copied from git-proxy's own .github/workflows/
+# helm.yml (lint-and-template/ct-lint job shape, the assert_fails() guard-
+# matrix helper) and this repo's own .github/workflows/operator-e2e.yml (the
+# kind job's checkout/setup-go/setup-buildx/e2e-tools/e2e-up/e2e-collect/
+# upload-artifact/e2e-down steps).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'operator/deploy/helm/**'
+      - 'operator/config/crd/**'
+      - 'operator/config/rbac/**'
+      - 'operator/hack/**'
+      - 'operator/test/e2e/manifests/**'
+      - '.github/workflows/helm.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'operator/deploy/helm/**'
+      - 'operator/config/crd/**'
+      - 'operator/config/rbac/**'
+      - 'operator/hack/**'
+      - 'operator/test/e2e/manifests/**'
+      - '.github/workflows/helm.yml'
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CHART: operator/deploy/helm/ai-sandbox-operator
+  HELM_VERSION: v3.16.4
+
+jobs:
+  lint-and-template:
+    name: helm lint + template + schema validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: helm lint --strict (defaults + every fixture)
+        run: |
+          set -eu
+          helm lint --strict "$CHART"
+          for f in "$CHART"/ci/*.yaml; do
+            echo "=== lint: $f ==="
+            helm lint --strict "$CHART" -f "$f"
+          done
+
+      - name: helm template --include-crds (defaults + every fixture) -> rendered/
+        run: |
+          set -eu
+          mkdir -p rendered
+          helm template op "$CHART" --include-crds > rendered/defaults.yaml
+          for f in "$CHART"/ci/*.yaml; do
+            name="$(basename "$f" .yaml)"
+            echo "=== template: $f ==="
+            helm template op "$CHART" --include-crds -f "$f" > "rendered/$name.yaml"
+          done
+
+      - name: CRD drift check (chart crds/ vs config/crd/bases)
+        run: cd operator && make IN_CONTAINER=1 helm-crds-check
+
+      - name: RBAC drift check (chart ClusterRole vs config/rbac/role.yaml)
+        run: cd operator && make IN_CONTAINER=1 helm-rbac-check
+
+      - name: kubeconform (strict)
+        run: |
+          set -eu
+          curl -fsSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          # -ignore-missing-schemas: rendered/*.yaml includes SandboxClass/
+          # SandboxEnvironment CustomResources (from --include-crds's own
+          # CRD objects, and from the default-class-*/servicemonitor
+          # fixtures' SandboxClass, plus any ServiceMonitor), none of which
+          # kubeconform ships an OpenAPI schema for.
+          ./kubeconform -strict -summary -kubernetes-version 1.31.0 -ignore-missing-schemas rendered/*.yaml
+
+      - name: "assert no Secret or ConfigMap is ever rendered (no credential leak surface)"
+        run: |
+          set -eu
+          # The chart creates ZERO Secret/ConfigMap objects, by design: every
+          # credential is a pre-existing SecretKeyRef {name, key} the
+          # operator itself resolves at runtime (see the chart README's
+          # "Secrets" section). This is also what proves no credential
+          # VALUE can ever leak into a rendered ConfigMap or Secret -- there
+          # is no such object for one to leak into.
+          if grep -l '^kind: Secret$\|^kind: ConfigMap$' rendered/*.yaml; then
+            echo "LEAK: a fixture rendered a Secret or ConfigMap -- see file(s) above"
+            exit 1
+          fi
+          echo "OK: no fixture renders a Secret or ConfigMap"
+
+      - name: "assert the sidecar image resolves to the same ref as the manager image (defaults)"
+        run: |
+          set -eu
+          want="$(grep -oE -- '--sidecar-image=\S+' rendered/defaults.yaml | cut -d= -f2)"
+          got="$(awk '/^kind: Deployment$/{f=1} f && /^\s*image: /{print $2; exit}' rendered/defaults.yaml)"
+          [ -n "$want" ] && [ "$want" = "$got" ] || { echo "sidecar ref ($want) != manager image ($got)"; exit 1; }
+          echo "OK: sidecarImage defaults to the manager's own image ($got)"
+
+      - name: "assert slots.capacity reaches --slot-capacity (defaults + retention-aggressive fixture)"
+        run: |
+          set -eu
+          grep -qF -- '--slot-capacity=4' rendered/defaults.yaml
+          grep -qF -- '--slot-capacity=32' rendered/retention-aggressive-values.yaml
+          echo "OK"
+
+      - name: "assert every operator flag (including #33's) is present in the rendered args"
+        run: |
+          set -eu
+          for flag in leader-elect leader-election-id health-probe-bind-address \
+            metrics-bind-address slot-capacity scheduler-interval warm-cache-gc-interval \
+            cluster-id default-sandbox-class class-secret-namespace sidecar-image \
+            operator-ingress-label cni-probe-interval retention-ttl retention-dry-run \
+            retention-gc-interval metrics-collect-interval log-verbosity; do
+            grep -qF -- "--$flag=" rendered/defaults.yaml || { echo "MISSING flag: --$flag="; exit 1; }
+          done
+          echo "OK: every flag present"
+
+      - name: "assert the operator-ingress label is on the pod template (defaults)"
+        run: |
+          set -eu
+          awk '/^kind: Deployment$/,/^---/' rendered/defaults.yaml | grep -q 'control-plane: "controller-manager"'
+          echo "OK"
+
+      - name: "assert the leader-election Role is leases-only (defaults)"
+        run: |
+          set -eu
+          block="$(awk '/^kind: Role$/,/^---/' rendered/defaults.yaml)"
+          echo "$block" | grep -q 'coordination.k8s.io' || { echo "leader-election Role missing coordination.k8s.io"; exit 1; }
+          echo "$block" | grep -q 'leases' || { echo "leader-election Role missing leases"; exit 1; }
+          if echo "$block" | grep -qE 'configmaps|"events"|\[events\]'; then
+            echo "leader-election Role grants more than leases -- config/rbac/leader_election_role.yaml's configmaps/events must NOT be carried into this chart"
+            exit 1
+          fi
+          echo "OK: leader-election Role is leases-only"
+
+      - name: "assert no leader-election Role/RoleBinding when leaderElection.enabled=false"
+        run: |
+          set -eu
+          # NOTE: matching on kind:, not a bare 'leader-election' substring --
+          # the Deployment's --leader-election-id=<value> flag is always
+          # rendered (see the "every operator flag" assertion above) and
+          # would false-positive a plain substring grep on every run.
+          if grep -qE '^kind: (Role|RoleBinding)$' rendered/no-leader-election-values.yaml; then
+            echo "leader-election Role/RoleBinding rendered despite leaderElection.enabled=false"
+            exit 1
+          fi
+          grep -qF -- '--leader-elect=false' rendered/no-leader-election-values.yaml
+          echo "OK"
+
+      - name: "assert ServiceMonitor count: 0 by default, 1 in its fixture"
+        run: |
+          set -eu
+          [ "$(grep -c '^kind: ServiceMonitor$' rendered/defaults.yaml)" = 0 ] || { echo "defaults should render 0 ServiceMonitors"; exit 1; }
+          [ "$(grep -c '^kind: ServiceMonitor$' rendered/servicemonitor-values.yaml)" = 1 ] || { echo "servicemonitor-values fixture should render exactly 1 ServiceMonitor"; exit 1; }
+          echo "OK"
+
+      - name: "assert s3/pvc fixtures render only their own storage backend block"
+        run: |
+          set -eu
+          s3_class="$(awk '/^kind: SandboxClass$/,/^---/' rendered/default-class-s3-values.yaml)"
+          echo "$s3_class" | grep -q '      s3:' || { echo "s3 fixture missing its own s3: block"; exit 1; }
+          echo "$s3_class" | grep -q '      pvc:' && { echo "s3 fixture leaked a pvc: block"; exit 1; }
+          pvc_class="$(awk '/^kind: SandboxClass$/,/^---/' rendered/default-class-pvc-values.yaml)"
+          echo "$pvc_class" | grep -q '      pvc:' || { echo "pvc fixture missing its own pvc: block"; exit 1; }
+          echo "$pvc_class" | grep -q '      s3:' && { echo "pvc fixture leaked an s3: block"; exit 1; }
+          echo "OK"
+
+      - name: "assert the default SandboxClass carries resource-policy: keep"
+        run: |
+          set -eu
+          for f in default-class-s3-values default-class-pvc-values default-class-open-network-values engine-none-restricted-psa-values; do
+            grep -qF 'helm.sh/resource-policy: keep' "rendered/$f.yaml" || { echo "$f: default SandboxClass missing resource-policy: keep"; exit 1; }
+          done
+          echo "OK"
+
+      - name: "assert metrics.enabled=false renders no Service"
+        run: |
+          set -eu
+          out="$(helm template op "$CHART" --set metrics.enabled=false)"
+          [ "$(echo "$out" | grep -c '^kind: Service$')" = 0 ] || { echo "metrics.enabled=false still rendered a Service"; exit 1; }
+          echo "OK"
+
+      - name: render-time guard matrix (each must fail with the stated message)
+        run: |
+          set -eu
+          assert_fails() {
+            desc="$1"; shift
+            want="$1"; shift
+            if out="$(helm template op "$CHART" "$@" 2>&1)"; then
+              echo "EXPECTED FAILURE DID NOT HAPPEN: $desc"
+              echo "$out"
+              exit 1
+            fi
+            if ! echo "$out" | grep -qF "$want"; then
+              echo "FAILURE MESSAGE MISMATCH for: $desc"
+              echo "expected to contain: $want"
+              echo "got:"
+              echo "$out"
+              exit 1
+            fi
+            echo "OK: $desc"
+          }
+
+          S3=( -f "$CHART/ci/default-class-s3-values.yaml" )
+          PVC=( -f "$CHART/ci/default-class-pvc-values.yaml" )
+
+          # G1
+          assert_fails "slots.capacity below 1" \
+            "slots.capacity=0 is not supported" \
+            --set slots.capacity=0
+
+          # G2
+          assert_fails "s3 backend missing endpoint/bucket" \
+            "requires defaultClass.storage.backend.s3.endpoint and .bucket" \
+            "${S3[@]}" --set defaultClass.storage.backend.s3.endpoint=
+
+          # G3
+          assert_fails "pvc backend missing claimName" \
+            "requires defaultClass.storage.backend.pvc.claimName" \
+            "${PVC[@]}" --set defaultClass.storage.backend.pvc.claimName=
+
+          # G4
+          assert_fails "s3 backend missing credentialsSecretRef.name" \
+            "requires defaultClass.storage.backend.s3.credentialsSecretRef.name" \
+            "${S3[@]}" --set defaultClass.storage.backend.s3.credentialsSecretRef.name=
+
+          # G5
+          assert_fails "s3 bucket shorter than 3 characters" \
+            "is shorter than 3 characters" \
+            "${S3[@]}" --set defaultClass.storage.backend.s3.bucket=ab
+
+          # G6
+          assert_fails "rootless-podman engine under a restricted PSA namespace" \
+            'cannot run in namespaces enforcing Pod Security Standard "restricted"' \
+            --set defaultClass.engine.type=rootless-podman --set sandboxNamespaces.podSecurityEnforce=restricted
+
+          # G7
+          assert_fails "gitProxy enabled but unconfigured" \
+            "requires gitURL, brokerURL and tokenSecretRef.name" \
+            "${S3[@]}" --set defaultClass.services.gitProxy.gitURL= \
+            --set defaultClass.services.gitProxy.brokerURL= \
+            --set defaultClass.services.gitProxy.tokenSecretRef.name=
+
+          # G8
+          assert_fails "dependaProxy enabled but all URLs empty" \
+            "but npmURL, pypiURL and goproxyURL are all empty" \
+            "${S3[@]}" --set defaultClass.services.dependaProxy.npmURL= \
+            --set defaultClass.services.dependaProxy.pypiURL= \
+            --set defaultClass.services.dependaProxy.goproxyURL=
+
+          # G9
+          assert_fails "ollama enabled but unconfigured" \
+            "requires defaultClass.services.ollama.baseURL" \
+            "${S3[@]}" --set defaultClass.services.ollama.baseURL=
+
+          # G10
+          assert_fails "Restricted isolation with an off-cluster s3 endpoint and no covering CIDR" \
+            "is not an in-cluster <service>.<namespace>.svc host" \
+            "${S3[@]}" --set defaultClass.storage.backend.s3.endpoint=https://s3.external.example.com
+
+          # G11
+          assert_fails "default class with no agent image" \
+            "requires defaultClass.agent.image" \
+            --set defaultClass.create=true
+
+          # G13
+          assert_fails "clusterID is not a DNS-1123 label" \
+            'clusterID="Prod_1" is not a valid DNS-1123 label' \
+            --set clusterID=Prod_1
+
+          # G14
+          assert_fails "classSecretNamespace differs from the release namespace" \
+            "differs from the release namespace" \
+            --set classSecretNamespace=other-ns
+
+          # G15
+          assert_fails "operatorIngressLabel is not a single key=value pair" \
+            'must be a single "key=value" pair' \
+            --set network.operatorIngressLabel=nope
+
+          # G16 (two of the six interval guards; the rest share the code path)
+          assert_fails "slots.schedulerInterval outside 100ms..5m" \
+            'slots.schedulerInterval="10m" is outside the range' \
+            --set slots.schedulerInterval=10m
+
+          assert_fails "metrics.collectInterval outside 1s..5m" \
+            'metrics.collectInterval="10m" is outside the range' \
+            --set metrics.collectInterval=10m
+
+          # G17
+          assert_fails "logging.verbosity outside 0-4" \
+            "logging.verbosity=9 is outside 0-4" \
+            --set logging.verbosity=9
+
+          # G18
+          assert_fails "ServiceMonitor enabled without a metrics listener" \
+            "requires metrics.enabled=true" \
+            --set metrics.serviceMonitor.enabled=true --set metrics.enabled=false
+
+          # G19
+          assert_fails "multiple replicas with leader election off" \
+            "with leaderElection.enabled=false" \
+            --set replicaCount=2 --set leaderElection.enabled=false
+
+          # G20
+          assert_fails "empty default class name" \
+            "defaultClass.name must not be empty" \
+            --set defaultClass.name=
+
+          # values.schema.json case (fires before any template renders)
+          assert_fails "image.repository empty (schema)" \
+            "image.repository: String length must be greater than or equal to 1" \
+            --set image.repository=
+
+  ct-lint:
+    name: chart-testing lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: helm/chart-testing-action@v2
+      - name: ct lint
+        run: ct lint --config operator/deploy/helm/ct.yaml
+
+  kind-install-upgrade:
+    name: kind install / upgrade / uninstall
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: lint-and-template
+    defaults:
+      run:
+        working-directory: operator
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache: true
+          cache-dependency-path: operator/test/e2e/go.sum
+
+      - uses: docker/setup-buildx-action@v3
+
+      # BEFORE fetch-e2e-tools/e2e-up: those now shell out to `helm` too
+      # (E2E_DEPLOY=helm), and helm-kind-walkthrough.sh needs it on PATH.
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: fetch e2e tools (kind, kubectl, helm)
+        run: make IN_CONTAINER=1 E2E_BIN_DIR=$PWD/.e2e-bin e2e-tools
+
+      - name: e2e up (helm-deployed operator)
+        run: make IN_CONTAINER=1 E2E_DEPLOY=helm E2E_BIN_DIR=$PWD/.e2e-bin E2E_KUBECONFIG=$PWD/.e2e-kubeconfig e2e-up
+
+      - name: helm install / upgrade / uninstall / reinstall walkthrough
+        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig helm-kind
+
+      - name: e2e collect (diagnostics)
+        if: always()
+        run: make IN_CONTAINER=1 E2E_BIN_DIR=$PWD/.e2e-bin E2E_KUBECONFIG=$PWD/.e2e-kubeconfig e2e-collect
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: helm-kind-artifacts-${{ github.run_id }}
+          path: operator/test/e2e/_artifacts
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: e2e down
+        if: always()
+        run: make IN_CONTAINER=1 E2E_BIN_DIR=$PWD/.e2e-bin E2E_KUBECONFIG=$PWD/.e2e-kubeconfig e2e-down

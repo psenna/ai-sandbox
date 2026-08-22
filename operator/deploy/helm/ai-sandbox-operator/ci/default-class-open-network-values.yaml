@@ -1,0 +1,28 @@
+# Open isolation with an EXTERNAL S3 endpoint and no extraEgress at all.
+# Proves G10 only fires under Restricted isolation: internal/controller's
+# resolveNetworkPeers returns immediately for Open, so an off-cluster endpoint
+# needs no covering CIDR.
+image:
+  tag: v0.1.0
+
+defaultClass:
+  create: true
+  agent:
+    image: ghcr.io/psenna/ai-sandbox-agent:v1
+  services:
+    gitProxy:
+      enabled: true
+      gitURL: https://git-proxy.example.com
+      brokerURL: https://git-proxy.example.com/broker
+      tokenSecretRef: {name: git-proxy-agent-token, key: token}
+  storage:
+    backend:
+      type: s3
+      s3:
+        endpoint: https://s3.us-east-1.amazonaws.com
+        bucket: sandbox-archives
+        region: us-east-1
+        credentialsSecretRef: {name: sandbox-s3-credentials}
+        forcePathStyle: false
+  network:
+    isolation: Open

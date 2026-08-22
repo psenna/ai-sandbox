@@ -1,0 +1,25 @@
+# Every #32/#33 knob at a non-default but still IN-RANGE value, so the render
+# proves the guards accept the whole legal span rather than only the defaults.
+image:
+  tag: v0.1.0
+
+slots:
+  capacity: 32
+  schedulerInterval: 100ms
+
+warmCache:
+  gcInterval: 1s
+
+retention:
+  ttl: 1h
+  dryRun: true
+  gcInterval: 1m
+
+cniProbe:
+  interval: 1m
+
+metrics:
+  collectInterval: 1s
+
+logging:
+  verbosity: 4

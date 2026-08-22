@@ -1,0 +1,201 @@
+# ---------------------------------------------------------------------------
+# Image. There is no :latest tag published for
+# ghcr.io/psenna/ai-sandbox-operator -- image.tag falls back to
+# Chart.yaml's appVersion, and image.digest (when set) wins over the tag.
+# ---------------------------------------------------------------------------
+image:
+  repository: ghcr.io/psenna/ai-sandbox-operator
+  tag: ""            # "" -> Chart.AppVersion
+  digest: ""         # sha256:...; wins over tag
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+# Labels merged onto every object this chart renders.
+commonLabels: {}
+
+replicaCount: 1
+
+# --sidecar-image. "" resolves to THE SAME ref as image above. Never leave the
+# binary's own default (ghcr.io/psenna/ai-sandbox-operator:dev) in play: the
+# sandboxctl sidecar ships in the operator image (operator/Dockerfile builds
+# both /manager and /sandboxctl) and must be version-locked to the manager
+# (internal/render/pod.go's SidecarImage).
+sidecarImage: ""
+
+clusterID: default                 # --cluster-id; must be a DNS-1123 label
+watchNamespace: ""                 # --watch-namespace; "" = all namespaces
+classSecretNamespace: ""           # --class-secret-namespace; "" = .Release.Namespace
+# Escape hatch for pointing class Secrets at a namespace other than the
+# operator's own. Breaks Restricted-isolation ingress -- see guard G14 in
+# templates/_validations.tpl.
+unsafeAllowForeignClassSecretNamespace: false
+
+slots:
+  capacity: 4                      # --slot-capacity; must be >= 1
+  schedulerInterval: 5s            # --scheduler-interval; 100ms..5m
+
+warmCache:
+  gcInterval: 1m                   # --warm-cache-gc-interval; 1s..1h
+
+retention:
+  # --retention-ttl: how long a terminal archive is retained after
+  # status.archive.finishedAt before RetentionGC deletes its storage.
+  # 0 disables the TTL sweep (orphan cleanup still runs regardless).
+  #
+  # NOTE: with the defaults below a fresh install REALLY DELETES archives
+  # once they are 7 days old. Set retention.dryRun=true for a first rollout
+  # if you want to watch a sweep before trusting it -- see README "Retention".
+  ttl: 168h
+  dryRun: false                    # --retention-dry-run
+  gcInterval: 30m                  # --retention-gc-interval; 1s..1h
+
+cniProbe:
+  interval: 5m                     # --cni-probe-interval; 1s..1h
+
+network:
+  # --operator-ingress-label. MUST match a label this chart puts on the
+  # operator's own pods; the chart guarantees that by construction
+  # (_helpers.tpl's podLabels injects this exact key/value), and guard G15
+  # rejects a value it cannot parse as a single key=value pair.
+  operatorIngressLabel: "control-plane=controller-manager"
+
+logging:
+  verbosity: 0                     # --log-verbosity; 0..4
+
+leaderElection:
+  enabled: true                    # --leader-elect
+  id: sandbox-operator.sandbox.psenna.dev   # --leader-election-id
+  namespace: ""                    # --leader-election-namespace; "" = own namespace
+
+metrics:
+  enabled: true                    # false -> --metrics-bind-address=0
+  port: 8080
+  collectInterval: 15s             # --metrics-collect-interval; 1s..5m
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+    labels: {}
+  serviceMonitor:
+    enabled: false                 # needs the Prometheus Operator's monitoring.coreos.com/v1 CRDs
+    namespace: ""                  # "" = release namespace
+    interval: 30s
+    scrapeTimeout: ""
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+    honorLabels: false
+
+healthProbe:
+  port: 8081                       # --health-probe-bind-address
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # true: the manager IS an API-server client and needs its projected token.
+  automountServiceAccountToken: true
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: {type: RuntimeDefault}
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: 500m, memory: 256Mi}
+terminationGracePeriodSeconds: 10
+livenessProbe: {initialDelaySeconds: 15, periodSeconds: 20, timeoutSeconds: 3, failureThreshold: 3}
+readinessProbe: {initialDelaySeconds: 5, periodSeconds: 10, timeoutSeconds: 3, failureThreshold: 3}
+
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+extraEnv: []
+extraEnvFrom: []
+extraArgs: []          # appended verbatim after the chart's own args
+
+# Declared, NOT applied: the chart never labels a namespace it does not own.
+# This states what Pod Security Standard the namespaces SANDBOX PODS land in
+# enforce, so guard G6 can reject an engine those namespaces can never run.
+# "" | privileged | baseline | restricted
+sandboxNamespaces:
+  podSecurityEnforce: ""
+
+# ---------------------------------------------------------------------------
+# Optional cluster-scoped SandboxClass named defaultClass.name, which is also
+# what --default-sandbox-class is set to regardless of `create`.
+# ---------------------------------------------------------------------------
+defaultClass:
+  create: false
+  name: default                    # --default-sandbox-class
+  annotations: {}
+  labels: {}
+  agent:
+    image: ""                      # REQUIRED when create=true (CRD MinLength=1)
+    resources: {}
+    model: {default: "", haiku: "", sonnet: "", opus: ""}
+  engine:
+    type: rootless-podman          # rootless-podman | none
+    image: ""
+    storageDriver: auto            # auto | overlay | vfs
+  services:
+    gitProxy:
+      enabled: false
+      gitURL: ""
+      brokerURL: ""
+      tokenSecretRef: {name: "", key: token}
+    dependaProxy:
+      enabled: false
+      npmURL: ""
+      pypiURL: ""
+      goproxyURL: ""
+    ollama:
+      enabled: false
+      baseURL: ""
+  storage:
+    workspace:
+      size: 20Gi
+      storageClassName: null       # null = cluster default; "" = no StorageClass
+    backend:
+      type: s3                     # s3 | pvc
+      s3:
+        endpoint: ""
+        bucket: ""
+        region: ""
+        prefix: ""
+        # The operator reads FIXED keys accessKeyID/secretAccessKey/sessionToken
+        # from this Secret (internal/storage/credentials.go); .key is ignored
+        # for s3 and is carried only because the CRD requires the field.
+        credentialsSecretRef: {name: "", key: token}
+        forcePathStyle: true
+      pvc:
+        claimName: ""
+        subPath: ""
+    warmCacheTTL: 30m
+  network:
+    isolation: Restricted          # Restricted | Open
+    extraEgress: []
+  timeouts: {running: 6h, waiting: 24h, total: 72h}
+
+# `helm test` hook. The operator image is gcr.io/distroless/static:nonroot --
+# no shell, no curl -- so the test Pod uses its own image.
+tests:
+  enabled: true
+  image:
+    repository: curlimages/curl
+    tag: "8.11.1"
+    pullPolicy: IfNotPresent
+  resources: {}

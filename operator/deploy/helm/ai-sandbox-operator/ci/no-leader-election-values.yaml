@@ -1,0 +1,9 @@
+# Leader election off. Legal only at replicaCount=1 (guard G19). Asserts the
+# leader-election Role/RoleBinding are absent and --leader-elect=false is
+# rendered.
+image:
+  tag: v0.1.0
+
+replicaCount: 1
+leaderElection:
+  enabled: false

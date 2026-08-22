@@ -1,0 +1,23 @@
+apiVersion: v2
+name: ai-sandbox-operator
+description: Kubernetes operator for ephemeral, policy-isolated AI coding-agent sandboxes
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+home: https://github.com/psenna/ai-sandbox
+sources: [https://github.com/psenna/ai-sandbox]
+keywords: [operator, sandbox, ai-agents, kubernetes, isolation]
+maintainers: [{name: psenna, url: https://github.com/psenna}]
+# >=1.25 (not the kubebuilder-scaffold default 1.23): the shipped CRDs use CEL
+# x-kubernetes-validations (BackendSpec's four XValidation rules and
+# EgressPeer's), which only became GA-usable in 1.25.
+kubeVersion: ">=1.25.0-0"
+annotations:
+  artifacthub.io/operator: "true"
+  artifacthub.io/crds: |
+    - kind: SandboxClass
+      version: v1alpha1
+      name: sandboxclasses.sandbox.psenna.dev
+    - kind: SandboxEnvironment
+      version: v1alpha1
+      name: sandboxenvironments.sandbox.psenna.dev

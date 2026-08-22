@@ -1,0 +1,7 @@
+# chart-dirs are repo-root-relative: `ct` is invoked from the repository root.
+chart-dirs:
+  - operator/deploy/helm
+target-branch: main
+validate-maintainers: false
+check-version-increment: true
+helm-extra-args: --timeout 600s

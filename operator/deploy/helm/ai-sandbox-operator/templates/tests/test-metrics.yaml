@@ -1,0 +1,61 @@
+{{- if and .Values.tests.enabled .Values.metrics.enabled }}
+# The operator image is gcr.io/distroless/static:nonroot -- no shell, no curl
+# -- so this hook uses its own image rather than reusing the app image.
+# /healthz is deliberately NOT curled: the health port is kubelet-only and is
+# not exposed through any Service.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}-test-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: test-metrics
+      image: {{ printf "%s:%s" .Values.tests.image.repository .Values.tests.image.tag }}
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        {{- toYaml .Values.containerSecurityContext | nindent 8 }}
+      command: ["/bin/sh", "-eu", "-c"]
+      args:
+        - |
+          host="{{ include "ai-sandbox-operator.fullname" . }}-metrics"
+          port="{{ .Values.metrics.service.port }}"
+
+          echo "checking http://$host:$port/metrics ..."
+          body="$(curl -sSf --max-time 30 "http://$host:$port/metrics")"
+
+          echo "$body" | grep -q '^sandbox_operator_slot_capacity ' || { echo "FAIL: sandbox_operator_slot_capacity series not found"; exit 1; }
+          echo "OK: sandbox_operator_slot_capacity present"
+
+          echo "$body" | grep -q '^sandbox_operator_environments{' || { echo "FAIL: sandbox_operator_environments series not found (MetricsCollector has not completed a pass)"; exit 1; }
+          echo "OK: sandbox_operator_environments present"
+
+          expected="{{ int .Values.slots.capacity }}"
+          got="$(echo "$body" | awk '/^sandbox_operator_slot_capacity /{print $2}')"
+          case "$got" in
+            "$expected"|"$expected".*) ;;
+            *) echo "FAIL: sandbox_operator_slot_capacity=$got, expected $expected (slots.capacity)"; exit 1 ;;
+          esac
+          echo "OK: sandbox_operator_slot_capacity matches slots.capacity ($expected)"
+
+          echo "all checks passed"
+      {{- with .Values.tests.resources }}
+      resources:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 16Mi
+{{- end }}

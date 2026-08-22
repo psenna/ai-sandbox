@@ -1,0 +1,17 @@
+{{- if and .Values.rbac.create .Values.leaderElection.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}-leader-election
+  namespace: {{ .Values.leaderElection.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ai-sandbox-operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ai-sandbox-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

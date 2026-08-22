@@ -1,0 +1,4 @@
+# Smallest legal install: pin the image tag, take everything else from
+# values.yaml. No default SandboxClass, no ServiceMonitor.
+image:
+  tag: v0.1.0

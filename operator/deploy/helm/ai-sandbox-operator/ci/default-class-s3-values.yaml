@@ -1,0 +1,59 @@
+# The BASE fixture the CI guard matrix layers `--set`s onto: a complete,
+# valid default SandboxClass with an S3 backend, all three shared services
+# enabled and pointed at in-cluster <svc>.<ns>.svc hosts, under Restricted
+# isolation (so G10 has nothing to complain about here, and a single --set
+# pointing any endpoint off-cluster makes it fire).
+image:
+  tag: v0.1.0
+
+defaultClass:
+  create: true
+  name: default
+  annotations:
+    example.com/owner: platform-team
+  labels:
+    example.com/tier: default
+  agent:
+    image: ghcr.io/psenna/ai-sandbox-agent:v1
+    resources:
+      requests: {cpu: 500m, memory: 512Mi}
+      limits: {cpu: "2", memory: 2Gi}
+    model:
+      default: claude-sonnet-4-5
+      haiku: claude-haiku-4-5
+      sonnet: claude-sonnet-4-5
+      opus: claude-opus-4-5
+  engine:
+    type: rootless-podman
+    storageDriver: auto
+  services:
+    gitProxy:
+      enabled: true
+      gitURL: https://git-proxy.ai-sandbox.svc.cluster.local
+      brokerURL: https://git-proxy.ai-sandbox.svc.cluster.local
+      tokenSecretRef: {name: git-proxy-agent-token, key: token}
+    dependaProxy:
+      enabled: true
+      npmURL: http://dependaproxy.ai-sandbox.svc.cluster.local:8080/npm
+      pypiURL: http://dependaproxy.ai-sandbox.svc.cluster.local:8080/pypi
+      goproxyURL: http://dependaproxy.ai-sandbox.svc.cluster.local:8080/goproxy
+    ollama:
+      enabled: true
+      baseURL: http://ollama.ai-sandbox.svc.cluster.local:11434
+  storage:
+    workspace:
+      size: 20Gi
+    backend:
+      type: s3
+      s3:
+        endpoint: http://minio.ai-sandbox.svc.cluster.local:9000
+        bucket: sandbox-archives
+        region: us-east-1
+        prefix: default/
+        # A reference to a Secret you create; the chart never creates one.
+        credentialsSecretRef: {name: sandbox-s3-credentials, key: token}
+        forcePathStyle: true
+    warmCacheTTL: 30m
+  network:
+    isolation: Restricted
+  timeouts: {running: 6h, waiting: 24h, total: 72h}
