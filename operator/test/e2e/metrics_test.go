@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,6 +13,22 @@ import (
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
+
+// archiveTimeout bounds the wait for status.archive after an environment
+// reaches Done. The terminal archive is two SEQUENTIAL batch Jobs (a
+// snapshot Job, then the archive Job -- see internal/controller/archive.go's
+// reconcileDelete/archive), each needing its own pod scheduling + image pull
+// + run, stitched together by a state machine that only re-checks progress
+// every lifecycle.TerminalArchiveRequeue (1m). That is structurally slower
+// than a single phase transition, so it does not fit inside
+// h.Cfg.PhaseTimeout (5m) once it has to compete for the 2-vCPU CI runner's
+// node capacity against whichever other spec is concurrently running on the
+// suite's other ginkgo process. Confirmed reproducible in CI even after
+// isolating this wait behind its own fresh PhaseTimeout budget (decoupled
+// from the WaitForPhase(Done)/finishedAt wait that precedes it): the
+// environment reached Done, but status.archive was still nil 300s later.
+// Mirrors freeze_test.go's identically-motivated s3FaultTimeout.
+const archiveTimeout = 8 * time.Minute
 
 // e2eSlotCapacity mirrors test/e2e/manifests/operator/kustomization.yaml's
 // --slot-capacity=8 (that patch REPLACES the whole args array, so this must
@@ -229,17 +246,14 @@ var _ = Describe("operator metrics", func() {
 		// once the #32 terminal-archive detour (Done -> Freezing -> Waiting
 		// -> Done, capturing the agent home before archiving) has actually
 		// completed: a real snapshot upload, an archive Job, and the archive
-		// subcommand's own run. That pipeline is slower under --procs=4
-		// contention than h.Cfg.PhaseTimeout has budget left for if it must
-		// share the same window WaitForPhase(Done) above already spent --
-		// confirmed reproducible: the env reached Done, but status.archive
-		// was still nil when the Event-accumulation Eventually below gave
-		// up. Waiting on status.archive directly, with its OWN fresh
-		// PhaseTimeout budget, decouples the two so a slow archive is never
-		// starved by however long reaching Done itself took.
+		// subcommand's own run. That pipeline is slower under CI contention
+		// than h.Cfg.PhaseTimeout has budget for -- see archiveTimeout's own
+		// comment. Waiting on status.archive directly, with its own fresh,
+		// generous budget, decouples this from however long reaching Done
+		// itself took.
 		EventuallyWithOffset(1, func() bool {
 			return h.GetEnv(ctx, key).Status.Archive != nil
-		}, h.Cfg.PhaseTimeout, h.Cfg.Poll).Should(BeTrue(), "environment %s never recorded status.archive", key)
+		}, archiveTimeout, h.Cfg.Poll).Should(BeTrue(), "environment %s never recorded status.archive", key)
 		final := h.GetEnv(ctx, key)
 
 		// The event broadcaster (client-go/tools/events) delivers Eventf calls
