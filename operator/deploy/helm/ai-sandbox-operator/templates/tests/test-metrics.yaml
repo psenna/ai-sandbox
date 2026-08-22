@@ -1,0 +1,75 @@
+{{- if and .Values.tests.enabled .Values.metrics.enabled }}
+# The operator image is gcr.io/distroless/static:nonroot -- no shell, no curl
+# -- so this hook uses its own image rather than reusing the app image.
+# /healthz is deliberately NOT curled: the health port is kubelet-only and is
+# not exposed through any Service.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}-test-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    # NOT hook-succeeded: that deletes the pod the instant it passes, racing
+    # `helm test --logs`'s own log fetch (`helm-kind-walkthrough.sh`'s step 1
+    # uses --logs and hit this directly: the test genuinely passed but `helm
+    # test` still exited non-zero because --logs found the pod already gone).
+    # before-hook-creation still cleans up the previous run's pod before a
+    # new `helm test` creates one, so nothing accumulates.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: test-metrics
+      image: {{ printf "%s:%s" .Values.tests.image.repository .Values.tests.image.tag }}
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        # curlimages/curl's image config declares its non-root user by NAME
+        # (USER curl_user), not a numeric UID, so the kubelet can't verify
+        # runAsNonRoot from image metadata alone and refuses to start the
+        # container (CreateContainerConfigError: "image has non-numeric
+        # user"). uid=100(curl_user) gid=101(curl_group), confirmed against
+        # curlimages/curl:8.11.1 directly. The operator's own containers use
+        # gcr.io/distroless/static:nonroot, which sets a numeric USER and
+        # needs no such override -- this merge is scoped to this test pod only.
+        {{- toYaml (merge (dict "runAsUser" 100 "runAsGroup" 101) .Values.containerSecurityContext) | nindent 8 }}
+      command: ["/bin/sh", "-eu", "-c"]
+      args:
+        - |
+          host="{{ include "ai-sandbox-operator.fullname" . }}-metrics"
+          port="{{ .Values.metrics.service.port }}"
+
+          echo "checking http://$host:$port/metrics ..."
+          body="$(curl -sSf --max-time 30 "http://$host:$port/metrics")"
+
+          echo "$body" | grep -q '^sandbox_operator_slot_capacity ' || { echo "FAIL: sandbox_operator_slot_capacity series not found"; exit 1; }
+          echo "OK: sandbox_operator_slot_capacity present"
+
+          echo "$body" | grep -q '^sandbox_operator_environments{' || { echo "FAIL: sandbox_operator_environments series not found (MetricsCollector has not completed a pass)"; exit 1; }
+          echo "OK: sandbox_operator_environments present"
+
+          expected="{{ int .Values.slots.capacity }}"
+          got="$(echo "$body" | awk '/^sandbox_operator_slot_capacity /{print $2}')"
+          case "$got" in
+            "$expected"|"$expected".*) ;;
+            *) echo "FAIL: sandbox_operator_slot_capacity=$got, expected $expected (slots.capacity)"; exit 1 ;;
+          esac
+          echo "OK: sandbox_operator_slot_capacity matches slots.capacity ($expected)"
+
+          echo "all checks passed"
+      {{- with .Values.tests.resources }}
+      resources:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 16Mi
+{{- end }}

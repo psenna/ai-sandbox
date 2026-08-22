@@ -1,0 +1,27 @@
+# The storage.backend union's other arm. Asserts NO `s3:` block renders --
+# BackendSpec's XValidation rejects an s3 block under type=pvc. A PVC backend
+# also contributes no storage endpoint, so Restricted isolation is fine with
+# no extraEgress here.
+image:
+  tag: v0.1.0
+
+defaultClass:
+  create: true
+  agent:
+    image: ghcr.io/psenna/ai-sandbox-agent:v1
+  engine:
+    type: rootless-podman
+    storageDriver: overlay
+  storage:
+    workspace:
+      size: 10Gi
+      storageClassName: standard
+    backend:
+      type: pvc
+      pvc:
+        claimName: sandbox-archives
+        subPath: default/
+    warmCacheTTL: 15m
+  network:
+    isolation: Restricted
+  timeouts: {running: 2h, waiting: 12h, total: 24h}

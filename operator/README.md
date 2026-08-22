@@ -3,6 +3,13 @@
 Kubernetes operator for ai-sandbox. See [issue #15](https://github.com/psenna/ai-sandbox/issues/15)
 for the broader design context.
 
+**To install the operator**, use the [Helm chart](deploy/helm/ai-sandbox-operator/README.md)
+at `deploy/helm/ai-sandbox-operator` (#34) -- it is the supported install
+path (values reference, RBAC table, guarded misconfiguration errors,
+`crds/`, `helm test`). `config/default` (kustomize) remains for local/e2e
+development (`make kustomize-build`, `hack/e2e-up.sh`) but is not a
+packaged, versioned install artifact the way the chart is.
+
 This directory started as a **scaffold only** (issue #16): a Go module,
 kubebuilder v4 project layout, CI, and a manager that starts, serves health
 probes, and exits cleanly. [Issue #17](https://github.com/psenna/ai-sandbox/issues/17)
@@ -70,13 +77,18 @@ always bypass the client cache (see `internal/operator/manager.go`'s
 The `sandboxctl` sidecar container is rendered from `--sidecar-image` /
 `SANDBOX_OPERATOR_SIDECAR_IMAGE` (default `ghcr.io/psenna/ai-sandbox-operator:dev`),
 **not** from the SandboxClass -- it is operator machinery, versioned with the
-operator, never with the workload. This must be kept in sync with whatever
+operator, never with the workload. It must be kept in sync with whatever
 image tag the operator Deployment itself runs: `operator/Dockerfile` builds
-both `/manager` and `/sandboxctl` into the same image, so in practice
-`--sidecar-image` should simply repeat the operator's own image reference
-(see `config/default/kustomization.yaml`'s `images:` transform, and
-`test/e2e/manifests/operator/kustomization.yaml` for how the e2e overlay
-keeps the two in lockstep).
+both `/manager` and `/sandboxctl` into the same image, so `--sidecar-image`
+should simply repeat the operator's own image reference. The [Helm
+chart](deploy/helm/ai-sandbox-operator/README.md) (#34) does this
+automatically -- `sidecarImage: ""` resolves to the exact same ref as
+`image.*` via the chart's `imageRef`/`sidecarImageRef` helpers, so there is
+nothing to keep in sync by hand. The raw `config/default` kustomize base has
+no such helper: its `images:` transform and
+`test/e2e/manifests/operator/kustomization.yaml`'s explicit
+`--sidecar-image` argument must still be kept in lockstep manually when
+deploying that way instead of via the chart.
 
 Rendering (`internal/render`) is covered by golden-file tests under
 `internal/render/testdata/`; run `go test ./internal/render/... -update` to
@@ -427,9 +439,12 @@ auth. `config/manager/metrics_service.yaml` exposes it as a stable
 `ClusterIP` Service; `config/prometheus/monitor.yaml` is a
 `monitoring.coreos.com/v1` `ServiceMonitor` scraping it, referenced (commented
 out) from `config/default/kustomization.yaml` since it requires the
-Prometheus Operator's CRDs, which the e2e kind cluster does not install. A
-chart-native `ServiceMonitor` template is **#34's** job once a Helm chart
-exists — none does today.
+Prometheus Operator's CRDs, which the e2e kind cluster does not install. The
+[Helm chart](deploy/helm/ai-sandbox-operator/README.md) (#34) ships the
+chart-native equivalent as `metrics.serviceMonitor.enabled` (default
+`false`, since it also needs those CRDs) -- see that chart's README for the
+"why a plain `ClusterIP` `Service` is correct even with multiple replicas"
+note (the metric catalogue itself is listed just below).
 
 **The metric catalogue.** Every series is `sandbox_operator_<name>`
 (`prometheus.BuildFQName("sandbox", "operator", name)`). No metric ever

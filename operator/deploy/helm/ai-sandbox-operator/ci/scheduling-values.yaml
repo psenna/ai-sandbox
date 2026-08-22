@@ -1,0 +1,54 @@
+# Every generic pod-shaping / escape-hatch knob at once, plus a digest-pinned
+# image (digest wins over tag, and the sidecar inherits the same ref).
+image:
+  repository: ghcr.io/psenna/ai-sandbox-operator
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pullPolicy: Always
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+commonLabels:
+  example.com/cost-center: platform
+
+podAnnotations:
+  example.com/scrape: "true"
+podLabels:
+  team: platform
+
+resources:
+  requests: {cpu: 200m, memory: 256Mi}
+  limits: {cpu: "1", memory: 512Mi}
+
+priorityClassName: system-cluster-critical
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: ai-sandbox-operator
+    effect: NoSchedule
+affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 1
+        preference:
+          matchExpressions:
+            - key: node-role.kubernetes.io/control-plane
+              operator: DoesNotExist
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: ai-sandbox-operator
+
+extraEnv:
+  - name: SANDBOX_OPERATOR_EXTRA_DEBUG
+    value: "0"
+extraEnvFrom:
+  - configMapRef:
+      name: operator-extra-env
+      optional: true
+extraArgs:
+  - --zap-devel=false

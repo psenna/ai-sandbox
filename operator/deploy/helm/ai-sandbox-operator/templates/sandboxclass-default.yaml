@@ -1,0 +1,136 @@
+{{- include "ai-sandbox-operator.validate" . }}
+{{- if .Values.defaultClass.create }}
+{{- $dc := .Values.defaultClass }}
+apiVersion: sandbox.psenna.dev/v1alpha1
+kind: SandboxClass
+metadata:
+  name: {{ $dc.name }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+    {{- with $dc.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    # Without this, `helm uninstall` would delete the class out from under any
+    # still-running SandboxEnvironment that references it.
+    helm.sh/resource-policy: keep
+    {{- with $dc.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  agent:
+    image: {{ $dc.agent.image | quote }}
+    {{- with $dc.agent.resources }}
+    resources:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- if or $dc.agent.model.default $dc.agent.model.haiku $dc.agent.model.sonnet $dc.agent.model.opus }}
+    model:
+      {{- with $dc.agent.model.default }}
+      default: {{ . | quote }}
+      {{- end }}
+      {{- with $dc.agent.model.haiku }}
+      haiku: {{ . | quote }}
+      {{- end }}
+      {{- with $dc.agent.model.sonnet }}
+      sonnet: {{ . | quote }}
+      {{- end }}
+      {{- with $dc.agent.model.opus }}
+      opus: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+  engine:
+    type: {{ $dc.engine.type }}
+    {{- with $dc.engine.image }}
+    image: {{ . | quote }}
+    {{- end }}
+    storageDriver: {{ $dc.engine.storageDriver }}
+  {{- if or $dc.services.gitProxy.enabled $dc.services.dependaProxy.enabled $dc.services.ollama.enabled }}
+  # A disabled service is ABSENT, never an empty block:
+  # internal/controller/network.go's serviceEndpoints branches on `!= nil`.
+  services:
+    {{- if $dc.services.gitProxy.enabled }}
+    gitProxy:
+      gitURL: {{ $dc.services.gitProxy.gitURL | quote }}
+      brokerURL: {{ $dc.services.gitProxy.brokerURL | quote }}
+      tokenSecretRef:
+        name: {{ $dc.services.gitProxy.tokenSecretRef.name | quote }}
+        {{- with $dc.services.gitProxy.tokenSecretRef.key }}
+        key: {{ . | quote }}
+        {{- end }}
+    {{- end }}
+    {{- if $dc.services.dependaProxy.enabled }}
+    dependaProxy:
+      {{- with $dc.services.dependaProxy.npmURL }}
+      npmURL: {{ . | quote }}
+      {{- end }}
+      {{- with $dc.services.dependaProxy.pypiURL }}
+      pypiURL: {{ . | quote }}
+      {{- end }}
+      {{- with $dc.services.dependaProxy.goproxyURL }}
+      goproxyURL: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+    {{- if $dc.services.ollama.enabled }}
+    ollama:
+      baseURL: {{ $dc.services.ollama.baseURL | quote }}
+    {{- end }}
+  {{- end }}
+  storage:
+    workspace:
+      {{- with $dc.storage.workspace.size }}
+      size: {{ . | quote }}
+      {{- end }}
+      {{- if not (kindIs "invalid" $dc.storage.workspace.storageClassName) }}
+      storageClassName: {{ $dc.storage.workspace.storageClassName | quote }}
+      {{- end }}
+    # Only the block matching .type is emitted -- BackendSpec's XValidation
+    # rules reject an s3 block under type=pvc and vice versa.
+    backend:
+      type: {{ $dc.storage.backend.type }}
+      {{- if eq (toString $dc.storage.backend.type) "s3" }}
+      s3:
+        endpoint: {{ $dc.storage.backend.s3.endpoint | quote }}
+        bucket: {{ $dc.storage.backend.s3.bucket | quote }}
+        {{- with $dc.storage.backend.s3.region }}
+        region: {{ . | quote }}
+        {{- end }}
+        {{- with $dc.storage.backend.s3.prefix }}
+        prefix: {{ . | quote }}
+        {{- end }}
+        # A REFERENCE only -- see the chart README's "Secrets" section for the
+        # fixed key names the operator reads out of this pre-existing Secret.
+        # The chart never creates it and never templates a credential.
+        credentialsSecretRef:
+          name: {{ $dc.storage.backend.s3.credentialsSecretRef.name | quote }}
+          {{- with $dc.storage.backend.s3.credentialsSecretRef.key }}
+          key: {{ . | quote }}
+          {{- end }}
+        forcePathStyle: {{ $dc.storage.backend.s3.forcePathStyle }}
+      {{- else if eq (toString $dc.storage.backend.type) "pvc" }}
+      pvc:
+        claimName: {{ $dc.storage.backend.pvc.claimName | quote }}
+        {{- with $dc.storage.backend.pvc.subPath }}
+        subPath: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    {{- with $dc.storage.warmCacheTTL }}
+    warmCacheTTL: {{ . | quote }}
+    {{- end }}
+  network:
+    isolation: {{ $dc.network.isolation }}
+    {{- with $dc.network.extraEgress }}
+    extraEgress:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  timeouts:
+    {{- with $dc.timeouts.running }}
+    running: {{ . | quote }}
+    {{- end }}
+    {{- with $dc.timeouts.waiting }}
+    waiting: {{ . | quote }}
+    {{- end }}
+    {{- with $dc.timeouts.total }}
+    total: {{ . | quote }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,3 @@
+# The chart's own defaults, named as a fixture so the CI render matrix
+# produces a rendered/defaults.yaml artifact for it like every other case.
+{}

@@ -1,0 +1,23 @@
+# The LEGAL counterpart to guard G6: sandbox namespaces enforcing the
+# "restricted" Pod Security Standard can only run engine.type=none, because
+# internal/render/engine.go's rootless-podman Relaxations need exactly the
+# fields "restricted" forbids.
+image:
+  tag: v0.1.0
+
+sandboxNamespaces:
+  podSecurityEnforce: restricted
+
+defaultClass:
+  create: true
+  agent:
+    image: ghcr.io/psenna/ai-sandbox-agent:v1
+  engine:
+    type: none
+  storage:
+    backend:
+      type: pvc
+      pvc:
+        claimName: sandbox-archives
+  network:
+    isolation: Restricted

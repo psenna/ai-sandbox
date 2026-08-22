@@ -1,0 +1,133 @@
+{{- include "ai-sandbox-operator.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Leader election makes a rolling update safe; Recreate would open a
+  # needless control-plane gap for no benefit.
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "ai-sandbox-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "ai-sandbox-operator.podLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ai-sandbox-operator.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: {{ include "ai-sandbox-operator.imageRef" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Flag names cross-checked one by one against
+          # internal/config/config.go's flag.*Var calls.
+          args:
+            - --leader-elect={{ .Values.leaderElection.enabled }}
+            - --leader-election-id={{ .Values.leaderElection.id }}
+            {{- with .Values.leaderElection.namespace }}
+            - --leader-election-namespace={{ . }}
+            {{- end }}
+            - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
+            - --metrics-bind-address={{ if .Values.metrics.enabled }}:{{ .Values.metrics.port }}{{ else }}0{{ end }}
+            - --slot-capacity={{ int .Values.slots.capacity }}
+            - --scheduler-interval={{ .Values.slots.schedulerInterval }}
+            - --warm-cache-gc-interval={{ .Values.warmCache.gcInterval }}
+            - --cluster-id={{ .Values.clusterID }}
+            {{- with .Values.watchNamespace }}
+            - --watch-namespace={{ . }}
+            {{- end }}
+            - --default-sandbox-class={{ .Values.defaultClass.name }}
+            - --class-secret-namespace={{ include "ai-sandbox-operator.classSecretNamespace" . }}
+            - --sidecar-image={{ include "ai-sandbox-operator.sidecarImageRef" . }}
+            - --operator-ingress-label={{ .Values.network.operatorIngressLabel }}
+            - --cni-probe-interval={{ .Values.cniProbe.interval }}
+            - --retention-ttl={{ .Values.retention.ttl }}
+            - --retention-dry-run={{ .Values.retention.dryRun }}
+            - --retention-gc-interval={{ .Values.retention.gcInterval }}
+            - --metrics-collect-interval={{ .Values.metrics.collectInterval }}
+            - --log-verbosity={{ int .Values.logging.verbosity }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            # config.go's classSecretNamespaceDefault() reads this, and
+            # config/manager/manager.yaml sets it the same way.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: probes
+              containerPort: {{ .Values.healthProbe.port }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

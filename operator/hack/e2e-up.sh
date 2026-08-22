@@ -16,6 +16,12 @@ set -eu
 #
 # Idempotent: any existing cluster of the same name is deleted first, so
 # re-running this script is a full restart, not a no-op.
+#
+# E2E_DEPLOY (#34) selects how the operator itself is deployed: "kustomize"
+# (default, test/e2e/manifests/operator) or "helm" (deploy/helm/
+# ai-sandbox-operator + test/e2e/manifests/helm-e2e-values.yaml). Either way
+# `helm`/`kubectl` must be on PATH -- see hack/fetch-e2e-tools.sh for how
+# E2E_BIN_DIR gets a helm binary alongside kind/kubectl.
 
 E2E_CLUSTER="${E2E_CLUSTER:-ai-sandbox-e2e}"
 E2E_CNI="${E2E_CNI:-kindnet}"
@@ -23,6 +29,13 @@ KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.34.0}"
 MINIO_IMAGE="${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}"
 E2E_KUBECONFIG="${E2E_KUBECONFIG:-$PWD/.e2e-kubeconfig}"
 E2E_INTERNAL_KUBECONFIG="${E2E_INTERNAL_KUBECONFIG:-}"
+# kustomize (default): kubectl apply -k test/e2e/manifests/operator, as
+# before #34. helm: install the chart at deploy/helm/ai-sandbox-operator with
+# test/e2e/manifests/helm-e2e-values.yaml, which sets fullnameOverride to the
+# SAME Deployment name the kustomize overlay produces
+# (ai-sandbox-operator-controller-manager) -- so every rollout-status/name
+# lookup below this point needs no branching of its own.
+E2E_DEPLOY="${E2E_DEPLOY:-kustomize}"
 
 OPERATOR_IMAGE="ai-sandbox-operator:e2e"
 AGENT_IMAGE="ai-sandbox-e2e-agent:test"
@@ -88,8 +101,14 @@ fi
 echo "==> loading images into the cluster"
 kind load docker-image --name "$E2E_CLUSTER" "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$DOUBLES_IMAGE" "$MINIO_IMAGE"
 
-echo "==> deploying operator + MinIO + platform doubles"
-kubectl apply -k test/e2e/manifests/operator
+echo "==> deploying operator + MinIO + platform doubles (E2E_DEPLOY=$E2E_DEPLOY)"
+if [ "$E2E_DEPLOY" = "helm" ]; then
+  helm install ai-sandbox-operator deploy/helm/ai-sandbox-operator \
+    --namespace ai-sandbox-operator-system --create-namespace \
+    -f test/e2e/manifests/helm-e2e-values.yaml --wait --timeout 300s
+else
+  kubectl apply -k test/e2e/manifests/operator
+fi
 kubectl apply -f test/e2e/manifests/minio.yaml -f test/e2e/manifests/doubles.yaml
 
 echo "==> waiting for rollouts"

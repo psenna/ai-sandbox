@@ -1,0 +1,44 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+# Gated on the value alone, NOT on .Capabilities.APIVersions: `helm template`
+# without --api-versions would silently drop the object and the CI fixture's
+# render assertion would pass vacuously. Requires the Prometheus Operator's
+# monitoring.coreos.com/v1 CRDs in the target cluster -- see the README.
+# Guard G18 rejects serviceMonitor.enabled=true with metrics.enabled=false.
+# Mirrors config/prometheus/monitor.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ai-sandbox-operator.fullname" . }}-metrics
+  namespace: {{ .Values.metrics.serviceMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ai-sandbox-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - path: /metrics
+      port: metrics
+      scheme: http
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      honorLabels: {{ .Values.metrics.serviceMonitor.honorLabels }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

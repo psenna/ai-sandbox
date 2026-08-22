@@ -1,0 +1,105 @@
+ai-sandbox-operator {{ .Chart.AppVersion }} installed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+  image:                 {{ include "ai-sandbox-operator.imageRef" . }}
+  sidecar image:         {{ include "ai-sandbox-operator.sidecarImageRef" . }}
+  replicas:              {{ .Values.replicaCount }} (leader election: {{ .Values.leaderElection.enabled }})
+  slot capacity:         {{ .Values.slots.capacity }}
+  cluster ID:            {{ .Values.clusterID }}
+  watch scope:           {{ if .Values.watchNamespace }}namespace "{{ .Values.watchNamespace }}"{{ else }}all namespaces{{ end }}
+  class-secret namespace:{{ " " }}{{ include "ai-sandbox-operator.classSecretNamespace" . }}
+  default SandboxClass:  {{ .Values.defaultClass.name }}
+
+1. Wait for the manager to become available:
+
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "ai-sandbox-operator.fullname" . }}
+
+{{- if .Values.tests.enabled }}
+
+2. Run the chart's smoke test (scrapes /metrics and asserts the operator's own
+   gauges are being served):
+
+     helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+{{- else }}
+
+2. `helm test` is disabled (tests.enabled=false). Set tests.enabled=true to
+   enable the /metrics smoke test.
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+
+3. Reach the metrics endpoint:
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ai-sandbox-operator.fullname" . }}-metrics 8080:{{ .Values.metrics.service.port }}
+     curl http://127.0.0.1:8080/metrics
+
+   Every replica serves live gauges (MetricsCollector is intentionally NOT
+   leader-elected), so scraping the Service scrapes them all.
+{{- else }}
+
+3. Metrics are disabled (metrics.enabled=false): the manager runs with
+   --metrics-bind-address=0 and no metrics Service is rendered.
+{{- end }}
+
+{{- if not .Values.defaultClass.create }}
+
+4. NO SandboxClass EXISTS YET. defaultClass.create=false, so this chart created
+   none -- but the manager still runs with
+   --default-sandbox-class={{ .Values.defaultClass.name }}. Every
+   SandboxEnvironment that does not name a class explicitly will stall until a
+   cluster-scoped SandboxClass named "{{ .Values.defaultClass.name }}" exists:
+
+     kubectl get sandboxclass {{ .Values.defaultClass.name }}
+
+   Create one yourself, or re-install with defaultClass.create=true.
+{{- else }}
+
+4. A cluster-scoped SandboxClass "{{ .Values.defaultClass.name }}" was created. It carries
+   helm.sh/resource-policy: keep, so `helm uninstall` will NOT delete it out
+   from under running sandboxes:
+
+     kubectl get sandboxclass {{ .Values.defaultClass.name }} -o yaml
+
+5. SECRETS YOU MUST CREATE. This chart creates no Secret, ever. The following
+   must already exist in namespace "{{ include "ai-sandbox-operator.classSecretNamespace" . }}":
+{{- if eq (toString .Values.defaultClass.storage.backend.type) "s3" }}
+
+     Secret "{{ .Values.defaultClass.storage.backend.s3.credentialsSecretRef.name }}" with the FIXED keys:
+       accessKeyID       (required)
+       secretAccessKey   (required)
+       sessionToken      (optional)
+     The .key field on credentialsSecretRef is ignored for the s3 backend.
+{{- end }}
+{{- if .Values.defaultClass.services.gitProxy.enabled }}
+
+     Secret "{{ .Values.defaultClass.services.gitProxy.tokenSecretRef.name }}" with key "{{ .Values.defaultClass.services.gitProxy.tokenSecretRef.key }}"
+     (the git-proxy bearer token).
+{{- end }}
+{{- if and (ne (toString .Values.defaultClass.storage.backend.type) "s3") (not .Values.defaultClass.services.gitProxy.enabled) }}
+
+     (none -- the default class references no Secret with this configuration.)
+{{- end }}
+{{- end }}
+
+6. RETENTION.{{ if .Values.retention.dryRun }} retention.dryRun=true: RetentionGC will only LOG
+   what it would delete, in both the retention and orphan sweeps. Nothing is
+   actually deleted. Set retention.dryRun=false once you trust the sweep.
+{{- else if eq (toString .Values.retention.ttl) "0" }} retention.ttl=0: the TTL sweep is
+   DISABLED. Terminal archives are kept forever (orphan cleanup still runs).
+{{- else }} Terminal archives are DELETED FOR REAL {{ .Values.retention.ttl }} after
+   status.archive.finishedAt (retention.ttl={{ .Values.retention.ttl }}, retention.dryRun=false),
+   swept every {{ .Values.retention.gcInterval }}. Set retention.dryRun=true to observe a sweep
+   without deleting anything.
+{{- end }}
+
+7. UPGRADING CRDs. Helm never upgrades anything under a chart's crds/
+   directory. When upgrading across a chart version that changes the CRDs,
+   apply them yourself FIRST:
+
+     kubectl apply --server-side -f <chart>/crds/
+     helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }}
+
+8. SECRET ROTATION. Rotating the contents of a class-referenced Secret is
+   picked up live -- the operator reads those Secrets uncached, so no rollout
+   restart is needed. Renaming the Secret does require editing the class.
+
+Chart documentation: operator/deploy/helm/ai-sandbox-operator/README.md
