@@ -19,15 +19,16 @@ import (
 // snapshot Job, then the archive Job -- see internal/controller/archive.go's
 // reconcileDelete/archive), each needing its own pod scheduling + image pull
 // + run, stitched together by a state machine that only re-checks progress
-// every lifecycle.TerminalArchiveRequeue (1m). That is structurally slower
-// than a single phase transition, so it does not fit inside
-// h.Cfg.PhaseTimeout (5m) once it has to compete for the 2-vCPU CI runner's
-// node capacity against whichever other spec is concurrently running on the
-// suite's other ginkgo process. Confirmed reproducible in CI even after
-// isolating this wait behind its own fresh PhaseTimeout budget (decoupled
-// from the WaitForPhase(Done)/finishedAt wait that precedes it): the
-// environment reached Done, but status.archive was still nil 300s later.
-// Mirrors freeze_test.go's identically-motivated s3FaultTimeout.
+// every lifecycle.TerminalArchiveRequeue (1m) -- structurally slower than a
+// single phase transition even with a whole 2-vCPU CI node to itself. The
+// REAL fix for the timeouts this wait originally hit is the spec's own
+// Serial tag below (isolating it from every other spec's concurrent pods/
+// Jobs on the same node -- confirmed by CI evidence: this exact wait timed
+// out first at 5m (h.Cfg.PhaseTimeout) and then again at this constant's
+// previous value of 8m, both while running non-Serial, i.e. genuinely
+// starved of node capacity, not just slow). This constant is a safety
+// margin on top of that isolation, not a substitute for it. Mirrors
+// freeze_test.go's identically-motivated s3FaultTimeout.
 const archiveTimeout = 8 * time.Minute
 
 // e2eSlotCapacity mirrors test/e2e/manifests/operator/kustomization.yaml's
@@ -207,7 +208,13 @@ var _ = Describe("operator metrics", func() {
 			"queue_wait_seconds should have gained one observation per queued environment as they drained and were admitted")
 	})
 
-	It("runs an environment to completion and records the full plain-run Event reason set with secret-free messages", func() {
+	It("runs an environment to completion and records the full plain-run Event reason set with secret-free messages", Serial, func() {
+		// Serial: the terminal archive (see archiveTimeout's comment) needs
+		// two sequential batch Jobs to actually run to completion on the
+		// node, not just get admitted -- CI evidence showed it starved past
+		// an 8-minute budget when sharing the 2-vCPU runner with whatever
+		// spec the suite's other ginkgo process happened to be running at
+		// the same time. Running alone removes that contention outright.
 		class := h.CreateClass(ctx)
 		// A sleep before sandbox-done, not an immediate completion: Started
 		// fires only on the Restoring->Running transition (nextRestoring,
