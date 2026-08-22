@@ -241,10 +241,12 @@ MINIO_TEST_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 endif
 
 .PHONY: all build test vet fmt fmt-check lint vuln tidy manifests generate \
+	crd-docs crd-docs-check \
 	kustomize-build docker-build cross smoke clean envtest-assets test-envtest \
 	e2e-tools e2e-up e2e-run e2e-down e2e e2e-tidy e2e-vet e2e-collect \
 	minio-up minio-down test-minio storage-conformance \
-	helm-crds helm-crds-check helm-rbac-check helm-lint helm-template helm-kind
+	helm-crds helm-crds-check helm-rbac-check helm-lint helm-template helm-kind \
+	quickstart-check
 
 all: vet fmt-check lint test
 
@@ -295,6 +297,35 @@ manifests: bin/controller-gen
 
 generate: bin/controller-gen
 	$(DOCKER_RUN) ./bin/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+# --- CRD reference doc (docs/crd-reference.md) ----------------------------
+#
+# crd-docs regenerates docs/crd-reference.md from config/crd/bases/*.yaml --
+# controller-gen's own output from the Go doc comments and +kubebuilder
+# markers on api/v1alpha1. The full chain is therefore
+#   Go doc comment -> controller-gen -> config/crd/bases -> this markdown,
+# and CI (.github/workflows/operator.yml, `api` job) runs
+# `make manifests generate crd-docs` followed by a git diff --exit-code, so
+# the doc cannot drift from the types. Same "generated artifact is committed
+# and CI re-derives it" shape as `manifests`/`generate` themselves.
+#
+# NOTE: this target does NOT depend on bin/controller-gen -- it reads the
+# COMMITTED CRD YAML, so it needs only the operator module's own deps and
+# runs in a plain golang container with no hack/tools build.
+CRD_FILES ?= config/crd/bases/sandbox.psenna.dev_sandboxclasses.yaml \
+             config/crd/bases/sandbox.psenna.dev_sandboxenvironments.yaml
+
+crd-docs:
+	$(DOCKER_RUN) sh -c 'go run ./hack/crdref $(CRD_FILES) > docs/crd-reference.md'
+
+# crd-docs-check fails if the committed docs/crd-reference.md differs from a
+# fresh render -- the same shape as helm-crds-check/helm-rbac-check above.
+crd-docs-check:
+	@$(DOCKER_RUN) sh -c 'go run ./hack/crdref $(CRD_FILES) > /tmp/crd-reference.md; \
+	  if ! diff -u docs/crd-reference.md /tmp/crd-reference.md; then \
+	    echo "crd-docs-check: docs/crd-reference.md has drifted from config/crd/bases -- run '"'"'make crd-docs'"'"'" >&2; \
+	    exit 1; \
+	  fi'
 
 envtest-assets:
 	$(DOCKER_RUN) ./hack/fetch-envtest.sh $(ENVTEST_K8S_VERSION) $(ENVTEST_TARGET_DIR)
@@ -491,3 +522,19 @@ storage-conformance: minio-up
 	$(MAKE) IN_CONTAINER=$(IN_CONTAINER) test-minio || rc=$$?; \
 	$(MAKE) IN_CONTAINER=$(IN_CONTAINER) minio-down; \
 	exit $$rc
+
+# quickstart-check runs hack/quickstart-check.sh, which EXTRACTS the
+# `sh quickstart`-tagged fenced code blocks from operator/README.md and
+# executes them verbatim against a real kind cluster -- #35's "the
+# quickstart is executed in CI as a documentation test, so it cannot rot
+# silently". There is no second copy of the commands to keep in sync: the
+# doc IS the script.
+#
+# Like helm-kind above, this is only fully supported IN_CONTAINER=1 (a CI
+# runner, or any shell with docker/kind/kubectl/helm on PATH) --
+# docker:28-cli under E2E_TOOLBOX_RUN cannot address a kind API server the
+# way this sandbox's nested DinD requires. Not required to pass locally.
+quickstart-check:
+	E2E_ARTIFACT_DIR=$(E2E_ARTIFACT_TARGET_DIR) \
+	PATH="$(E2E_BIN_TARGET_DIR):$$PATH" \
+	$(E2E_TOOLBOX_RUN) ./hack/quickstart-check.sh

@@ -1,18 +1,444 @@
 # ai-sandbox operator
 
-Kubernetes operator for ai-sandbox. See [issue #15](https://github.com/psenna/ai-sandbox/issues/15)
-for the broader design context.
+A Kubernetes operator that runs the same kind of AI-coding-agent sandbox as
+the [root repository's compose stack](../README.md), but as a cluster
+resource: `kubectl apply` a `SandboxEnvironment` instead of attaching to a
+container, get many concurrent policy-isolated runs instead of one, and get
+freeze/wake so a run can pause for hours without holding a slot. See the
+root README's [compose-vs-operator
+comparison](../README.md#two-ways-to-run-this-the-compose-stack-or-the-kubernetes-operator)
+if you have not picked which one you want yet.
 
-**To install the operator**, use the [Helm chart](deploy/helm/ai-sandbox-operator/README.md)
-at `deploy/helm/ai-sandbox-operator` (#34) -- it is the supported install
-path (values reference, RBAC table, guarded misconfiguration errors,
-`crds/`, `helm test`). `config/default` (kustomize) remains for local/e2e
-development (`make kustomize-build`, `hack/e2e-up.sh`) but is not a
-packaged, versioned install artifact the way the chart is.
+## What it does
 
-This directory started as a **scaffold only** (issue #16): a Go module,
-kubebuilder v4 project layout, CI, and a manager that starts, serves health
-probes, and exits cleanly. [Issue #17](https://github.com/psenna/ai-sandbox/issues/17)
+Two CRDs. A `SandboxClass` is a reusable, cluster-scoped template (image,
+resources, engine, storage backend, network isolation, timeouts); a
+`SandboxEnvironment` is one run against one class.
+
+| CRD | Scope | Purpose |
+|---|---|---|
+| `SandboxClass` | Cluster-scoped | Reusable template: agent image + resources, engine type, storage backend (`s3`/`pvc`), network isolation (`Open`/`Restricted`), default timeouts. Referenced by name from `SandboxEnvironment.spec.classRef`. |
+| `SandboxEnvironment` | Namespaced | One run: which repo, what task (a prompt or an issue reference), which class. The operator drives it through an 8-phase state machine to `Done` or `Failed`. |
+
+## Architecture
+
+```
+                     ┌─────────────────────────────┐
+                     │   manager (Deployment,       │
+                     │   leader-elected)             │
+                     │                               │
+                     │  SandboxEnvironment           │
+                     │  reconciler:                  │
+                     │  Observe -> lifecycle.Next     │
+                     │  -> actions -> writeStatus    │
+                     │                               │
+                     │  + 5 manager.Runnables:        │
+                     │    SlotScheduler    (leader)  │
+                     │    WarmCacheGC       (leader)  │
+                     │    RetentionGC       (leader)  │
+                     │    CNIProbeRunnable  (leader)  │
+                     │    MetricsCollector  (NOT      │
+                     │      leader -- every replica   │
+                     │      keeps its own gauges live)│
+                     └───────────────┬───────────────┘
+                                     │ owns / watches
+                                     ▼
+       ┌─────────────────────────────────────────────────────┐
+       │  per-environment children (owner ref -> env)          │
+       │                                                       │
+       │  ServiceAccount · Role/RoleBinding · workspace PVC     │
+       │  ConfigMap (sandbox.json, task.md) · Secret (env)      │
+       │  NetworkPolicy (Restricted only) · <env>-snapshot      │
+       │  Secret (S3 backend only)                              │
+       │                                                       │
+       │  Pod:                                                 │
+       │   init: sandboxctl (always)  init: restore (S3, wake)  │
+       │   container: agent  (sole regular container)           │
+       └─────────────────────────────────────────────────────┘
+```
+
+**The manager** is a single Deployment, leader-elected. Its
+`SandboxEnvironment` reconciler follows one fixed shape every pass:
+`Observe` (read the cluster's current facts) -> `lifecycle.Next` (a pure
+function: facts + spec -> phase decision, no I/O) -> `actions` (apply what
+the decision calls for) -> `writeStatus` (persist conditions/phase, emit
+Events). Five `manager.Runnable`s run alongside the reconciler: the slot
+scheduler, warm-cache GC, retention GC, and the CNI enforcement probe are
+all leader-elected (one cluster-wide loop); the metrics collector
+deliberately is **not** — every replica needs its own `/metrics` gauges
+live, not just the leader's.
+
+**Per-environment children**, all owned by a single controller
+`ownerReference` back to the environment (deleting the CR garbage-collects
+the lot): a `ServiceAccount` (the sidecar's identity, automount disabled), a
+`Role`+`RoleBinding` (get/patch on this environment's own status only), the
+workspace `PersistentVolumeClaim` (the warm cache, retained across
+freeze/wake), a `ConfigMap` (resolved run config + task instructions), a
+`Secret` (the agent's process environment), a `NetworkPolicy` (only under
+`Restricted` isolation), and a snapshot-credentials `Secret` (only on an
+S3-backed class).
+
+**The pod's three containers**: `sandboxctl` (native sidecar, KEP-753,
+always present, holds the Kubernetes credential, exposes the loopback
+control API), `restore` (one-shot init container, S3-backed classes only,
+rendered **last** among init containers, only present on a wake), and
+`agent` (the sole regular container — the only one holding no Kubernetes
+credential at all). See [`docs/security.md`](docs/security.md) for exactly
+what each container can and cannot reach.
+
+## The state machine
+
+Eight phases:
+
+| Phase | Meaning | Holds a slot? |
+|---|---|---|
+| `Pending` | Resources not all ready yet. | No |
+| `Ready` | Resources ready, waiting on a scheduling slot. | No |
+| `Restoring` | Slot granted, pod starting (and, on a wake, restoring from a snapshot). | Yes |
+| `Running` | Pod is `Running` and `Ready`. | Yes |
+| `Freezing` | Snapshotting the workspace/agent-home, then deleting the pod. | Yes |
+| `Waiting` | Frozen; waiting for a declared probe to clear (or suspend to lift). | No |
+| `Done` | Terminal: succeeded. | No |
+| `Failed` | Terminal: failed or timed out. | No |
+
+```
+Pending --resources ready--> Ready --slot granted--> Restoring --pod Running+Ready--> Running
+Running --wait declared | suspend--> Freezing --snapshot done + pod gone--> Waiting
+Waiting --probe satisfied | suspend cleared--> Ready
+{Restoring,Running} --agent /v1/done | pod exit--> Done | Failed
+{any non-terminal} --timeout--> Failed
+{Done,Failed} --never snapshotted & pod alive--> Freezing (archive detour) --> Waiting --> back to terminal
+```
+
+Terminal phases (`Done`/`Failed`) are **sticky**, with exactly one
+exception: the archive detour above, for an environment that reaches a
+terminal phase with a live pod but no snapshot yet — it freezes once more
+so the transcript is captured before the pod goes away, then proceeds back
+to its terminal phase. Timeouts are checked **after** agent/pod completion
+(so a completion landing right on the timeout boundary wins) and **before**
+the class-resolved gate and the rest of the per-phase logic.
+
+Nine conditions are ever set: the six lifecycle conditions `Scheduled`,
+`PodReady`, `Frozen`, `WaitSatisfied`, `Archived`, `Ready` (always written
+in that order), plus three non-lifecycle conditions the reconciler appends
+and never prunes: `EngineSecurityRelaxed`, `NetworkPosture`,
+`CNIEnforcement`. Every reason any of these nine can carry, what it means,
+and what to do about it is the full table in
+[`docs/operations.md`](docs/operations.md#condition-reasons).
+
+## Quickstart
+
+Run these from the **repository root**. You need `docker`, `kind`,
+`kubectl` and `helm` on `PATH`. Total time ~8 minutes, most of it building
+the operator image.
+
+**No operator image has been published yet** (see
+`.github/workflows/release.yml`), so the quickstart builds one from this
+checkout and loads it into kind. Once a release is cut, `helm install …
+oci://ghcr.io/psenna/charts/ai-sandbox-operator` replaces steps 2 and 4.
+
+The agent image here is **`operator/test/e2e/agent` — a stand-in**, not a
+real coding agent. Its `claude` binary interprets `SCRIPT:` directives so
+the quickstart needs no model endpoint, no git-proxy and no credentials.
+For a real agent against a real repository, see
+[`docs/worked-example.md`](docs/worked-example.md).
+
+**Every command in this section is executed verbatim in CI** by
+`operator/hack/quickstart-check.sh` (job `quickstart` in
+`.github/workflows/docs.yml`), which extracts these fenced blocks from this
+file and runs them. If you can read it here, CI ran it.
+
+**1 — create a cluster**
+
+```sh quickstart
+kind create cluster --name ai-sandbox-quickstart --image kindest/node:v1.34.0 --wait 120s
+kubectl config use-context kind-ai-sandbox-quickstart
+kubectl cluster-info
+```
+
+**2 — build and load the images**
+
+The MinIO image used in step 3 must already be present on the node —
+pulled and loaded here, alongside the two images this repo builds, so the
+rest of the quickstart never depends on the kind cluster having registry
+egress.
+
+```sh quickstart
+docker build -t ai-sandbox-operator:quickstart operator
+docker build -t ai-sandbox-quickstart-agent:v1 operator/test/e2e/agent
+docker pull minio/minio:RELEASE.2025-09-07T16-13-09Z
+kind load docker-image --name ai-sandbox-quickstart \
+  ai-sandbox-operator:quickstart ai-sandbox-quickstart-agent:v1 \
+  minio/minio:RELEASE.2025-09-07T16-13-09Z
+```
+
+**3 — an S3 backend (MinIO) and its credentials Secret**
+
+> The operator resolves `storage.backend.s3.credentialsSecretRef` from
+> **its own namespace** (`--class-secret-namespace`, defaulting to the
+> release namespace), reading the **fixed** keys `accessKeyID` /
+> `secretAccessKey`. `credentialsSecretRef.key` is ignored for the S3
+> backend.
+
+```sh quickstart
+kubectl create namespace ai-sandbox-quickstart
+kubectl create namespace ai-sandbox-operator-system
+
+kubectl -n ai-sandbox-operator-system create secret generic sandbox-s3-credentials \
+  --from-literal=accessKeyID=quickstart \
+  --from-literal=secretAccessKey=quickstart123
+
+kubectl -n ai-sandbox-quickstart apply -f - <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: minio, namespace: ai-sandbox-quickstart}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: minio}}
+  template:
+    metadata: {labels: {app: minio}}
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data"]
+          env:
+            - {name: MINIO_ROOT_USER, value: quickstart}
+            - {name: MINIO_ROOT_PASSWORD, value: quickstart123}
+          ports: [{containerPort: 9000}]
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: 9000}
+            periodSeconds: 2
+            failureThreshold: 60
+          volumeMounts: [{name: data, mountPath: /data}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: minio, namespace: ai-sandbox-quickstart}
+spec:
+  selector: {app: minio}
+  ports: [{name: api, port: 9000, targetPort: 9000}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: minio-bootstrap, namespace: ai-sandbox-quickstart}
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              until mc alias set local http://minio:9000 quickstart quickstart123; do sleep 2; done
+              mc mb --ignore-existing local/sandbox-archives
+              echo BOOTSTRAP_OK
+EOF
+
+kubectl -n ai-sandbox-quickstart rollout status deployment/minio --timeout=300s
+kubectl -n ai-sandbox-quickstart wait --for=condition=complete job/minio-bootstrap --timeout=180s
+```
+
+**4 — install the operator**
+
+```sh quickstart
+helm install ai-sandbox-operator operator/deploy/helm/ai-sandbox-operator \
+  --namespace ai-sandbox-operator-system \
+  --set image.repository=ai-sandbox-operator \
+  --set image.tag=quickstart \
+  --set image.pullPolicy=IfNotPresent \
+  --set sidecarImage=ai-sandbox-operator:quickstart \
+  --set leaderElection.enabled=false \
+  --wait --timeout 300s
+
+kubectl -n ai-sandbox-operator-system rollout status deployment/ai-sandbox-operator --timeout=300s
+helm test ai-sandbox-operator -n ai-sandbox-operator-system --logs
+```
+
+**5 — a `SandboxClass`**
+
+> **`engine.type: none` is not optional here.** The CRD default is
+> `rootless-podman`, which is **not implemented** — leave it at the default
+> and no pod is ever created. See [`docs/engines.md`](docs/engines.md).
+> `network.isolation: Open` keeps the quickstart to one moving part. The
+> CRD default is `Restricted`; see [`docs/security.md`](docs/security.md)
+> for exactly what it allows and what it does not.
+
+```sh quickstart
+kubectl apply -f - <<'EOF'
+apiVersion: sandbox.psenna.dev/v1alpha1
+kind: SandboxClass
+metadata: {name: quickstart}
+spec:
+  agent:
+    image: ai-sandbox-quickstart-agent:v1
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+  engine:
+    type: none
+  storage:
+    workspace: {size: 128Mi}
+    backend:
+      type: s3
+      s3:
+        endpoint: http://minio.ai-sandbox-quickstart.svc.cluster.local:9000
+        bucket: sandbox-archives
+        credentialsSecretRef: {name: sandbox-s3-credentials}
+  network:
+    isolation: Open
+  timeouts: {running: 1h, waiting: 1h, total: 2h}
+EOF
+kubectl get sandboxclass quickstart -o wide
+```
+
+**6 — a `SandboxEnvironment`**
+
+```sh quickstart
+kubectl apply -f - <<'EOF'
+apiVersion: sandbox.psenna.dev/v1alpha1
+kind: SandboxEnvironment
+metadata: {name: hello, namespace: ai-sandbox-quickstart}
+spec:
+  classRef: {name: quickstart}
+  repo: psenna/e2e-fixture
+  task:
+    prompt: |
+      SCRIPT:echo hello from the sandbox
+      SCRIPT:write REPORT.md the agent wrote this
+      SCRIPT:sandbox-done Succeeded wrote REPORT.md
+      SCRIPT:exit 0
+EOF
+```
+
+**7 — watch it complete**
+
+```sh quickstart
+kubectl -n ai-sandbox-quickstart wait sandboxenvironment/hello \
+  --for=jsonpath='{.status.phase}'=Done --timeout=420s
+kubectl -n ai-sandbox-quickstart get sandboxenvironment hello -o wide
+```
+
+**8 — read the result**
+
+```sh quickstart
+kubectl -n ai-sandbox-quickstart get sandboxenvironment hello \
+  -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\n"}{end}'
+
+kubectl -n ai-sandbox-quickstart get sandboxenvironment hello \
+  -o jsonpath='{.status.agentResult.outcome}{"\n"}{.status.archive.uri}{"\n"}'
+```
+
+Expect nine conditions, roughly:
+
+```console
+Scheduled       True    Terminal
+PodReady        False   PodSucceeded
+Frozen          False   NotFrozen
+WaitSatisfied   False   NoWaitDeclared
+Archived        True    ArchiveWritten
+Ready           False   Succeeded
+EngineSecurityRelaxed  False   NoRelaxation
+NetworkPosture         False   Open
+CNIEnforcement         Unknown Unconfirmed
+```
+
+If any reason above surprises you, [`docs/operations.md`](docs/operations.md#condition-reasons)
+has the full table of every reason the operator can emit, what it means,
+and what to do.
+
+**9 — prove the archive really landed**
+
+```sh quickstart
+kubectl -n ai-sandbox-quickstart run mc --rm -i --restart=Never \
+  --image=minio/minio:RELEASE.2025-09-07T16-13-09Z --image-pull-policy=IfNotPresent \
+  --command -- sh -c \
+  'mc alias set q http://minio:9000 quickstart quickstart123 >/dev/null && mc ls --recursive q/sandbox-archives' \
+  | tee /dev/stderr | grep -q 'archive/run.json'
+```
+
+**10 — clean up**
+
+```sh quickstart
+kind delete cluster --name ai-sandbox-quickstart
+```
+
+## Where to go next
+
+- [`docs/engines.md`](docs/engines.md) — what `engine.type: none` gives you
+  today, and why `rootless-podman` (the CRD default) does not work yet.
+- [`docs/security.md`](docs/security.md) — the trust boundary: what the
+  agent can and cannot reach, what `Restricted` isolation actually
+  protects, and the residual risks stated plainly.
+- [`docs/operations.md`](docs/operations.md) — installing, sizing slots,
+  storage/retention, metrics, and troubleshooting by condition reason.
+- [`docs/worked-example.md`](docs/worked-example.md) — a real agent against
+  a real repository, issue to merged PR, honestly labelled as not
+  CI-executed.
+- [`docs/crd-reference.md`](docs/crd-reference.md) — the generated field
+  reference for both CRDs.
+
+## Layout
+
+```
+operator/
+├── cmd/main.go              entrypoint: config, manager, signal handling
+├── cmd/sandboxctl/          the sidecar/init-container binary entrypoint
+├── api/v1alpha1/            SandboxClass / SandboxEnvironment API types
+├── internal/config/         flag/env configuration surface
+├── internal/operator/       manager construction (scheme, options, probes)
+├── internal/lifecycle/      pure SandboxEnvironment phase state machine (no controller-runtime import)
+├── internal/render/         pure child-object renderer: PVC/ServiceAccount/Role/RoleBinding/ConfigMap/Secret/Pod/NetworkPolicy (no controller-runtime import)
+├── internal/storage/        S3/PVC snapshot+archive backends, path layout, manifest (no controller-runtime import, no Secret reads)
+├── internal/controller/     the reconciler: Observe -> lifecycle.Next -> actions -> status write
+├── internal/sandboxctl/     the sidecar's own logic: control API, freeze/restore/archive
+├── internal/metrics/        the Prometheus metric catalogue
+├── internal/crdref/         the CRD-reference markdown generator (library)
+├── internal/docs/           doc-completeness enforcement tests (this issue)
+├── internal/apitest/        envtest-backed API validation/round-trip tests
+├── config/                  kustomize bases (CRDs, manager Deployment, RBAC)
+├── config/samples/          example SandboxClass/SandboxEnvironment YAML
+├── deploy/helm/              the supported Helm chart (#34)
+├── docs/                    this directory: engines/security/operations/development/worked-example/crd-reference
+├── hack/                    boilerplate header, smoke test, tool/e2e/quickstart scripts
+├── hack/tools/              separate Go module that builds controller-gen
+├── hack/crdref/              `main` wrapper for the CRD-reference generator
+├── test/e2e/                kind-based end-to-end suite (separate Go module)
+├── Dockerfile               multi-stage, cross-compiled, distroless
+└── Makefile                 build/test/lint entrypoints (see docs/development.md)
+```
+
+## Status: what is and is not implemented
+
+| Feature | Status |
+|---|---|
+| Phase state machine, conditions, events, metrics, logging | shipped |
+| Child resources, agent pod, `sandboxctl` sidecar | shipped |
+| Slot scheduler, queue position | shipped |
+| Freeze / wake / restore, warm cache + TTL GC | shipped, **S3 backend only** |
+| Wait probes (`GitProxyCheck`/`HTTPGet`/`S3ObjectExists`/`NotBefore`) | **shipped** (#30) — the operator evaluates them and clears the wait |
+| Terminal archive, finalizer, retention GC | shipped, **S3 backend only** |
+| NetworkPolicy + `Restricted` isolation + CNI probe | shipped |
+| Helm chart | shipped (#34) |
+| `engine.type: none` | shipped |
+| `engine.type: rootless-podman` | **not implemented** (#24) — fails closed at render |
+| Kubernetes-native workload broker | **not started** (#25, post-v1) |
+| Published operator image / OCI chart | **not published yet** |
+
+## Design notes
+
+The sections below are the design record for each issue that shaped this
+directory, kept for reference — they are not a getting-started guide (see
+[Quickstart](#quickstart) and [Where to go next](#where-to-go-next) for
+that). This directory started as a **scaffold only** (issue #16): a Go
+module, kubebuilder v4 project layout, CI, and a manager that starts,
+serves health probes, and exits cleanly. [Issue #17](https://github.com/psenna/ai-sandbox/issues/17)
 added the `sandbox.psenna.dev/v1alpha1` API types (`SandboxClass`,
 `SandboxEnvironment`), their CRDs, and envtest-backed validation/round-trip
 tests. [Issue #18](https://github.com/psenna/ai-sandbox/issues/18) added the
@@ -25,26 +451,15 @@ earlier stub) for everything an environment needs besides its pod: a pure,
 deterministic renderer (`internal/render`) produces the workspace PVC, the
 sidecar's ServiceAccount/Role/RoleBinding, the agent's environment Secret,
 and the entrypoint ConfigMap, applied via server-side apply and observed for
-readiness. [Issue #26](https://github.com/psenna/ai-sandbox/issues/26) added
-`internal/storage`: the two snapshot/archive storage backends
-(`s3`/`aws-sdk-go-v2` and `pvc`/mounted-filesystem), the object-key path
-layout, and the snapshot manifest format -- a pure Go library, not yet
-wired into the reconciler. [Issue #27](https://github.com/psenna/ai-sandbox/issues/27)
-added the agent pod (`internal/render.RenderPod`, `#21/#24`'s engine seam
-still stubbed) and the `sandboxctl` sidecar (`cmd/sandboxctl`,
-`internal/sandboxctl`): an always-present native-sidecar init container
-(KEP-753) that holds the environment's Kubernetes credential and exposes a
-localhost-only control API (`/v1/wait`, `/v1/done`, `/v1/progress`,
-`/v1/status`) so the agent container -- which holds no credential at all --
-can declare a wait condition or report its result. See
-`claude-code/use-sandbox/SKILL.md` for the agent-facing contract. Still
-stubbed/not-implemented: wait probe *evaluation* (#30 -- #27/#29 only
-validate and record a declared probe; nothing decides when one is satisfied
-yet, so a declared wait does not clear itself), and the terminal archive
-(#32) -- each lands incrementally, replacing one `notImplemented` action and
-one piece of `observeCluster` without touching the state machine or the
-reconcile loop itself. Freeze (#28) and wake/restore (#29) are both
-implemented (see "Wake/restore (#29)" below).
+readiness. [Issue #27](https://github.com/psenna/ai-sandbox/issues/27)
+added the agent pod (`internal/render.RenderPod`) and the `sandboxctl`
+sidecar (`cmd/sandboxctl`, `internal/sandboxctl`): an always-present
+native-sidecar init container (KEP-753) that holds the environment's
+Kubernetes credential and exposes a localhost-only control API (`/v1/wait`,
+`/v1/done`, `/v1/progress`, `/v1/status`) so the agent container -- which
+holds no credential at all -- can declare a wait condition or report its
+result. See `claude-code/use-sandbox/SKILL.md` (repo root) for the
+agent-facing contract.
 
 ### Child resources (#19)
 
@@ -96,141 +511,6 @@ regenerate them after an intentional rendering change (a rendered `Secret`'s
 values are redacted to a `sha256:`-prefixed fingerprint before being written
 to a golden file, since `testdata/*.yaml` is not covered by git-proxy's
 `secret_scan` ignore-paths the way `*_test.go` is).
-
-## Layout
-
-```
-operator/
-├── cmd/main.go              entrypoint: config, manager, signal handling
-├── api/v1alpha1/            SandboxClass / SandboxEnvironment API types
-├── internal/config/         flag/env configuration surface
-├── internal/operator/       manager construction (scheme, options, probes)
-├── internal/lifecycle/      pure SandboxEnvironment phase state machine (no controller-runtime import)
-├── internal/render/         pure child-object renderer: PVC/ServiceAccount/Role/RoleBinding/ConfigMap/Secret (no controller-runtime import)
-├── internal/storage/        S3/PVC snapshot+archive backends, path layout, manifest (no controller-runtime import, no Secret reads)
-├── internal/controller/     the reconciler: Observe -> lifecycle.Next -> actions -> status write
-├── internal/apitest/        envtest-backed API validation/round-trip tests
-├── config/                  kustomize bases (CRDs, manager Deployment, RBAC)
-├── config/samples/          example SandboxClass/SandboxEnvironment YAML
-├── hack/                    boilerplate header, smoke test, tool scripts
-├── hack/tools/              separate Go module that builds controller-gen
-├── Dockerfile               multi-stage, cross-compiled, distroless
-└── Makefile                 build/test/lint entrypoints (see below)
-```
-
-## Make targets
-
-All Go/make commands run inside a `golang:1.25` container against the
-sandbox's Docker-in-Docker daemon — there is no Go toolchain or `make` on
-the agent host. Set `IN_CONTAINER=1` when `make` itself already runs inside
-a container with Go installed (this is what CI and the golang container do);
-leave it unset (default `0`) to have the Makefile wrap every command in its
-own `docker run` against `$DOCKER_HOST`.
-
-| target | purpose |
-|---|---|
-| `build` | compile `bin/manager` |
-| `test` | `go test -race` with coverage |
-| `vet` | `go vet ./...` |
-| `fmt` / `fmt-check` | `gofmt -w` / drift check |
-| `lint` | `golangci-lint run` |
-| `vuln` | `govulncheck` |
-| `tidy` | `go mod tidy` |
-| `manifests` | CRD manifests (`config/crd/bases/*.yaml`) and RBAC (`config/rbac/role.yaml`) via `controller-gen`, built from `hack/tools` |
-| `generate` | deepcopy generation (`api/v1alpha1/zz_generated.deepcopy.go`) via `controller-gen` |
-| `envtest-assets` | download and checksum-verify real kube-apiserver/etcd/kubectl binaries for envtest |
-| `test-envtest` | `go test -race` against `internal/apitest` and `internal/controller`, using the envtest binaries above |
-| `kustomize-build` | render `config/default` |
-| `cross` | cross-compile linux/amd64 and linux/arm64 |
-| `docker-build` | build the operator image |
-| `smoke` | build then run `hack/smoke.sh` — starts the manager outside a cluster, checks `/healthz` and `/readyz`, and confirms clean shutdown on SIGTERM |
-| `clean` | remove build artifacts |
-| `minio-up` / `minio-down` | start/stop a real MinIO container (on a dedicated docker network) for `internal/storage`'s s3 conformance leg |
-| `test-minio` | `go test -race` against `internal/storage` only, with `SANDBOX_TEST_MINIO_*` pointed at `minio-up`'s container |
-| `storage-conformance` | `minio-up` → `test-minio` → `minio-down`, tearing down even on failure (same shape as `e2e`) |
-
-## Dependency versions
-
-Go module versions in `go.mod` are pinned rather than left to `go mod tidy`
-to pick freely: dependencies are fetched through DependaProxy
-(`http://dependaproxy:8080/goproxy`), which enforces a minimum publication
-age and denies known-CVE-affected versions. The pinned versions here were
-confirmed to pass both gates at the time this scaffold was written.
-
-A few versions differ from the initial plan because the plan's pins do not
-build together, or a transitive dependency was denied by DependaProxy's
-CVE gate:
-
-- `sigs.k8s.io/controller-runtime` is `v0.23.3`, not `v0.24.1`: `v0.24.x`
-  declares `go 1.26.0`, which the `golang:1.25` toolchain in use here
-  cannot satisfy. `v0.23.3` is the highest release that declares `go
-  1.25.0`.
-- `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/client-go` are `v0.35.0`,
-  not `v0.36.3`, to match the `k8s.io/*` versions controller-runtime
-  `v0.23.3` itself requires (`v0.36.x` also declares `go 1.26.0`).
-- `golang.org/x/net`, `golang.org/x/sys`, `golang.org/x/term`,
-  `golang.org/x/text` and `github.com/klauspost/compress` are pinned as
-  explicit indirect requires, each bumped to the lowest version that
-  clears DependaProxy's CVE gate (the versions MVS would otherwise select
-  from controller-runtime/client-go's own requirements are denied).
-  `go mod tidy` needed `-e` to complete: `golang.org/x/mod` is denied by
-  DependaProxy's CVE gate (`GO-2026-6179`/`GO-2026-6180`) at every
-  released version, with no passing release available at the time of
-  writing. `x/mod` only enters the graph as a *test* dependency of
-  `sigs.k8s.io/controller-runtime`'s own test suite (via
-  `ginkgo`→`golang.org/x/tools`→`golang.org/x/mod`) — this repository
-  never imports it. `go build`, `go vet` and `go test ./...` all succeed
-  fully offline against the committed `go.sum` (verified with
-  `GOPROXY=off -mod=readonly`), confirming nothing on the real build path
-  is missing.
-- The same `golang.org/x/mod` gap blocks `go install` of `golangci-lint`,
-  `govulncheck`, `controller-gen` and `kustomize` outright: each pulls in
-  `golang.org/x/tools`, which requires `golang.org/x/mod`, and `go install
-  pkg@version` builds against that tool's own pinned dependency graph, so
-  this project's `go.mod` requires can't bump it out of the way the way
-  they can for our own module. `make lint`, `make vuln` and
-  `make kustomize-build` therefore still cannot succeed in this
-  environment — not a code or Makefile defect, but an upstream/proxy gap
-  (no `golang.org/x/mod` release currently clears DependaProxy's CVE
-  gate). These are expected to start working again once a patched `x/mod`
-  release is available through DependaProxy.
-- `github.com/minio/minio-go/v7` — the "obvious" S3 client — is
-  **unusable** here, not just dispreferred: it transitively imports
-  `golang.org/x/crypto/argon2` via `pkg/encrypt`, and DependaProxy's CVE
-  gate denies `golang.org/x/crypto` at every version tested
-  (`GO-2026-5932`, an "unmaintained package" advisory with no fixed
-  version). `internal/storage`'s S3 backend (#26) uses
-  `github.com/aws/aws-sdk-go-v2/service/s3` instead, which resolves
-  cleanly.
-- The AWS SDK set must be added as a coherent group with one **pinned**
-  command, not an unpinned `go get`/`go mod tidy`: an unpinned resolution
-  re-resolves to `@latest`, which always 403s on DependaProxy's 7-day
-  publication-age gate.
-  ```
-  go get github.com/aws/aws-sdk-go-v2/feature/s3/manager@v1.22.37 && go mod tidy -e
-  ```
-  This pulls in `aws-sdk-go-v2 v1.43.2`, `feature/s3/manager v1.22.37`,
-  `service/s3 v1.106.2`, `credentials v1.19.32`, plus the internal
-  protocol/endpoint packages those require — a coherent set that clears
-  DependaProxy's gate. If a later `go mod tidy` re-resolves any of these
-  to a newer, 403'd version, re-run the pinned `go get` for
-  `feature/s3/manager@v1.22.37` again; do not loosen the pin to resolve a
-  tidy conflict.
-- `feature/s3/manager` itself carries an upstream deprecation notice
-  ("superceded by feature/s3/transfermanager") — that replacement,
-  `feature/s3/transfermanager`, is still pre-1.0 at the time of writing and
-  was not used here; `manager.Uploader` is still the correct choice for a
-  streaming multipart upload from a plain `io.Reader` (see
-  `internal/storage/s3.go`'s `Put`). Its read-side counterpart,
-  `manager.Downloader`, is deliberately NOT used — it requires an
-  `io.WriterAt`, which would defeat streaming — `Get` uses plain
-  `s3.GetObject` instead.
-- `github.com/klauspost/compress` moved from a pinned **indirect** require
-  (bumped only to clear controller-runtime/client-go's transitive CVE gate)
-  to a **direct** require: `internal/storage/archive.go` now imports
-  `github.com/klauspost/compress/zstd` directly, for the workspace/
-  agent-home archive format. `go mod tidy` promotes it automatically; the
-  version stays the same (`v1.18.7`).
 
 ### `internal/storage` (#26)
 
@@ -331,10 +611,17 @@ pins a woken environment to the node holding its PV; the GC's reclamation
 is what un-pins it.
 
 **The scoping statement.** #29 makes the wake *correct when it happens*; it
-does **not** make environments wake by themselves. Nothing evaluates wait
-probes yet (#30): a declared wait does not clear itself — a human or a
-controller must clear `status.waitFor` for a wake to be triggered at all, and
-the e2e suite's wake specs all do exactly that via the admin client.
+does not by itself make environments wake on a schedule. Waking still
+requires `status.waitFor` to clear — either the operator's own wait-probe
+evaluator (#30, shipped — see below) satisfying a declared probe, or a
+human/controller clearing `status.waitFor` directly via the admin client.
+
+**Wait probes are implemented (#30).** `internal/operator/controllers.go`
+wires a real `controller.NewProbeEvaluator()` into the reconciler; all four
+probe types (`GitProxyCheck`, `HTTPGet`, `S3ObjectExists`, `NotBefore`) are
+evaluated on a backoff schedule and clear the wait themselves once
+satisfied — see [`docs/operations.md`](docs/operations.md#stuck-in-waiting)
+for the parameter reference and troubleshooting.
 
 The context-resumption property this all depends on — that a Claude Code
 session transcript, keyed by working directory, survives a freeze → wake
@@ -444,142 +731,19 @@ Prometheus Operator's CRDs, which the e2e kind cluster does not install. The
 chart-native equivalent as `metrics.serviceMonitor.enabled` (default
 `false`, since it also needs those CRDs) -- see that chart's README for the
 "why a plain `ClusterIP` `Service` is correct even with multiple replicas"
-note (the metric catalogue itself is listed just below).
+note. The full metric catalogue, Events, and logging verbosity convention
+are documented in [`docs/operations.md`](docs/operations.md#reading-the-metrics)
+rather than duplicated here.
 
-**The metric catalogue.** Every series is `sandbox_operator_<name>`
-(`prometheus.BuildFQName("sandbox", "operator", name)`). No metric ever
-carries an environment name, namespace, or UID as a label — a deliberate,
-permanent cardinality bound — and every label value that could conceivably
-carry unexpected data passes through a closed allowlist
-(`internal/metrics`'s `sanitize`, mirroring `lifecycle.SanitizeReason`) that
-collapses an unrecognized value to `"other"` rather than creating an
-unbounded new series.
+RBAC needed a new marker for Events: `mgr.GetEventRecorder` sinks through
+controller-runtime's `events.EventBroadcaster`, which talks to the
+`events.k8s.io/v1` API, not the legacy core `""`-group `events` resource the
+pre-#33 `ClusterRole` already granted — both markers are present now
+(`make manifests` merged them into one `role.yaml` rule with two
+`apiGroups`).
 
-| name | type | labels | what it means |
-|---|---|---|---|
-| `sandbox_operator_environments` | Gauge | `phase` | environments currently in each lifecycle phase, in the watch scope — every phase is set on every pass (including 0), so an emptied phase drops to 0 rather than sticking |
-| `sandbox_operator_slot_capacity` | Gauge | — | configured `--slot-capacity` |
-| `sandbox_operator_slots_used` | Gauge | — | occupied scheduling slots (`scheduler.Occupies`) |
-| `sandbox_operator_queue_depth` | Gauge | — | environments queued for a slot (`scheduler.IsCandidate`) |
-| `sandbox_operator_queue_wait_seconds` | Histogram | — | time queued before a slot was granted |
-| `sandbox_operator_freeze_duration_seconds` | Histogram | — | freeze-hook-to-published-snapshot duration |
-| `sandbox_operator_wake_duration_seconds` | Histogram | `source` (`warm`/`cold`/`unknown`) | wake-restore duration, by warm-cache hit or cold download |
-| `sandbox_operator_snapshot_size_bytes` | Histogram | — | published freeze snapshot size, uncompressed |
-| `sandbox_operator_probe_evaluations_total` | Counter | `type`, `result` | wait-probe evaluations, by wait type and outcome (`satisfied`/`pending`/`error`/`skipped`) |
-| `sandbox_operator_archives_total` | Counter | `result` (`succeeded`/`failed`/`skipped`) | terminal archive outcomes |
-| `sandbox_operator_reconcile_errors_total` | Counter | `controller` | errors from a reconcile or control-loop pass, by controller/`Runnable` |
-| `sandbox_operator_warm_cache_reclaimed_total` | Counter | — | workspace PVCs reclaimed by the warm-cache TTL GC |
-| `sandbox_operator_retention_deleted_total` | Counter | `sweep` (`retention`/`orphan`) | storage roots deleted by retention GC |
+## Development
 
-**`archives_total`'s honest limitation.** The primary reconciler does not
-`.Owns(&batchv1.Job{})` (see the child-resources note above), so an archive
-Job's own failure is invisible except via the operator's dispatch-side
-checks: `succeeded` is the `Archived` condition flipping `True`; `failed` is
-`ensureArchiveJob` returning an error, one of its "not resolvable/
-computable/renderable" soft-fail branches, or the escape-hatch path; `skipped`
-is `archive()`'s no-op for a `nil`/non-`S3` class. `failed` therefore
-increments **once per reconcile** an archive stays broken, not once per
-distinct failure — the counter's rate, not a single crossing, is the signal
-to alert on.
-
-**The gauge/counter split.** `internal/controller/metricscollector.go`'s
-`MetricsCollector` recomputes the four gauges above periodically
-(`--metrics-collect-interval`, default 15s, valid 1s–5m) from one **cached**
-List — the only `manager.Runnable` in this codebase whose
-`NeedLeaderElection()` returns `false`, deliberately: every replica must keep
-its own `/metrics` endpoint's gauges live, not just the leader's (see that
-file's doc comment for why leader-electing it would be wrong, not merely
-different). Every other metric is a point-in-time observation recorded
-exactly where the thing happens — `slotscheduler.go`'s grant, the status-write
-transition hook, `probe.go`'s `Evaluate`, `archive.go`, and each GC loop's
-pass completion.
-
-**Kubernetes Events.** The reconciler's status-write path
-(`internal/controller/events.go`'s `observeTransition`, called from
-`status.go`'s `writeStatus` right after a successful `Status().Update` —
-never from `actions.go`, which re-issues every reconcile and is not
-exactly-once) emits one `Event` per meaningful phase/condition transition:
-`SlotGranted` (from `slotscheduler.go`'s own grant — the one Event this issue
-emits outside the status-write hook, since granting is decided there, not in
-`Reconcile`), `Starting`/`Waking` (cold start vs. resuming from a snapshot),
-`Started`, `Freezing`/`Frozen`/`SnapshotFailed`, `WaitSatisfied`,
-`Completed`/`Failed`, `Archived`. Every Event is also logged at `V(1)` for
-free by controller-runtime's own recorder provider. RBAC needed a new
-marker: `mgr.GetEventRecorder` sinks through controller-runtime's
-`events.EventBroadcaster`, which talks to the `events.k8s.io/v1` API, not
-the legacy core `""`-group `events` resource the pre-#33 `ClusterRole`
-already granted — both markers are present now (`make manifests` merged them
-into one `role.yaml` rule with two `apiGroups`).
-
-**Structured logging.** `internal/controller/logkeys.go` states the
-verbosity convention this whole package follows: `Error` is an actionable
-failure; `V(0)`/`Info` is rare, significant, and irreversible (process
-start/stop, permanent storage deletion — `retentiongc.go`'s own
-deletion/dry-run lines are exactly that, and #33 leaves their verbosity
-untouched); `V(1)` is per-reconcile/per-pass detail, including the one new
-phase-transition line the status-write hook adds. #33 adds **no** new `V(0)`
-output — new default-verbosity signal comes from Events, not logs. The
-verbosity a shipped binary actually emits at was, before #33, silently stuck
-at `V(0)` regardless of any `-v`-shaped flag: `cmd/main.go` hardcoded
-`slog.NewJSONHandler(os.Stderr, nil)`, and logr's slog bridge maps `V(n)` to
-`slog.Level(-n)` — `nil` options default to `slog.LevelInfo`, so every
-`log.V(1)` line in the repository was unreachable in production. The new
-`--log-verbosity` flag (`LOG_VERBOSITY` env, default 0, valid 0–4) now
-actually reaches the handler.
-
-### `make manifests` / `make generate`: `hack/tools`
-
-Unlike `go install pkg@version`, a Go **module**'s own `go.mod` requires
-*can* override a dependency's transitive pin via MVS (minimal version
-selection). `hack/tools/` is a separate Go module (never referenced from
-`operator/go.mod`, never part of `operator`'s own build, test, or
-`govulncheck` scan) whose only purpose is building `controller-gen` from
-source, with `golang.org/x/mod` explicitly bumped above every version
-DependaProxy's CVE gate denies (`GO-2026-6179`/`GO-2026-6180`).
-
-That explicit pin only resolves if the target version of `golang.org/x/mod`
-is fetchable somewhere. DependaProxy denies it outright, so `hack/tools`'
-build resolves it from a local, pre-fetched, DependaProxy-validated module
-cache at `/workspace/gomodcache/cache/download` (this sandbox only) via a
-`GOPROXY=file:///work/gomodcache/cache/download,http://dependaproxy:8080/goproxy`
-chain — file cache first, DependaProxy second for everything else. The
-`Makefile`'s `bin/controller-gen` target detects whether that cache exists
-(`TOOLS_GOPROXY` in the `Makefile`) and only sets the file:// proxy when it
-does; on a normal CI runner (no such path), it's unset and `hack/tools`
-builds against the ordinary Go proxy chain with no special handling — see
-the `api` job in `.github/workflows/operator.yml`.
-
-If `/workspace/gomodcache/cache/download` is ever missing or lacks the
-pinned `golang.org/x/mod` version, re-seed it by fetching
-`golang.org/x/mod@<version>` through DependaProxy directly (it validates
-and caches on first successful fetch) before running `make manifests` /
-`make generate` in this sandbox.
-
-`setup-envtest` (the usual way to fetch controller-gen *and* envtest
-binaries together) is not used at all: both its released versions declare
-`go 1.26.0`, unbuildable on the `golang:1.25` toolchain this project pins,
-and both pin a denied `x/mod` version — the same dead end as `go install
-controller-gen@version`, just one level removed.
-
-### `make envtest-assets` / `make test-envtest`
-
-Since `setup-envtest` is a dead end here, `hack/fetch-envtest.sh` downloads
-the real `kube-apiserver`/`etcd`/`kubectl` binaries directly from
-`controller-tools`' `envtest-v<version>` GitHub releases and verifies their
-sha512 checksum before use — idempotent, and independent of `go install`
-entirely. `internal/apitest/` is the envtest-backed test suite: it installs
-both CRDs from `config/crd/bases/` into a real (locally started)
-`kube-apiserver`/`etcd`, then round-trips fully-populated objects, checks
-every documented defaulting/validation/immutability rule against the real
-API server (not against controller code), and checks the printer columns
-and short names/categories via discovery. It's skipped (not failed) when
-`KUBEBUILDER_ASSETS` isn't set, so `make test` still passes without the
-envtest binaries present.
-
-`internal/controller/` mirrors the same `TestMain` skip-guard pattern for its
-own envtest-backed suite: it exercises the real reconcile loop (`Reconcile`,
-`writeStatus`'s conflict-retry and staleness guard, and the one
-manager-based watch test) against a real `kube-apiserver`, with an injectable
-clock and an injectable `ObserveFunc` so timeout- and facts-driven
-transitions are deterministic without a real cluster clock or real
-subsystems.
+Building, testing, and this repo's toolchain constraints (DependaProxy
+pinning, `hack/tools`, envtest, the full Make target reference) are in
+[`docs/development.md`](docs/development.md).

@@ -34,6 +34,12 @@ const (
 	ReasonEngineUnavailable = "EngineUnavailable"       // Unknown: class unresolved, or engine not implemented/unknown
 )
 
+// AllEngineSecurityReasons lists every reason string this file can put on
+// the EngineSecurityRelaxed condition. Same "declared list of every
+// member" idiom as lifecycle.AllReasons and AllNetworkConditionReasons;
+// internal/docs's reasons_test.go enforces both halves of that contract.
+var AllEngineSecurityReasons = []string{ReasonNoRelaxation, ReasonEngineRelaxed, ReasonEngineUnavailable}
+
 const maxRelaxationMessageBytes = 512
 
 // engineSecurityCondition computes the EngineSecurityRelaxed condition for

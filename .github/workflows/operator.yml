@@ -108,8 +108,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "${{ env.GO_VERSION }}"
-      - run: make IN_CONTAINER=1 manifests generate
-      - run: git diff --exit-code -- api config PROJECT
+      - run: make IN_CONTAINER=1 manifests generate crd-docs
+      # docs/crd-reference.md is regenerated above from the freshly
+      # re-derived config/crd/bases -- so this one diff proves the whole
+      # chain (Go doc comment -> controller-gen -> CRD YAML -> markdown) is
+      # in sync with the committed tree. This is #35's "the CRD reference is
+      # generated and CI fails if it drifts" acceptance criterion.
+      - run: git diff --exit-code -- api config PROJECT docs/crd-reference.md
       - run: make IN_CONTAINER=1 ENVTEST_DIR=$PWD/.envtest envtest-assets
       - run: |
           make IN_CONTAINER=1 ENVTEST_DIR=$PWD/.envtest test-envtest 2>&1 | tee out.txt
