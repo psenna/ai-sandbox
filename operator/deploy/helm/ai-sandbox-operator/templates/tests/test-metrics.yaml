@@ -12,7 +12,13 @@ metadata:
     {{- include "ai-sandbox-operator.labels" . | nindent 4 }}
   annotations:
     "helm.sh/hook": test
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    # NOT hook-succeeded: that deletes the pod the instant it passes, racing
+    # `helm test --logs`'s own log fetch (`helm-kind-walkthrough.sh`'s step 1
+    # uses --logs and hit this directly: the test genuinely passed but `helm
+    # test` still exited non-zero because --logs found the pod already gone).
+    # before-hook-creation still cleans up the previous run's pod before a
+    # new `helm test` creates one, so nothing accumulates.
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   restartPolicy: Never
   securityContext:
@@ -22,7 +28,15 @@ spec:
       image: {{ printf "%s:%s" .Values.tests.image.repository .Values.tests.image.tag }}
       imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
       securityContext:
-        {{- toYaml .Values.containerSecurityContext | nindent 8 }}
+        # curlimages/curl's image config declares its non-root user by NAME
+        # (USER curl_user), not a numeric UID, so the kubelet can't verify
+        # runAsNonRoot from image metadata alone and refuses to start the
+        # container (CreateContainerConfigError: "image has non-numeric
+        # user"). uid=100(curl_user) gid=101(curl_group), confirmed against
+        # curlimages/curl:8.11.1 directly. The operator's own containers use
+        # gcr.io/distroless/static:nonroot, which sets a numeric USER and
+        # needs no such override -- this merge is scoped to this test pod only.
+        {{- toYaml (merge (dict "runAsUser" 100 "runAsGroup" 101) .Values.containerSecurityContext) | nindent 8 }}
       command: ["/bin/sh", "-eu", "-c"]
       args:
         - |
