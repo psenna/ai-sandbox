@@ -30,6 +30,15 @@ const (
 // from class-referenced Secrets. Render never reads a Secret itself -- it
 // only projects these values into the rendered output. Never logged;
 // callers must not log this struct's fields either.
+//
+// Every stringification path is overridden to redact (#33), mirroring
+// internal/storage.Credentials' own String/GoString/MarshalJSON/MarshalLog
+// method set, plus a MarshalText override that type doesn't carry (only its
+// Secret field type does) -- added here anyway so encoding.TextMarshaler
+// call sites are covered too. AccessKeyID-shaped fields are withheld here
+// too, even though a bare access key ID is not secret on its own, matching
+// storage.Credentials.String's own reasoning: a %v of the whole struct must
+// never be mistaken for including one.
 type Credentials struct {
 	GitProxyToken string
 
@@ -44,6 +53,30 @@ type Credentials struct {
 	SnapshotSecretAccessKey string
 	SnapshotSessionToken    string
 }
+
+// redactedCredentials is what every stringification path below emits
+// instead of a field value.
+const redactedCredentials = "render.Credentials{[REDACTED]}" //nolint:gosec // G101: this IS the redaction placeholder, not a credential
+
+// String never includes any field value -- see the type's doc comment on why
+// even GitProxyToken/SnapshotAccessKeyID are withheld here.
+func (c Credentials) String() string { return redactedCredentials }
+
+// GoString covers %#v.
+func (c Credentials) GoString() string { return c.String() }
+
+// MarshalJSON never includes any field value.
+func (c Credentials) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + redactedCredentials + `"`), nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (c Credentials) MarshalText() ([]byte, error) { return []byte(redactedCredentials), nil }
+
+// MarshalLog implements logr's Marshaler interface, so a Credentials passed
+// as a structured logging value is redacted even when the sink doesn't go
+// through fmt or encoding/json.
+func (c Credentials) MarshalLog() any { return redactedCredentials }
 
 // NetworkInputs is the caller-resolved set of peers the Restricted policy
 // allows egress to, plus the operator ingress selector. Render cannot resolve

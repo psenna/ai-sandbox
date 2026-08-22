@@ -16,6 +16,7 @@ package controller
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
 // The networking.k8s.io/networkpolicies marker lands with #31: ensureResources
 // applies the Restricted-isolation NetworkPolicy via applyOne (server-side
@@ -65,14 +66,20 @@ package controller
 // issue, and pods/exec (a shell into a running agent pod) must never be
 // granted to the operator at all.
 //
-// Markers for events, leases are deliberately NOT added here -- they belong
-// to the issues that actually touch those objects (#33). #20's
-// SlotScheduler needed no new grants: it only lists sandboxenvironments and
-// updates sandboxenvironments/status, both already covered above, and
-// LeaseName is deliberately left unset (see slotscheduler.go), so no
-// coordination.k8s.io marker is added either. Adding markers now for
-// objects nothing in this codebase touches yet would ship an over-broad
-// ClusterRole with no code behind it.
+// The events.k8s.io marker lands with #33: mgr.GetEventRecorder (this
+// package's Recorder field, and SlotScheduler's) sinks through
+// controller-runtime's events.EventBroadcaster, which -- as of
+// controller-runtime v0.23.3 (pkg/cluster/cluster.go's setOptionsDefaults)
+// -- talks to the events.k8s.io/v1 API, NOT the legacy core/v1 Events API
+// the "" apiGroup marker above grants. Both grants are required: the ""
+// marker predates #33 and nothing removes it (a defensive belt-and-braces
+// grant costs nothing extra here), the events.k8s.io marker is what
+// actually authorizes every Event this package and SlotScheduler emit.
+//
+// A leases marker is still NOT added: LeaseName is deliberately left unset
+// (see slotscheduler.go) -- nothing in this codebase creates a real
+// coordination.k8s.io/Lease object, and adding a marker for one would ship
+// an over-broad ClusterRole with no code behind it.
 
 import (
 	"context"
@@ -90,6 +97,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 )
 
 type Reconciler struct {
@@ -137,6 +145,12 @@ type Reconciler struct {
 	// (Load returns nil) means the probe has not run yet. The field itself may
 	// be nil in unit tests that never wire the probe; cniResult() guards that.
 	CNI *atomic.Pointer[CNIProbeResult]
+	// Metrics records the Prometheus series this reconciler observes (#33):
+	// freeze/wake duration, snapshot size, and (via performActions'
+	// wrapper) reconcile errors. Every Collectors method nil-guards, so a
+	// nil Metrics (the zero value, left unset in most unit tests) is
+	// silently inert -- matching Recorder/Probes' own convention.
+	Metrics *metrics.Collectors
 }
 
 // cniResult returns the latest CNI probe result, or nil if the probe has not
@@ -165,13 +179,32 @@ func (r *Reconciler) resolveClass(ctx context.Context, env *v1alpha1.SandboxEnvi
 	return &class, nil
 }
 
+// Reconcile is a thin wrapper around reconcile that records
+// reconcile_errors_total{controller=sandboxenvironment} (#33) on the errors
+// that actually escape it -- keeping the metric-recording concern out of
+// reconcile's own control flow, and off ctrl.Reconciler's documented
+// signature/behavior (this wrapper has the exact same signature, so nothing
+// relying on the standard interface notices the difference).
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := ctrl.LoggerFrom(ctx)
+	res, err := r.reconcile(ctx, req)
+	if err != nil {
+		r.Metrics.RecordReconcileError(metrics.ControllerSandboxEnvironment)
+	}
+	return res, err
+}
 
+func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var env v1alpha1.SandboxEnvironment
 	if err := r.Get(ctx, req.NamespacedName, &env); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// Enrich the context logger once, right after the successful Get, so
+	// every downstream call in this reconcile (performActions, writeStatus,
+	// the observers) inherits uid/phase without repeating them (#33). See
+	// logkeys.go's envLogValues for why namespace/name are deliberately NOT
+	// duplicated here.
+	log := logForEnv(ctx, &env)
+	ctx = ctrl.LoggerInto(ctx, log)
 	if !env.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, &env)
 	}

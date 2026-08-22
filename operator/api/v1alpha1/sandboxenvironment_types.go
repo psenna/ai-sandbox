@@ -40,6 +40,14 @@ const (
 	PhaseFailed Phase = "Failed"
 )
 
+// AllPhases lists every declared Phase, in the same order as the type's own
+// enum declaration above. internal/metrics iterates it so a per-phase gauge
+// always sets every phase (including zero-valued ones) on every pass -- see
+// that package's SetEnvironmentsByPhase -- mirroring this package's own
+// ConditionTypes/AllActions "declared list of every member" idiom
+// (internal/lifecycle/conditions.go, internal/lifecycle/decision.go).
+var AllPhases = []Phase{PhasePending, PhaseReady, PhaseRunning, PhaseFreezing, PhaseWaiting, PhaseRestoring, PhaseDone, PhaseFailed}
+
 // FinalizerArchiveOnDelete is applied to every SandboxEnvironment on creation.
 // Its presence guarantees the controller completes the terminal archive
 // (archive/run.json + archive/context.tar.zst) before the object is removed

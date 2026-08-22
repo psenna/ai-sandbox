@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
 )
 
@@ -65,6 +66,10 @@ type WarmCacheGC struct {
 	// (warm-cache size, reclamation rate). Nil is a no-op. This issue emits
 	// no metrics itself.
 	OnPass func(GCStats)
+
+	// Metrics records reclamation counts and per-pass reconcile errors
+	// (#33). Nil-guarded, matching Reconciler.Metrics.
+	Metrics *metrics.Collectors
 }
 
 // GCStats summarizes one GC pass, for OnPass and for tests.
@@ -123,11 +128,16 @@ func (g *WarmCacheGC) runAndLog(ctx context.Context, log logr.Logger) {
 	stats, err := g.RunOnce(ctx)
 	if err != nil {
 		log.Error(err, "warm-cache GC pass failed")
+		g.Metrics.RecordReconcileError(metrics.ControllerWarmCacheGC)
 		return
 	}
 	if stats.Deleted > 0 || stats.Errors > 0 {
 		log.V(1).Info("warm-cache GC pass", "scanned", stats.Scanned, "eligible", stats.Eligible,
 			"deleted", stats.Deleted, "skipped", stats.Skipped, "errors", stats.Errors)
+	}
+	g.Metrics.AddWarmCacheReclaimed(stats.Deleted)
+	for i := 0; i < stats.Errors; i++ {
+		g.Metrics.RecordReconcileError(metrics.ControllerWarmCacheGC)
 	}
 	if g.OnPass != nil {
 		g.OnPass(stats)
@@ -160,7 +170,7 @@ func (g *WarmCacheGC) RunOnce(ctx context.Context) (GCStats, error) {
 		stats.Eligible++
 		if err := g.reclaim(ctx, env, class, now, &stats); err != nil {
 			stats.Errors++
-			ctrl.LoggerFrom(ctx).V(1).Info("warm-cache reclaim failed", "env", env.Name, "namespace", env.Namespace, "error", err.Error())
+			ctrl.LoggerFrom(ctx).V(1).Info("warm-cache reclaim failed", LogKeyEnvironment, env.Name, LogKeyNamespace, env.Namespace, "error", err.Error())
 		}
 	}
 	stats.Duration = g.now().Sub(start)

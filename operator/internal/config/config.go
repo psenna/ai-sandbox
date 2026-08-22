@@ -82,6 +82,24 @@ type Config struct {
 	// so this trades archive-reclamation latency against API-server/S3
 	// load.
 	RetentionGCInterval time.Duration
+
+	// MetricsCollectInterval is how often internal/controller.MetricsCollector
+	// recomputes the gauge metrics (environments-by-phase, slot occupancy,
+	// queue depth) that have no natural per-event trigger (#33). Each pass
+	// performs one cached LIST of SandboxEnvironments, so this trades gauge
+	// freshness against informer-cache read load (cheap; unlike the GC
+	// loops' intervals above, this never touches the API server directly).
+	MetricsCollectInterval time.Duration
+
+	// LogVerbosity is the logr V-level the operator's slog handler emits at
+	// (#33): 0 is the shipped default (Error/Info only), higher values
+	// surface progressively more V(n) detail. See
+	// internal/controller/logkeys.go's doc comment for what each level
+	// means. cmd/main.go wires this into slog.HandlerOptions{Level:
+	// slog.Level(-LogVerbosity)} -- logr's slog bridge maps V(n) to
+	// slog.Level(-n), so a LogVerbosity of 0 leaves the handler at
+	// slog.LevelInfo (V(1)+ dropped), exactly today's shipped behavior.
+	LogVerbosity int
 }
 
 // dns1123LabelRE matches a valid DNS-1123 label: lowercase alphanumeric
@@ -141,6 +159,12 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.DurationVar(&c.RetentionGCInterval, "retention-gc-interval",
 		envOrDuration(getenv, "RETENTION_GC_INTERVAL", 30*time.Minute),
 		"how often retention GC runs a reclamation pass")
+	fs.DurationVar(&c.MetricsCollectInterval, "metrics-collect-interval",
+		envOrDuration(getenv, "METRICS_COLLECT_INTERVAL", 15*time.Second),
+		"how often the gauge metrics (environments by phase, slot occupancy, queue depth) are recomputed")
+	fs.IntVar(&c.LogVerbosity, "log-verbosity",
+		envOrInt(getenv, "LOG_VERBOSITY", 0),
+		"logr V-level to emit at (0-4); higher values surface progressively more per-reconcile/per-pass detail")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -190,6 +214,12 @@ func (c Config) Validate() error {
 	}
 	if c.RetentionGCInterval < time.Second || c.RetentionGCInterval > time.Hour {
 		return fmt.Errorf("retention-gc-interval: must be between 1s and 1h, got %s", c.RetentionGCInterval)
+	}
+	if c.MetricsCollectInterval < time.Second || c.MetricsCollectInterval > 5*time.Minute {
+		return fmt.Errorf("metrics-collect-interval: must be between 1s and 5m, got %s", c.MetricsCollectInterval)
+	}
+	if c.LogVerbosity < 0 || c.LogVerbosity > 4 {
+		return fmt.Errorf("log-verbosity: must be between 0 and 4, got %d", c.LogVerbosity)
 	}
 	return nil
 }

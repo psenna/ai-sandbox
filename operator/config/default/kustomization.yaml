@@ -5,6 +5,12 @@ resources:
   - ../crd
   - ../rbac
   - ../manager
+  # ../prometheus adds a ServiceMonitor (monitoring.coreos.com/v1) scraping
+  # the metrics Service ../manager now includes. Left commented out: it
+  # requires the Prometheus Operator's CRDs, which the e2e kind cluster does
+  # not install -- uncomment for a cluster that has them (or let #34's Helm
+  # chart make this a runtime-configurable value instead).
+  #- ../prometheus
 
 images:
   - name: controller

@@ -39,6 +39,8 @@ func TestLoad_Defaults(t *testing.T) {
 		RetentionTTL:            168 * time.Hour,
 		RetentionDryRun:         false,
 		RetentionGCInterval:     30 * time.Minute,
+		MetricsCollectInterval:  15 * time.Second,
+		LogVerbosity:            0,
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -709,6 +711,138 @@ func TestValidate_RetentionGCIntervalBounds(t *testing.T) {
 			}
 			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "retention-gc-interval") {
 				t.Errorf("Validate() error = %v, want it to mention retention-gc-interval", err)
+			}
+		})
+	}
+}
+
+func TestMetricsCollectInterval_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.MetricsCollectInterval != 15*time.Second {
+		t.Errorf("MetricsCollectInterval = %s, want 15s", c.MetricsCollectInterval)
+	}
+}
+
+func TestMetricsCollectInterval_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_METRICS_COLLECT_INTERVAL": "30s"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.MetricsCollectInterval != 30*time.Second {
+		t.Errorf("MetricsCollectInterval = %s, want 30s", c.MetricsCollectInterval)
+	}
+}
+
+func TestMetricsCollectInterval_UnparseableEnvFallsBackToDefault(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_METRICS_COLLECT_INTERVAL": "not-a-duration"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.MetricsCollectInterval != 15*time.Second {
+		t.Errorf("MetricsCollectInterval = %s, want 15s (default) on unparseable env value", c.MetricsCollectInterval)
+	}
+}
+
+func TestMetricsCollectInterval_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--metrics-collect-interval=1m"}, envFrom(map[string]string{"SANDBOX_OPERATOR_METRICS_COLLECT_INTERVAL": "30s"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.MetricsCollectInterval != time.Minute {
+		t.Errorf("MetricsCollectInterval = %s, want 1m (flag should beat env)", c.MetricsCollectInterval)
+	}
+}
+
+func TestValidate_MetricsCollectIntervalBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		wantErr bool
+	}{
+		{"too low", "--metrics-collect-interval=500ms", true},
+		{"too high", "--metrics-collect-interval=10m", true},
+		{"lower boundary accepted", "--metrics-collect-interval=1s", false},
+		{"upper boundary accepted", "--metrics-collect-interval=5m", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{tc.flag}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() with %s: expected error, got nil", tc.flag)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() with %s: unexpected error: %v", tc.flag, err)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "metrics-collect-interval") {
+				t.Errorf("Validate() error = %v, want it to mention metrics-collect-interval", err)
+			}
+		})
+	}
+}
+
+func TestLogVerbosity_Default(t *testing.T) {
+	c, err := Load(nil, emptyEnv)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.LogVerbosity != 0 {
+		t.Errorf("LogVerbosity = %d, want 0", c.LogVerbosity)
+	}
+}
+
+func TestLogVerbosity_EnvOverride(t *testing.T) {
+	c, err := Load(nil, envFrom(map[string]string{"SANDBOX_OPERATOR_LOG_VERBOSITY": "2"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.LogVerbosity != 2 {
+		t.Errorf("LogVerbosity = %d, want 2", c.LogVerbosity)
+	}
+}
+
+func TestLogVerbosity_FlagBeatsEnv(t *testing.T) {
+	c, err := Load([]string{"--log-verbosity=3"}, envFrom(map[string]string{"SANDBOX_OPERATOR_LOG_VERBOSITY": "1"}))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if c.LogVerbosity != 3 {
+		t.Errorf("LogVerbosity = %d, want 3 (flag should beat env)", c.LogVerbosity)
+	}
+}
+
+func TestValidate_LogVerbosityBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		wantErr bool
+	}{
+		{"negative", "--log-verbosity=-1", true},
+		{"too high", "--log-verbosity=5", true},
+		{"lower boundary accepted", "--log-verbosity=0", false},
+		{"upper boundary accepted", "--log-verbosity=4", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{tc.flag}, emptyEnv)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() with %s: expected error, got nil", tc.flag)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() with %s: unexpected error: %v", tc.flag, err)
+			}
+			if tc.wantErr && err != nil && !strings.Contains(err.Error(), "log-verbosity") {
+				t.Errorf("Validate() error = %v, want it to mention log-verbosity", err)
 			}
 		})
 	}

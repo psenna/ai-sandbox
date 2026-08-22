@@ -13,6 +13,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 	"github.com/psenna/ai-sandbox/operator/internal/lifecycle"
+	"github.com/psenna/ai-sandbox/operator/internal/metrics"
 	"github.com/psenna/ai-sandbox/operator/internal/render"
 	"github.com/psenna/ai-sandbox/operator/internal/storage"
 )
@@ -72,6 +73,7 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, env *v1alpha1.SandboxE
 			r.Recorder.Eventf(env, nil, corev1.EventTypeWarning, "ArchiveSkippedByEscapeHatch", "RemoveFinalizer",
 				"the %s annotation forced finalizer removal without a terminal archive", escapeHatchAnnotation)
 		}
+		r.Metrics.RecordArchive(metrics.ResultFailed)
 		return ctrl.Result{}, r.removeFinalizer(ctx, env)
 	}
 
@@ -198,11 +200,13 @@ func (r *Reconciler) ensureArchiveJob(ctx context.Context, env *v1alpha1.Sandbox
 	creds, err := r.resolveCredentials(ctx, class)
 	if err != nil {
 		log.V(1).Info("archive job credentials not resolvable", "reason", err.Error())
+		r.Metrics.RecordArchive(metrics.ResultFailed)
 		return nil
 	}
 	specHash, err := storage.SpecHash(&class.Spec, &env.Spec)
 	if err != nil {
 		log.V(1).Info("archive job spec hash not computable", "reason", err.Error())
+		r.Metrics.RecordArchive(metrics.ResultFailed)
 		return nil
 	}
 
@@ -216,11 +220,16 @@ func (r *Reconciler) ensureArchiveJob(ctx context.Context, env *v1alpha1.Sandbox
 	})
 	if err != nil {
 		log.V(1).Info("archive job not renderable", "reason", err.Error())
+		r.Metrics.RecordArchive(metrics.ResultFailed)
 		return nil
 	}
 
 	names := render.ChildNames(env.Name)
-	return r.applyOne(ctx, env, "Job", client.ObjectKey{Namespace: env.Namespace, Name: names.ArchiveJob}, &batchv1.Job{}, job)
+	if err := r.applyOne(ctx, env, "Job", client.ObjectKey{Namespace: env.Namespace, Name: names.ArchiveJob}, &batchv1.Job{}, job); err != nil {
+		r.Metrics.RecordArchive(metrics.ResultFailed)
+		return err
+	}
+	return nil
 }
 
 // archive is the ActionArchive dispatch target (actions.go), replacing the
@@ -233,6 +242,7 @@ func (r *Reconciler) ensureArchiveJob(ctx context.Context, env *v1alpha1.Sandbox
 // mirroring freeze's own S3-only restriction.
 func (r *Reconciler) archive(ctx context.Context, env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass) error {
 	if class == nil || class.Spec.Storage.Backend.Type != v1alpha1.StorageBackendTypeS3 {
+		r.Metrics.RecordArchive(metrics.ResultSkipped)
 		return nil
 	}
 	return r.ensureArchiveJob(ctx, env, class)

@@ -50,6 +50,7 @@ func (h *Harness) DumpDiagnostics(ctx context.Context, name string, namespaces .
 
 	writeYAML(dir, "operator-deployment.yaml", h.dumpDeployment(ctx, h.Cfg.OperatorNamespace, "ai-sandbox-operator-controller-manager"))
 	h.dumpNamespacePods(ctx, dir, "operator", h.Cfg.OperatorNamespace, "control-plane=controller-manager")
+	h.dumpOperatorMetrics(ctx, dir)
 
 	writeYAML(dir, "nodes.yaml", h.dumpList(ctx, &corev1.NodeList{}))
 	writeYAML(dir, "sandboxclasses.yaml", h.dumpList(ctx, &sandboxv1alpha1.SandboxClassList{}))
@@ -202,6 +203,22 @@ func (h *Harness) dumpSnapshotBucket(ctx context.Context, dir string) {
 		return
 	}
 	writeJSON(filepath.Join(dir, "snapshot-bucket-list.json"), objs)
+}
+
+// dumpOperatorMetrics writes a best-effort raw dump of the operator's own
+// /metrics scrape (#33) -- a plain text file, not YAML/JSON, since that is
+// the format Prometheus text exposition already is and a human/CI artifact
+// viewer can read it as-is (or feed it straight to ParsePromText for a
+// post-mortem). Best-effort like every other step here: a scrape failure
+// (operator pod not Running, proxy error) writes an .error file, never
+// panics or fails the calling spec.
+func (h *Harness) dumpOperatorMetrics(ctx context.Context, dir string) {
+	text, err := ScrapeOperatorMetrics(ctx)
+	if err != nil {
+		_ = os.WriteFile(filepath.Join(dir, "operator-metrics.txt.error"), []byte(err.Error()), 0o644)
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "operator-metrics.txt"), []byte(text), 0o644)
 }
 
 func writeJSON(path string, v any) {

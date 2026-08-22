@@ -84,7 +84,7 @@ func (r *Reconciler) deletePod(ctx context.Context, env *v1alpha1.SandboxEnviron
 		return err
 	}
 	if !ownedByEnv(&pod, env) {
-		ctrl.LoggerFrom(ctx).V(1).Info("skipping delete: pod is not owned by this environment", "name", names.Pod)
+		ctrl.LoggerFrom(ctx).V(1).Info("skipping delete: pod is not owned by this environment", LogKeyChildName, names.Pod)
 		return nil
 	}
 	if !pod.DeletionTimestamp.IsZero() {
@@ -111,7 +111,7 @@ func (r *Reconciler) observePod(ctx context.Context, env *v1alpha1.SandboxEnviro
 		// PodObserved stays false: "we cannot see pods" is the safe,
 		// documented reading in facts.go. Swallowed here rather than
 		// failing the reconcile, matching observeQueuePosition's pattern.
-		ctrl.LoggerFrom(ctx).V(1).Info("pod observation unavailable", "error", err)
+		ctrl.LoggerFrom(ctx).V(1).Info("pod observation unavailable", "error", err.Error())
 	default:
 		f.PodObserved = true
 		if !ownedByEnv(&pod, env) {

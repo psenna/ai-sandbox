@@ -1,0 +1,23 @@
+# monitor.yaml is a Prometheus Operator ServiceMonitor scraping the
+# operator's own /metrics listener via the Service in
+# config/manager/metrics_service.yaml. Requires the Prometheus Operator's
+# CRDs (monitoring.coreos.com/v1) to be installed in the target cluster --
+# see config/default/kustomization.yaml's commented-out reference to this
+# directory for why it is not wired in by default.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: controller-manager-metrics-monitor
+  namespace: system
+  labels:
+    app.kubernetes.io/name: ai-sandbox-operator
+    control-plane: controller-manager
+spec:
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  endpoints:
+    - path: /metrics
+      port: metrics
+      scheme: http
+      interval: 30s

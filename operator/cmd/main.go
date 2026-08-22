@@ -25,7 +25,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	ctrl.SetLogger(logr.FromSlogHandler(slog.NewJSONHandler(os.Stderr, nil)))
+	// logr's slog bridge maps logr's V(n) to slog.Level(-n): slog's built-in
+	// levels are Debug=-4, Info=0, Warn=4, Error=8, so V(1) is slog level -1,
+	// V(2) is -2, and so on. cfg.LogVerbosity (default 0) therefore leaves
+	// the handler at the shipped slog.LevelInfo (every V(n>=1) line
+	// dropped) unless explicitly raised via --log-verbosity/LOG_VERBOSITY.
+	ctrl.SetLogger(logr.FromSlogHandler(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.Level(-cfg.LogVerbosity),
+	})))
 	log := ctrl.Log.WithName("setup")
 
 	restCfg, err := ctrl.GetConfig()
@@ -53,6 +60,8 @@ func main() {
 		"watchNamespace", cfg.WatchNamespace,
 		"defaultSandboxClass", cfg.DefaultSandboxClass,
 		"leaderElect", cfg.EnableLeaderElection,
+		"metricsCollectInterval", cfg.MetricsCollectInterval,
+		"logVerbosity", cfg.LogVerbosity,
 	)
 
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

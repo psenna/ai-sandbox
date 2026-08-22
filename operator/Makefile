@@ -82,7 +82,15 @@ E2E_ARTIFACT_DIR   ?= $(CURDIR)/test/e2e/_artifacts
 # e2e-run step exited non-zero after exactly 15m). 25m leaves ~8m of headroom
 # for runner variance and modest future growth without cutting the
 # acceptance-criteria coverage (the cycle counts are the point of never-leaks).
-E2E_TIMEOUT        ?= 25m
+#
+# Raised again to 32m for #33: four new "operator metrics" specs (a real
+# freeze/wake/probe cycle, a Serial slot-saturation-and-drain pass, plus two
+# fast ones) add several more minutes on top of the above, and #25's ~8m of
+# headroom was consumed -- confirmed by a CI run of PR #51's head that hit
+# the prior 25m ginkgo timeout mid-suite. Same reasoning as #25's bump:
+# leave headroom for runner variance and near-term growth, not just today's
+# measured total.
+E2E_TIMEOUT        ?= 32m
 E2E_PROCS          ?= 4
 E2E_SEED           ?= 1
 GINKGO_FLAGS       ?= --timeout=$(E2E_TIMEOUT) --procs=$(E2E_PROCS) --seed=$(E2E_SEED) --flake-attempts=1 --fail-fast=false --keep-going --poll-progress-after=60s --poll-progress-interval=30s -v
