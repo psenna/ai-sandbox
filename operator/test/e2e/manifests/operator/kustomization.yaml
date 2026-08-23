@@ -38,11 +38,20 @@ patches:
           # omitting the flag would silently leave the 1m default.
           - --warm-cache-gc-interval=5s
           # #32: same reasoning as --warm-cache-gc-interval above -- a short
-          # interval and TTL so a retention-GC e2e spec can observe a
-          # TTL-based reclamation pass within a test-viable window, rather
-          # than the 30m/168h defaults.
+          # interval so a retention-GC e2e spec can observe a TTL-based
+          # reclamation pass within a test-viable window, rather than the
+          # 30m default. The TTL itself is 10m, not the tight 2m originally
+          # used here: #24 found this racing ExpectAgentExitCode's poll on a
+          # contended CI runner -- a Done environment's archive could be
+          # swept before the harness's own (client-side, informer-lag-prone)
+          # observation of Done caught up, deleting the pod out from under
+          # the exit-code check ("agent pod ... vanished before its exit
+          # code could be read"). 10m keeps the sweep well inside any single
+          # spec's PhaseTimeout while giving real headroom against that
+          # race; --retention-gc-interval stays 5s so a TTL-observing spec
+          # still only waits ~5s past whatever TTL it drives past.
           - --retention-gc-interval=5s
-          - --retention-ttl=2m
+          - --retention-ttl=10m
           - --sidecar-image=ai-sandbox-operator:e2e
           # #33: 2s (not the 15s default) so a metrics e2e spec can observe a
           # freshly-recomputed gauge (slots_used/queue_depth/environments)
