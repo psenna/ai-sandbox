@@ -55,6 +55,14 @@
 #   SCRIPT:unless-file <path> <directive>    the inverse of if-file: run <directive> only when
 #                                           <path> is NOT readable                         (exit NN
 #                                           propagates from the inner directive)
+#   SCRIPT:docker <args...>                 `docker <args>` must succeed             (exit 40)
+#   SCRIPT:docker-expect-fail <args...>     `docker <args>` must FAIL                (exit 41)
+#   SCRIPT:docker-eventually <secs> <args>  retry `docker <args>` until it succeeds
+#                                            or <secs> elapse                        (exit 42)
+#   SCRIPT:require-owned <path>             fail unless <path> is owned by this
+#                                            process's uid (proves a workload
+#                                            container's writes land as the AGENT's
+#                                            uid through podman's userns map) (exit 43)
 # An empty prompt, or a prompt with no directives, exits 0. An unrecognised
 # `SCRIPT:` line exits 20.
 
@@ -117,6 +125,20 @@ dispatch() { # dispatch <line> -- run one SCRIPT: directive (exit N propagates)
 		if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
 			exit 13
 		fi
+		;;
+	"SCRIPT:docker "*)
+		sh -c "docker ${line#SCRIPT:docker }" || exit 40
+		;;
+	"SCRIPT:docker-expect-fail "*)
+		if sh -c "docker ${line#SCRIPT:docker-expect-fail }" >/dev/null 2>&1; then exit 41; fi
+		;;
+	"SCRIPT:docker-eventually "*)
+		rest="${line#SCRIPT:docker-eventually }"; secs="${rest%% *}"; cmd="${rest#* }"
+		deadline=$(( $(date +%s) + secs ))
+		until sh -c "docker $cmd" >/dev/null 2>&1; do
+			[ "$(date +%s)" -lt "$deadline" ] || exit 42
+			sleep 2
+		done
 		;;
 	"SCRIPT:sandbox-wait "*)
 		payload="${line#SCRIPT:sandbox-wait }"
@@ -188,6 +210,11 @@ dispatch() { # dispatch <line> -- run one SCRIPT: directive (exit N propagates)
 		if [ -r "$path" ]; then
 			exit 36
 		fi
+		;;
+	"SCRIPT:require-owned "*)
+		path="${line#SCRIPT:require-owned }"
+		[ -e "$path" ] || exit 43
+		[ "$(stat -c %u "$path")" = "$(id -u)" ] || exit 43
 		;;
 	"SCRIPT:write-tree "*)
 		rest="${line#SCRIPT:write-tree }"

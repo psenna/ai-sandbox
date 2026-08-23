@@ -63,13 +63,15 @@ jobs:
     name: kind e2e
     needs: matrix
     runs-on: ubuntu-latest
-    # e2e-up (~3m) + e2e-run (ginkgo --timeout=40m via the "e2e run" step's
-    # own E2E_TIMEOUT=40m override -- see that step's comment on why this CI
-    # job runs at E2E_PROCS=2, not the Makefile's E2E_TIMEOUT=32m local-dev
-    # default) + e2e-collect/e2e-down (~1m). Raised from 40 (itself raised
-    # from 35, itself raised from 25, each time for the same reason: keep
-    # the job step timeout ahead of the ginkgo suite timeout).
-    timeout-minutes: 48
+    # e2e-up (~3m) + e2e-run (ginkgo --timeout=55m via the "e2e run" step's
+    # own E2E_TIMEOUT=55m override -- see that step's comment on why this CI
+    # job runs at E2E_PROCS=2, not the Makefile's E2E_TIMEOUT=45m local-dev
+    # default) + e2e-collect/e2e-down (~1m). Raised from 48 (itself raised
+    # from 40, itself raised from 35, itself raised from 25, each time for
+    # the same reason: keep the job step timeout ahead of the ginkgo suite
+    # timeout). This bump is #24's: three real image pulls through a cold
+    # pull-through cache dominate the new engine_test.go specs.
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +114,7 @@ jobs:
         # count. E2E_TIMEOUT is raised accordingly: less parallelism means a
         # longer wall-clock total even though each individual spec sees less
         # contention and is less likely to itself stall.
-        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig E2E_PROCS=2 E2E_TIMEOUT=40m e2e-run
+        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig E2E_PROCS=2 E2E_TIMEOUT=55m e2e-run
 
       - name: e2e collect (diagnostics)
         if: always()

@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -80,21 +79,21 @@ var _ = Describe("sandbox lifecycle", func() {
 		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseRunning, h.Cfg.PhaseTimeout)
 	})
 
-	It("fails closed, visibly, for an engine that is not implemented yet", func() {
-		// internal/render/engine.go's notImplementedEngine always errors
-		// from Contribute; internal/controller/pod.go's ensurePod logs and
-		// swallows that render error rather than creating a pod, so
-		// "visibly" here means the EngineSecurityRelaxed condition -- NOT
-		// a phase transition into Failed, since nothing renders to fail on.
-		class := h.CreateClass(ctx, WithEngine(sandboxv1alpha1.EngineTypeRootlessPodman))
-		env := h.CreateEnvironment(ctx, ns, class.Name)
+	It("reports the engine's securityContext relaxations on the environment", func() {
+		// #24: engine.type=rootless-podman is implemented now, so the
+		// EngineSecurityRelaxed condition reports the three relaxations
+		// internal/render/engine_podman.go's podmanRelaxations declares --
+		// True/EngineRelaxationApplied, not the "not implemented yet" story
+		// this spec used to assert.
+		class := h.CreateClass(ctx, WithPodmanEngine())
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 30"))
 		key := client.ObjectKey{Namespace: ns, Name: env.Name}
 
-		h.WaitForCondition(ctx, key, "EngineSecurityRelaxed", metav1.ConditionUnknown, "EngineUnavailable", h.Cfg.PhaseTimeout)
-
-		Consistently(func() bool {
-			return h.getAgentPodOrNil(ctx, key) == nil
-		}, 15*time.Second, h.Cfg.Poll).Should(BeTrue(), "no agent pod should ever be created for an unimplemented engine")
+		h.WaitForCondition(ctx, key, "EngineSecurityRelaxed", metav1.ConditionTrue, "EngineRelaxationApplied", h.Cfg.PhaseTimeout)
+		msg := conditionMessage(h.GetEnv(ctx, key), "EngineSecurityRelaxed")
+		for _, want := range []string{"podman: AppArmorUnconfined", "podman: SeccompUnconfined", "podman: AllowPrivilegeEscalation", "spike #23"} {
+			Expect(msg).To(ContainSubstring(want))
+		}
 	})
 
 	// ---- #27: sandboxctl sidecar control API ----

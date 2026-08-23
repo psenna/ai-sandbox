@@ -1,8 +1,10 @@
 # The BASE fixture the CI guard matrix layers `--set`s onto: a complete,
-# valid default SandboxClass with an S3 backend, all three shared services
+# valid default SandboxClass with an S3 backend, all four shared services
 # enabled and pointed at in-cluster <svc>.<ns>.svc hosts, under Restricted
 # isolation (so G10 has nothing to complain about here, and a single --set
-# pointing any endpoint off-cluster makes it fire).
+# pointing any endpoint off-cluster makes it fire). registryMirror is also
+# required here since engine.type=rootless-podman + Restricted isolation
+# would otherwise fail guard G22.
 image:
   tag: v0.1.0
 
@@ -40,6 +42,9 @@ defaultClass:
     ollama:
       enabled: true
       baseURL: http://ollama.ai-sandbox.svc.cluster.local:11434
+    registryMirror:
+      enabled: true
+      url: http://registry-cache.ai-sandbox.svc.cluster.local:5000
   storage:
     workspace:
       size: 20Gi

@@ -189,7 +189,7 @@ jobs:
       - name: "assert the default SandboxClass carries resource-policy: keep"
         run: |
           set -eu
-          for f in default-class-s3-values default-class-pvc-values default-class-open-network-values engine-none-restricted-psa-values; do
+          for f in default-class-s3-values default-class-pvc-values default-class-open-network-values engine-none-restricted-psa-values engine-podman-values; do
             grep -qF 'helm.sh/resource-policy: keep' "rendered/$f.yaml" || { echo "$f: default SandboxClass missing resource-policy: keep"; exit 1; }
           done
           echo "OK"
@@ -327,6 +327,19 @@ jobs:
           assert_fails "empty default class name" \
             "defaultClass.name must not be empty" \
             --set defaultClass.name=
+
+          # G21
+          assert_fails "rootless-podman engine image not pinned by digest" \
+            "is not pinned by digest" \
+            --set defaultClass.engine.type=rootless-podman \
+            --set defaultClass.engine.image=quay.io/podman/stable:v5.8.2
+
+          # G22
+          assert_fails "rootless-podman + Restricted with no registry route" \
+            "needs a way to reach a container registry" \
+            "${S3[@]}" --set defaultClass.engine.type=rootless-podman \
+            --set defaultClass.network.isolation=Restricted \
+            --set defaultClass.services.registryMirror.enabled=false
 
           # values.schema.json case (fires before any template renders)
           assert_fails "image.repository empty (schema)" \

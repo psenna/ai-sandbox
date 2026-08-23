@@ -25,13 +25,19 @@ It ships two cluster-scoped CRDs (`sandbox.psenna.dev/v1alpha1`):
   non-enforcing CNI enforce.
 - **Pod Security Admission level of the namespaces sandbox pods run in.** This
   is not the operator's own namespace. `engine.type: rootless-podman` needs
-  the relaxations `internal/render/engine.go` applies (AppArmor profile,
-  `allowPrivilegeEscalation`, added capabilities, seccomp), which `baseline`
-  and `restricted` both reject. Declare the level you enforce in
-  `sandboxNamespaces.podSecurityEnforce` and guard **G6** will refuse an
-  impossible combination at render time instead of leaving you with pods the
-  API server silently rejects. The chart never labels a namespace it does not
-  own — the value is a *declaration*, not an action.
+  the relaxations `internal/render/engine_podman.go`'s `podmanRelaxations`
+  applies to the `podman` sidecar (an `Unconfined` AppArmor profile, an
+  explicit `Unconfined` seccomp profile, and `allowPrivilegeEscalation`),
+  which `baseline` and `restricted` both reject. Declare the level you
+  enforce in `sandboxNamespaces.podSecurityEnforce` and guard **G6** will
+  refuse an impossible combination at render time instead of leaving you with
+  pods the API server silently rejects. The chart never labels a namespace it
+  does not own — the value is a *declaration*, not an action.
+- **A registry the rootless-podman engine can reach.** Under
+  `network.isolation: Restricted`, the podman sidecar can pull images only
+  from peers the class declares. Set `defaultClass.services.registryMirror`
+  to a pull-through cache, or the class has no way to reach any registry at
+  all — guard **G22** catches this at render time.
 - **Prometheus Operator CRDs** (`monitoring.coreos.com/v1`) only if you set
   `metrics.serviceMonitor.enabled=true`.
 
@@ -198,10 +204,11 @@ Render rules worth knowing:
 
 - `spec.agent.model` is omitted entirely when all four tiers are empty.
 - `spec.engine.image` is omitted when empty.
-- A service block (`gitProxy` / `dependaProxy` / `ollama`) is emitted **only**
-  when its `enabled: true`. A disabled service is *absent*, never `{}` —
-  `internal/controller/network.go`'s `serviceEndpoints` branches on `!= nil`,
-  so an empty-but-present block changes behavior.
+- A service block (`gitProxy` / `dependaProxy` / `registryMirror` / `ollama`)
+  is emitted **only** when its `enabled: true`. A disabled service is
+  *absent*, never `{}` — `internal/controller/network.go`'s
+  `serviceEndpoints` branches on `!= nil`, so an empty-but-present block
+  changes behavior.
 - `spec.storage.workspace.storageClassName` is omitted when `null` (use the
   cluster default StorageClass) and emitted as `""` when explicitly empty (use
   no StorageClass).
@@ -215,6 +222,24 @@ with an explanation, rather than an `kubectl apply` rejection at install time.
 Need more than one class? Leave `defaultClass.create=false` and manage your
 classes separately — they are cluster-scoped and intentionally decoupled from
 any single Helm release.
+
+### `defaultClass.engine` and `defaultClass.services.registryMirror`
+
+| Value | Default | Notes |
+| --- | --- | --- |
+| `defaultClass.engine.type` | `rootless-podman` | `rootless-podman` \| `none`. See guard G6. |
+| `defaultClass.engine.image` | `""` | `""` resolves to the operator's own digest-pinned default (`internal/render/engine_podman.go`'s `DefaultPodmanImage`, `quay.io/podman/stable` v5.8.2). An override **must** be digest-pinned (`@sha256:...`) — guard **G21**. |
+| `defaultClass.engine.storageDriver` | `auto` | `auto` \| `overlay` \| `vfs`. `auto` resolves to `overlay` deterministically; `vfs` is selectable explicitly and is very slow. |
+| `defaultClass.services.registryMirror.enabled` | `false` | Declares a pull-through container-registry cache the podman sidecar pulls workload images through. |
+| `defaultClass.services.registryMirror.url` | `""` | An `http://` URL renders `insecure = true` on the mirror entry. |
+| `defaultClass.services.registryMirror.registries` | `[]` | Upstream registry prefixes the mirror serves; `[]` means `["docker.io"]`. |
+
+`engine.type=rootless-podman` with `network.isolation=Restricted` needs a way
+to reach a registry — either `services.registryMirror` or a covering
+`extraEgress` `cidr` — or the podman sidecar can pull no image at all. Guard
+**G22** catches this at render time. See
+`ci/engine-podman-values.yaml` for the legal counterpart fixture (a declared
+registry mirror, no PSS enforcement, no image override).
 
 ---
 
@@ -522,7 +547,7 @@ otherwise fail at runtime, and says how to fix it.
 | G3 | `backend.type=pvc` without `pvc.claimName` |
 | G4 | `backend.type=s3` without `s3.credentialsSecretRef.name` |
 | G5 | `s3.bucket` shorter than 3 characters |
-| G6 | `engine.type=rootless-podman` with `sandboxNamespaces.podSecurityEnforce` of `baseline`/`restricted` |
+| G6 | `engine.type=rootless-podman` with `sandboxNamespaces.podSecurityEnforce` of `baseline`/`restricted` — `baseline` rejects on two grounds (AppArmor `Unconfined` and an explicit seccomp `Unconfined` profile), `restricted` on those plus `allowPrivilegeEscalation` |
 | G7 | `services.gitProxy.enabled` without `gitURL`/`brokerURL`/`tokenSecretRef.name` |
 | G8 | `services.dependaProxy.enabled` with all three URLs empty |
 | G9 | `services.ollama.enabled` without `baseURL` |
@@ -537,6 +562,8 @@ otherwise fail at runtime, and says how to fix it.
 | G18 | `metrics.serviceMonitor.enabled` with `metrics.enabled=false` |
 | G19 | `replicaCount > 1` with `leaderElection.enabled=false` |
 | G20 | `defaultClass.name` empty |
+| G21 | `engine.type=rootless-podman` with `engine.image` set but not digest-pinned (`@sha256:...`) |
+| G22 | `engine.type=rootless-podman` with `network.isolation=Restricted` and no `services.registryMirror` and no covering `extraEgress` `cidr` |
 
 Guards, not the JSON schema, own every one of these cases: `values.schema.json`
 is validated *before* templates render, so a `minimum`/`minLength` there would

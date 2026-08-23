@@ -6,16 +6,18 @@ stack. You have TWO execution surfaces:
 - **Git operations** (clone/fetch/push, PRs, CI, issues): go through git-proxy.
   See the `use-git-proxy` skill. Never talk to github.com directly.
 - **Running code & service deps** (node, python, go, postgres, mysql, minio, …):
-  use Docker, available via `DOCKER_HOST=tcp://docker:2375`. See the `use-docker`
-  skill. Do NOT run node/python/go directly on this container — always run them
-  inside disposable Docker containers launched against the DinD daemon.
-- **Dependencies (npm / pip / Go modules)**: always through DependaProxy
-  (`http://dependaproxy:8080/{npm,pypi,goproxy}`), never the public registries —
-  see the `use-docker` skill for the exact mount/flag to use in workload
-  containers. The public npm/pypi/Go registries are network-blocked by the
+  use Docker, available via `$DOCKER_HOST` (already set in your environment —
+  its value depends on which ai-sandbox deployment you're in; never hardcode
+  it). See the `use-docker` skill. Do NOT run node/python/go directly on this
+  container — always run them inside disposable containers launched against
+  `$DOCKER_HOST`.
+- **Dependencies (npm / pip / Go modules)**: always through DependaProxy, never
+  the public registries — pass `NPM_CONFIG_REGISTRY`/`PIP_INDEX_URL`/`GOPROXY`
+  straight through (already set correctly in your own environment; see the
+  `use-docker` skill for the exact portable form and the mount/flag
+  alternative). The public npm/pypi/Go registries are network-blocked by the
   sandbox; do not try to bypass the block. DependaProxy auth is disabled in this
-  stack, so the generated `/workspace/.npmrc`, `/workspace/pip.env`, and
-  `/workspace/go.env` carry no token.
+  stack, so no token is ever needed for it.
 
 ## Docker rules (read before you `docker run`)
 
@@ -23,16 +25,18 @@ stack. You have TWO execution surfaces:
   you want a container to read/write must live under `/workspace`; mount it as
   `-v /workspace:/work` and `-w /work`.
 - Do NOT bind-mount any other path (e.g. `/opt`, `/tmp`, `/home/node`) — the
-  Docker daemon is in a separate container and cannot see your filesystem outside
+  container answering `$DOCKER_HOST` cannot see your filesystem outside
   the shared `/workspace` volume. It will silently mount an empty path.
 - Your working directory IS `/workspace`, so repo files are already shareable.
-- Run workload containers as **uid 1000** (`-u node` for node images, or
-  `-u "$(id -u):$(id -g)"`) so files they write under `/workspace` stay owned by
-  you. Root-run containers leave root-owned files you cannot delete — see the
-  `use-docker` skill (File ownership).
-- The Docker daemon is rootless/isolated: it cannot reach git-proxy or its
-  credentials. You will never receive the upstream GitHub PAT — do not attempt to
-  obtain it.
+- File ownership is the one rule that is INVERTED between deployments, so
+  there is no single `-u` that is right in both: the compose stack does no
+  UID remapping (pass `-u "$(id -u):$(id -g)"`), while rootless podman under
+  the operator maps container uid 0 to your own uid 1000 and container uid
+  1000 to an unwritable subordinate uid (pass no `-u` at all). See the
+  `use-docker` skill (File ownership) for the one-liner that picks correctly.
+- The container/sidecar answering `$DOCKER_HOST` is rootless/isolated: it
+  cannot reach git-proxy or its credentials. You will never receive the
+  upstream GitHub PAT — do not attempt to obtain it.
 
 ## Credentials (read before you commit)
 

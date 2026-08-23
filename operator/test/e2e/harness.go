@@ -249,6 +249,48 @@ func WithGitProxy(gitURL, brokerURL, secretName, secretKey string) ClassOption {
 	}
 }
 
+// WithPodmanEngine selects the rootless-podman engine AND declares the
+// in-cluster pull-through registry cache (RegistryCacheInClusterURL) in one
+// option, because the two are inseparable under this suite's default
+// Restricted isolation (#31): a Restricted NetworkPolicy allows egress only
+// to the class's declared peers, so without the mirror the podman sidecar
+// can reach no registry at all (guard G22's chart-side counterpart to this
+// same fact). ClassOption has no Harness in scope (see the type's own doc
+// comment), so the registry-cache URL is computed the same way
+// RegistryCacheInClusterURL does -- E2E_SERVICES_NS with LoadConfig's own
+// default -- rather than duplicating a Harness dependency into the type.
+func WithPodmanEngine() ClassOption {
+	return func(c *sandboxv1alpha1.SandboxClass) {
+		c.Spec.Engine.Type = sandboxv1alpha1.EngineTypeRootlessPodman
+		c.Spec.Services.RegistryMirror = &sandboxv1alpha1.RegistryMirrorService{
+			URL: fmt.Sprintf("http://registry-cache.%s.svc.cluster.local:5000", envOr("E2E_SERVICES_NS", "ai-sandbox-e2e")),
+		}
+	}
+}
+
+// WithRegistryMirror declares a pull-through registry-cache peer
+// (spec.services.registryMirror), the network route the podman sidecar
+// pulls workload images through under Restricted isolation.
+func WithRegistryMirror(url string, registries ...string) ClassOption {
+	return func(c *sandboxv1alpha1.SandboxClass) {
+		c.Spec.Services.RegistryMirror = &sandboxv1alpha1.RegistryMirrorService{
+			URL:        url,
+			Registries: registries,
+		}
+	}
+}
+
+// WithDependaProxyNpm points the class's dependaProxy npm endpoint at url
+// (the e2e npm-registry double, NpmRegistryInClusterURL), so
+// NPM_CONFIG_REGISTRY reaches the agent (and, passed through by a workload
+// container's own env, npm inside it) and the Restricted NetworkPolicy
+// gains the corresponding egress peer.
+func WithDependaProxyNpm(url string) ClassOption {
+	return func(c *sandboxv1alpha1.SandboxClass) {
+		c.Spec.Services.DependaProxy = &sandboxv1alpha1.DependaProxyService{NpmURL: url}
+	}
+}
+
 // CreateClass creates a cluster-scoped SandboxClass with sane e2e defaults
 // (engine=none, the e2e agent image, small resources, a 128Mi workspace,
 // in-cluster MinIO as the S3 backend) and registers a DeferCleanup to
@@ -397,6 +439,18 @@ func conditionMatches(conds []metav1.Condition, condType string, status metav1.C
 		return false
 	}
 	return reason == "" || c.Reason == reason
+}
+
+// conditionMessage returns env's condition of type condType's Message, or ""
+// if env carries no such condition. Used by specs that assert on a
+// condition's actual explanatory text (e.g. EngineSecurityRelaxed's
+// relaxation list), not just its status/reason.
+func conditionMessage(env *sandboxv1alpha1.SandboxEnvironment, condType string) string {
+	c := apimeta.FindStatusCondition(env.Status.Conditions, condType)
+	if c == nil {
+		return ""
+	}
+	return c.Message
 }
 
 // WaitForAgentPodPhase polls the agent pod for key's environment until its

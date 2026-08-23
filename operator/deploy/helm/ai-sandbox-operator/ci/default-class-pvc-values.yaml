@@ -1,7 +1,9 @@
 # The storage.backend union's other arm. Asserts NO `s3:` block renders --
 # BackendSpec's XValidation rejects an s3 block under type=pvc. A PVC backend
 # also contributes no storage endpoint, so Restricted isolation is fine with
-# no extraEgress here.
+# no extraEgress here. registryMirror IS required though: engine.type=
+# rootless-podman + isolation=Restricted with no registry route at all fails
+# guard G22.
 image:
   tag: v0.1.0
 
@@ -12,6 +14,10 @@ defaultClass:
   engine:
     type: rootless-podman
     storageDriver: overlay
+  services:
+    registryMirror:
+      enabled: true
+      url: http://registry-cache.ai-sandbox.svc.cluster.local:5000
   storage:
     workspace:
       size: 10Gi

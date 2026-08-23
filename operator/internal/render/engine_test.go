@@ -10,32 +10,25 @@ import (
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
 
-func TestRenderPod_RootlessPodmanIsNotImplemented(t *testing.T) {
-	class := withEngine(minimalClass(), v1alpha1.EngineTypeRootlessPodman)
-	in := Inputs{Env: baseEnv("engine-podman"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
-
-	_, err := RenderPod(in)
-	if err == nil {
-		t.Fatal("RenderPod with engine: rootless-podman: expected error, got nil")
-	}
-	if !errors.Is(err, ErrEngineNotImplemented) {
-		t.Errorf("RenderPod error = %v, want errors.Is(err, ErrEngineNotImplemented)", err)
-	}
-	if !strings.Contains(err.Error(), "#24") {
-		t.Errorf("RenderPod error = %q, want it to name issue #24", err.Error())
-	}
-}
-
+// TestRenderPod_EmptyEngineTypeDefaultsToRootlessPodman proves engineFor's
+// "" -> rootless-podman normalisation still holds, and now succeeds (#24):
+// the rendered pod contains a `podman` init container.
 func TestRenderPod_EmptyEngineTypeDefaultsToRootlessPodman(t *testing.T) {
 	class := minimalClass() // Spec.Engine.Type left as the zero value ""
 	in := Inputs{Env: baseEnv("engine-default"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
 
-	_, err := RenderPod(in)
-	if err == nil {
-		t.Fatal("RenderPod with engine.type \"\": expected error (defaults to unimplemented rootless-podman), got nil")
+	pod, err := RenderPod(in)
+	if err != nil {
+		t.Fatalf("RenderPod with engine.type \"\": %v, want success (defaults to rootless-podman)", err)
 	}
-	if !errors.Is(err, ErrEngineNotImplemented) {
-		t.Errorf("RenderPod error = %v, want errors.Is(err, ErrEngineNotImplemented)", err)
+	found := false
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name != nil && *c.Name == PodmanContainerName {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("rendered pod has no podman init container; engine.type \"\" should default to rootless-podman")
 	}
 }
 
@@ -81,9 +74,12 @@ func TestEngineRelaxations(t *testing.T) {
 	})
 
 	t.Run("rootless-podman", func(t *testing.T) {
-		_, ok := EngineRelaxations(v1alpha1.EngineTypeRootlessPodman)
-		if ok {
-			t.Error("EngineRelaxations(rootless-podman) ok = true, want false (not implemented)")
+		relaxations, ok := EngineRelaxations(v1alpha1.EngineTypeRootlessPodman)
+		if !ok {
+			t.Fatal("EngineRelaxations(rootless-podman) ok = false, want true")
+		}
+		if len(relaxations) != 3 {
+			t.Errorf("EngineRelaxations(rootless-podman) = %d relaxations, want 3", len(relaxations))
 		}
 	})
 
@@ -124,7 +120,7 @@ func TestRenderPod_AppliesEveryRelaxationKind(t *testing.T) {
 	const fakeType = v1alpha1.EngineType("fake-relaxing")
 	relaxations := []Relaxation{
 		{Container: AgentContainerName, Kind: RelaxAppArmorUnconfined, Reason: "test: apparmor"},
-		{Container: AgentContainerName, Kind: RelaxSeccompUnset, Reason: "test: seccomp"},
+		{Container: AgentContainerName, Kind: RelaxSeccompUnconfined, Reason: "test: seccomp"},
 		{Container: AgentContainerName, Kind: RelaxAllowPrivilegeEscalation, Reason: "test: privesc"},
 		{Container: AgentContainerName, Kind: RelaxAddCapability, Value: "SETUID", Reason: "test: setuid"},
 	}
@@ -140,8 +136,8 @@ func TestRenderPod_AppliesEveryRelaxationKind(t *testing.T) {
 	if sc.AppArmorProfile == nil || sc.AppArmorProfile.Type == nil || *sc.AppArmorProfile.Type != "Unconfined" {
 		t.Errorf("AppArmorProfile = %+v, want type Unconfined", sc.AppArmorProfile)
 	}
-	if sc.SeccompProfile != nil {
-		t.Errorf("SeccompProfile = %+v, want nil (unset)", sc.SeccompProfile)
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type == nil || *sc.SeccompProfile.Type != "Unconfined" {
+		t.Errorf("SeccompProfile = %+v, want type Unconfined", sc.SeccompProfile)
 	}
 	if sc.AllowPrivilegeEscalation == nil || !*sc.AllowPrivilegeEscalation {
 		t.Errorf("AllowPrivilegeEscalation = %v, want true", sc.AllowPrivilegeEscalation)
@@ -185,12 +181,12 @@ func TestRenderPod_RelaxationErrors(t *testing.T) {
 		},
 		{
 			name:        "empty reason",
-			relaxations: []Relaxation{{Container: AgentContainerName, Kind: RelaxSeccompUnset, Reason: ""}},
+			relaxations: []Relaxation{{Container: AgentContainerName, Kind: RelaxSeccompUnconfined, Reason: ""}},
 			wantSubstr:  "no Reason",
 		},
 		{
 			name:        "unknown container",
-			relaxations: []Relaxation{{Container: "does-not-exist", Kind: RelaxSeccompUnset, Reason: "x"}},
+			relaxations: []Relaxation{{Container: "does-not-exist", Kind: RelaxSeccompUnconfined, Reason: "x"}},
 			wantSubstr:  "not in the rendered pod",
 		},
 	}

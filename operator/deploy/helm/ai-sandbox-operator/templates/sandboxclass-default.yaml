@@ -45,7 +45,7 @@ spec:
     image: {{ . | quote }}
     {{- end }}
     storageDriver: {{ $dc.engine.storageDriver }}
-  {{- if or $dc.services.gitProxy.enabled $dc.services.dependaProxy.enabled $dc.services.ollama.enabled }}
+  {{- if or $dc.services.gitProxy.enabled $dc.services.dependaProxy.enabled $dc.services.ollama.enabled $dc.services.registryMirror.enabled }}
   # A disabled service is ABSENT, never an empty block:
   # internal/controller/network.go's serviceEndpoints branches on `!= nil`.
   services:
@@ -74,6 +74,14 @@ spec:
     {{- if $dc.services.ollama.enabled }}
     ollama:
       baseURL: {{ $dc.services.ollama.baseURL | quote }}
+    {{- end }}
+    {{- if $dc.services.registryMirror.enabled }}
+    registryMirror:
+      url: {{ $dc.services.registryMirror.url | quote }}
+      {{- with $dc.services.registryMirror.registries }}
+      registries:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- end }}
   {{- end }}
   storage:

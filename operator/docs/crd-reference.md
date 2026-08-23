@@ -83,6 +83,10 @@ SandboxClass is a cluster-scoped, reusable template describing the agent image, 
 | `spec.services.gitProxy.tokenSecretRef.name` | string | yes | — | minLength: 1 | Name is the name of the referenced Secret. |
 | `spec.services.ollama` | object | no | — | — | Ollama configures the local model inference endpoint. |
 | `spec.services.ollama.baseURL` | string | yes | — | pattern: `^https?://` | BaseURL is the Ollama endpoint sandboxes use for local model inference. |
+| `spec.services.registryMirror` | object | no | — | — | RegistryMirror configures a pull-through container-registry cache the rootless-podman engine pulls workload images through (#24). Required in practice for `engine.type: rootless-podman` under `network.isolation: Restricted`: a Restricted NetworkPolicy allows egress only to the peers this class declares, so without a mirror the podman sidecar can reach no registry at all. Ignored by `engine.type: none`. |
+| `spec.services.registryMirror.registries` | array<string> | no | — | — | Registries are the upstream registry prefixes this mirror serves. Empty means ["docker.io"] -- the only upstream a stock `registry:2` pull-through cache (REGISTRY_PROXY_REMOTEURL) can serve. Rendered in the given order, deduplicated, sorted for determinism. |
+| `spec.services.registryMirror.registries[]` | string | no | — | — |  |
+| `spec.services.registryMirror.url` | string | yes | — | pattern: `^https?://` | URL is the mirror's base URL. Scheme is load-bearing: an http:// URL renders `insecure = true` on the mirror entry (a plain-HTTP in-cluster cache), https:// does not. A path component is preserved, so a multi-project mirror can be addressed as https://harbor.example.com/dockerhub. |
 | `spec.storage` | object | yes | — | — | Storage configures the sandbox workspace volume, the snapshot/archive backend, and the warm-cache retention window. |
 | `spec.storage.backend` | object | yes | — | — | Backend configures where sandbox workspace snapshots and archives are persisted. |
 | `spec.storage.backend.pvc` | object | no | — | — | PVC configures the PersistentVolumeClaim backend. Required when type is "pvc"; must be unset otherwise. |

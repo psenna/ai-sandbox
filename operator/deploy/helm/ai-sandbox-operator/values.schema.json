@@ -264,6 +264,15 @@
                 "goproxyURL": { "type": "string" }
               }
             },
+            "registryMirror": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "url": { "type": "string" },
+                "registries": { "type": "array", "items": { "type": "string" } }
+              }
+            },
             "ollama": {
               "type": "object",
               "additionalProperties": false,

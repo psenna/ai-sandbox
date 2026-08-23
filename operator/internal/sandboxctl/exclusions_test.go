@@ -103,6 +103,29 @@ func TestSnapshotExclude_WarmMarkerAndRestoreSentinel(t *testing.T) {
 	}
 }
 
+// TestSnapshotExclude_PodmanGraphRootUnderEveryPlausibleRoot proves the
+// belt-and-braces filter still covers #24's graph root now that the engine
+// actually exists. The PRIMARY guarantee is structural (the emptyDir is
+// mounted only into the podman sidecar, at a path under neither
+// WorkspacePath nor AgentHomePath) and is asserted at render level by
+// TestPodmanEngine_GraphRootIsAnEmptyDirOutsideEverySnapshottedPath
+// (internal/render/engine_podman_test.go). This is the second, independent
+// guard.
+func TestSnapshotExclude_PodmanGraphRootUnderEveryPlausibleRoot(t *testing.T) {
+	cases := []string{
+		".local/share/containers",
+		".local/share/containers/storage/overlay/abc123/diff/usr/bin/podman",
+		".config/containers",
+		"var/lib/containers/storage/overlay-layers/layers.json",
+	}
+	for _, rel := range cases {
+		fi := fakeFileInfo{}
+		if !SnapshotExclude(rel, fi) {
+			t.Errorf("SnapshotExclude(%q) = false, want true (podman graph root path)", rel)
+		}
+	}
+}
+
 // fakeFileInfo is a minimal fs.FileInfo satisfying SnapshotExclude's use of
 // Mode()/IsDir() for a regular file, avoiding a real filesystem entry.
 type fakeFileInfo struct{}

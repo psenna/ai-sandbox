@@ -176,14 +176,16 @@ what a `NetworkPolicy` can do:
   layer below the pod network — shared kernel, shared node filesystem via
   any `hostPath` a *different* workload mounts, noisy-neighbour side
   channels.
-- **Nested workload containers are unverified.** Whether containers an
-  engine launches *inside* the pod inherit the pod's NetworkPolicy was
-  **not** verified: the spike explicitly lists "No NetworkPolicy testing"
-  under *Not covered*, and the e2e spec that would prove it — `restricts a
-  workload container's egress under Restricted isolation and allows it
-  under Open` (`test/e2e/isolation_test.go`) — is **`PIt`, pending and
-  skipped**. This is moot only because no engine that launches containers
-  exists today; it becomes a live risk the day #24 ships.
+- **Nested workload containers are now verified — and there is a real,
+  documented exception.** Whether containers `rootless-podman` launches
+  *inside* the pod inherit the pod's NetworkPolicy was, at the time of the
+  spike, explicitly listed as "No NetworkPolicy testing" under *Not
+  covered*. It is now verified end to end: `test/e2e/isolation_test.go`'s
+  `restricts a workload container's egress under Restricted isolation and
+  allows it under Open` proves default-network containers are governed, and
+  `governs a --network host workload container by the same NetworkPolicy`
+  proves the same holds even under `--network host`. The one real exception
+  is loopback, not egress — see "Residual risks" below.
 - **It is per-environment, not per-namespace.** Other pods in the same
   namespace are unaffected by this policy, and no policy stops *them*.
 
@@ -205,15 +207,74 @@ or could not complete. kindnet enforces; the plain AWS VPC CNI does not.
 
 ## Engine relaxations
 
-Today, none — the only implemented engine (`none`) requests zero
-relaxations, so `EngineSecurityRelaxed` is always `False/NoRelaxation` on a
-working class. The relaxation mechanism itself is a **closed allowlist**
-(`RelaxationKind`): `AppArmorUnconfined`, `SeccompUnset`,
-`AllowPrivilegeEscalation`, `AddCapability`. This closed set structurally
-prevents an engine from ever expressing `privileged`, a `hostPath` mount, a
-projected Kubernetes token, or a `runAsUser` change — an engine
-implementation that tried would hit a **render error**, not a silent
-escalation past the allowlist.
+The relaxation mechanism is a **closed allowlist** (`RelaxationKind`):
+`AppArmorUnconfined`, `SeccompUnconfined`, `AllowPrivilegeEscalation`,
+`AddCapability`. A `Relaxation` naming any other kind is a **render error**,
+not a silent escalation, so the allowlist structurally bounds what an engine
+can change on a container it did not create — it can never reach over and
+set `privileged`, `runAsUser`, or a new mount on the `agent` or `sandboxctl`
+container.
+
+**Scope that claim precisely.** The allowlist governs *relaxations*, not the
+whole `Contribution`: an engine also returns its own containers and volumes,
+and those carry whatever `securityContext`, mounts and volume sources the
+engine builds — `podmanSecurityContext()` sets `runAsUser: 1000` on the
+sidecar directly, with no relaxation involved. Nothing in `RenderPod`
+validates a contributed container's `securityContext`, so an engine that
+wanted `privileged: true` or a `hostPath` on *its own* sidecar would get it.
+What actually holds that line is review of the golden pod files plus
+`TestPodmanEngine_SidecarMountsAndTokensNeverGrow`'s exact-equality
+assertions (below) — a maintenance invariant, not a mechanism.
+
+`engine.type: none` requests zero relaxations
+(`EngineSecurityRelaxed=False/NoRelaxation`). `engine.type: rootless-podman`
+requests exactly three, all on the `podman` sidecar and nowhere else —
+`internal/render/engine_podman.go`'s `podmanRelaxations`, each one traced to
+the specific spike [#23](https://github.com/psenna/ai-sandbox/issues/23)
+privilege-ladder case that proved it necessary
+(`operator/spike/podman-privilege-ladder.yaml`,
+[`spike-rootless-podman.md`](spike-rootless-podman.md)):
+
+| Kind | What it sets | Ladder case | Why |
+|---|---|---|---|
+| `AppArmorUnconfined` | `appArmorProfile.type: Unconfined` | **case G** | the default AppArmor profile denies the `mount()` calls overlay storage needs; this is the sole unblocker (cases A/B/C/E, which try capabilities and user namespaces instead, all fail) |
+| `SeccompUnconfined` | `seccompProfile.type: Unconfined`, explicitly (not left nil) | **case H** | `seccompProfile: RuntimeDefault` denies `clone(CLONE_NEWUSER)` independently of AppArmor; explicit, because `RenderPod`'s pod-level `securityContext.seccompProfile` is `RuntimeDefault` and a nil container-level field would inherit it, reproducing case H |
+| `AllowPrivilegeEscalation` | `allowPrivilegeEscalation: true` | **case J** | `newuidmap` carries `cap_setuid=ep` as a **file** capability, and `allowPrivilegeEscalation: false` (no-new-privileges) prevents a file capability from ever taking effect |
+
+`capabilities` is deliberately **untouched** by any of the three — neither
+added to nor dropped from the base. This is not an oversight: ladder cases C
+and E independently show that *adding* a capability (`SYS_ADMIN`, with or
+without root) changes nothing, so there is nothing to add; and the
+allowlist has no kind that can *undo* a `capabilities.drop`, so the
+sidecar's base `securityContext` (`podmanSecurityContext()` in
+`engine_podman.go`) simply never sets the field at all, rather than reusing
+`sidecarSecurityContext()`'s `drop: [ALL]`. Dropping `ALL` would remove
+`CAP_SETUID`/`CAP_SETGID` from the container's *bounding* set, which would
+make `newuidmap`'s file capability unraisable regardless of
+`allowPrivilegeEscalation` — reproducing case J's failure by a different
+path, with no relaxation kind able to fix it.
+
+### The sidecar holds nothing worth stealing
+
+The security argument for relaxing the `podman` sidecar's `securityContext`
+at all is that the relaxation is confined to a container that has nothing
+worth stealing: no ServiceAccount token, no Secret, no `hostPath`, no
+ConfigMap, no agent home. Its only two volume mounts are the workspace
+(shared with the agent, so it grants nothing new) and its own private
+layer-cache `emptyDir`; its only env vars are plain values (`HOME`,
+`XDG_RUNTIME_DIR`, `TMPDIR`, the three `CONTAINERS_*_CONF` paths) with no
+`valueFrom` anywhere; it has no `EnvFrom`; every pod volume anywhere has no
+`HostPath`; and the pod's `automountServiceAccountToken` stays `false`.
+
+This is a **maintenance invariant, not a mechanism** — nothing stops a
+future change from adding a projected token "for convenience", at which
+point the agent would inherit it through the Docker API the moment it runs
+`docker exec` or a bind mount into that sidecar's view. It is pinned by
+`TestPodmanEngine_SidecarMountsAndTokensNeverGrow`
+(`internal/render/engine_podman_test.go`), which asserts the sidecar's
+mount/env/volume set by **exact equality** against the list above, so it
+fails the moment the set grows at all — not just when something obviously
+dangerous is added.
 
 ## Residual risks (read this section)
 
@@ -256,8 +317,44 @@ nonexistent:
 8. `pods/exec` and `pods/log` are deliberately **never** granted to the
    operator — but this is a design choice to note, not a guarantee about
    anything else in the cluster that might hold those verbs.
-9. Nested-workload NetworkPolicy inheritance is unverified (see above,
-   "What `Restricted` does NOT protect against").
+9. **`--network host` gives a workload container the pod's own loopback.**
+   Rootless podman supports `--network host` without any added privilege —
+   it simply creates no new network namespace, so the container runs
+   directly in the pod's own netns. This is verified to be **not** a
+   NetworkPolicy bypass (`test/e2e/isolation_test.go`'s `governs a
+   --network host workload container by the same NetworkPolicy` — egress
+   is still enforced, because the CNI keys on the pod's interface/IP,
+   which the container is using). But it does mean the container can reach
+   `127.0.0.1:9099` (the sandboxctl control API) and `127.0.0.1:2375` (the
+   podman API itself) — proven by `gives a --network host workload
+   container pod loopback -- a known, documented risk`. This is **not** an
+   escalation (the agent that launched the container already holds both),
+   but it does falsify any belief that "a workload container is isolated
+   from the sandbox control plane." It is **structurally unpreventable**:
+   podman has no knob to forbid `--network host`, and the pod's loopback is
+   shared by construction.
+10. **A workload container is, by construction, materially weaker than the
+    agent container.** `docker run` with no flags gets podman's own
+    defaults, not this operator's hardening. Podman is not *unconfined*
+    there — it applies its own default seccomp profile and its own reduced
+    capability set, and rootless mode bounds the container to an
+    unprivileged user namespace — but none of that is the Kubernetes-level
+    profile the operator imposes on the agent, and the agent can weaken it
+    further at will with `--privileged`, `--cap-add`, `--security-opt
+    seccomp=unconfined` or `-u 0`. The operator does not and cannot impose a
+    security profile on a container
+    the *agent* chooses to launch inside the sidecar's engine — that
+    choice is entirely the agent's (or the LLM-authored code driving it),
+    the same way it would be on a developer's own laptop running Docker.
+    The relaxation on `podman` is what makes this *possible*; it is not
+    what makes a workload container *safe*.
+11. **The layer-cache `emptyDir` has no `sizeLimit`.** The `podman-graph`
+    volume (`internal/render/engine_podman.go`) is an ordinary `emptyDir`
+    with no capacity bound set on it, so a workload that pulls enough
+    images can, in principle, fill the node's ephemeral storage for that
+    pod. It is excluded from every snapshot (see
+    [`engines.md`](engines.md#the-layer-cache-never-appears-in-a-snapshot)),
+    but that is a data-hygiene guarantee, not a resource-quota one.
 
 ## What is verified, and by what
 
@@ -270,9 +367,13 @@ nonexistent:
 | Control API is loopback-only | `test/e2e/lifecycle_test.go` ("does not expose the control API outside the pod") |
 | `/v1/done` works with no Kubernetes credential in the agent container | `test/e2e/lifecycle_test.go` ("reaches Done via /v1/done with no Kubernetes credential in the agent container") |
 | `Restricted` NetworkPolicy renders and enforces as declared | `test/e2e/netpolicy_test.go` ("enforces NetworkPolicy") |
-| CNI enforcement is actually measured, not assumed | `test/e2e/isolation_test.go` ("reports CNI enforcement verified") |
+| CNI enforcement is actually measured, not assumed | `test/e2e/isolation_test.go` ("reports CNI enforcement verified on Restricted environments") |
 | Chart never renders a Secret or ConfigMap it shouldn't | `.github/workflows/helm.yml`'s "no Secret or ConfigMap is ever rendered" assertion |
-| Nested-workload NetworkPolicy inheritance | **Not verified.** `test/e2e/isolation_test.go`'s corresponding spec is `PIt` — pending and skipped. |
-
-The last row is deliberate: this document would be less honest if that gap
-were omitted rather than named.
+| Nested-workload NetworkPolicy inheritance (default network) | `test/e2e/isolation_test.go` ("restricts a workload container's egress under Restricted isolation and allows it under Open") |
+| Nested-workload NetworkPolicy inheritance (`--network host`) | `test/e2e/isolation_test.go` ("governs a --network host workload container by the same NetworkPolicy") |
+| `--network host` reaches pod loopback (documented risk, not a bug) | `test/e2e/isolation_test.go` ("gives a --network host workload container pod loopback -- a known, documented risk") |
+| A default-network workload container cannot reach pod loopback | `test/e2e/isolation_test.go` ("denies a DEFAULT-network workload container access to the pod's loopback") |
+| The `rootless-podman` sidecar's mount/env/volume set never grows silently | `internal/render/engine_podman_test.go` (`TestPodmanEngine_SidecarMountsAndTokensNeverGrow`) |
+| The layer cache never appears in a snapshot | `internal/sandboxctl/exclusions_test.go` (`TestSnapshotExclude_PodmanGraphRootUnderEveryPlausibleRoot`); end to end, `test/e2e/engine_test.go` ("the layer cache never appears in a snapshot") |
+| Workload containers are torn down before the freeze archives the workspace | `test/e2e/engine_test.go` ("tears down workload containers before the freeze archives the workspace") |
+| A `rootless-podman` class in a PSS-incompatible namespace fails with an actionable error, not a mysterious pod rejection | `internal/render/podsecurity_test.go`, `internal/controller/podsecurity_test.go`; end to end, `test/e2e/engine_test.go` ("reports an actionable error for a rootless-podman class in a restricted namespace") |

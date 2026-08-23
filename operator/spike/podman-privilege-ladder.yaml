@@ -12,6 +12,30 @@
 #   pm-aa-seccomp      FAIL   cannot clone: seccomp RuntimeDefault blocks userns
 #   pm-aa-noprivesc    FAIL   newuidmap cannot apply its file capability
 #   pm-privileged      OK     works, but far more privilege than necessary
+#
+# This file is a REGRESSION TEST, not a one-off (#24). Two halves:
+#
+#  1. Mechanical, in CI: internal/render/spikeladder_test.go parses this
+#     file and asserts (a) every image ref equals render.DefaultPodmanImage,
+#     and (b) the securityContext RenderPod produces for the `podman`
+#     sidecar matches pm-apparmor (case G) field for field and matches NONE
+#     of the failing cases' distinguishing fields. Bumping the podman digest
+#     without updating this file fails `make test`.
+#
+#  2. Manual, on any podman bump: re-run the ladder before merging the bump.
+#       kubectl apply -f operator/spike/podman-privilege-ladder.yaml
+#       for p in pm-baseline pm-hostusers pm-sysadmin pm-sysadmin-root \
+#                pm-apparmor pm-aa-seccomp pm-aa-noprivesc pm-privileged; do
+#         kubectl -n spike wait --for=condition=Ready pod/$p --timeout=120s
+#         echo -n "$p: "; kubectl -n spike exec $p -- \
+#           podman run --rm docker.io/library/alpine:3.20 echo RUN-OK || echo FAIL
+#       done
+#       kubectl delete ns spike
+#     The expected column below must still hold. If pm-aa-seccomp or
+#     pm-aa-noprivesc starts PASSING, the corresponding Relaxation in
+#     internal/render/engine_podman.go is no longer necessary and must be
+#     removed. If pm-apparmor starts FAILING, this engine is broken on that
+#     podman version -- do not merge the bump.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -24,7 +48,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext: { runAsUser: 1000, runAsGroup: 1000 }
@@ -37,7 +61,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext: { runAsUser: 1000, runAsGroup: 1000 }
@@ -49,7 +73,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext:
@@ -64,7 +88,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       securityContext:
         runAsUser: 0
@@ -77,7 +101,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext:
@@ -92,7 +116,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext:
@@ -108,7 +132,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext:
@@ -124,7 +148,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["sleep", "36000"]
       env: [{ name: HOME, value: /home/podman }]
       securityContext: { privileged: true }

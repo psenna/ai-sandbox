@@ -23,6 +23,13 @@ type SnapshotConfig struct {
 	// class.Spec.Engine.Type.
 	Engine string
 
+	// EngineEndpoint is the pod-loopback engine API endpoint the
+	// EngineTeardown dials (#24: tcp://127.0.0.1:2375). Rendered by
+	// internal/render/pod.go's sidecarSnapshotArgs from the SAME constant the
+	// agent's DOCKER_HOST comes from (render.PodmanDockerHost). Empty for
+	// engine: none.
+	EngineEndpoint string
+
 	// ClusterID is storage.Identity.ClusterID. Rendered from
 	// Reconciler.ClusterID.
 	ClusterID string
@@ -84,6 +91,8 @@ const (
 func registerSnapshotFlags(fs *flag.FlagSet, c *SnapshotConfig, getenv func(string) string) {
 	fs.StringVar(&c.Engine, "engine", envOr(getenv, "ENGINE", "none"),
 		"container engine type this sandbox uses; selects the EngineTeardown implementation")
+	fs.StringVar(&c.EngineEndpoint, "engine-endpoint", envOr(getenv, "ENGINE_ENDPOINT", ""),
+		"pod-loopback engine API endpoint the EngineTeardown dials (tcp://host:port)")
 	fs.StringVar(&c.ClusterID, "cluster-id", envOr(getenv, "CLUSTER_ID", ""),
 		"cluster identifier, used as a storage path segment")
 	fs.StringVar(&c.SpecHash, "spec-hash", envOr(getenv, "SPEC_HASH", ""),
@@ -115,6 +124,9 @@ func registerSnapshotFlags(fs *flag.FlagSet, c *SnapshotConfig, getenv func(stri
 // means freeze is simply not configured for this sidecar (the noop hook is
 // selected) -- not an error.
 func (c SnapshotConfig) Validate() error {
+	if c.Engine == "rootless-podman" && c.EngineEndpoint == "" {
+		return fmt.Errorf("engine-endpoint: required when engine is %q", c.Engine)
+	}
 	switch c.Backend {
 	case "":
 		return nil

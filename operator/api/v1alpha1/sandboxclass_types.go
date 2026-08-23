@@ -171,6 +171,16 @@ type ServicesSpec struct {
 	// +optional
 	DependaProxy *DependaProxyService `json:"dependaProxy,omitempty"`
 
+	// RegistryMirror configures a pull-through container-registry cache the
+	// rootless-podman engine pulls workload images through (#24). Required
+	// in practice for `engine.type: rootless-podman` under
+	// `network.isolation: Restricted`: a Restricted NetworkPolicy allows
+	// egress only to the peers this class declares, so without a mirror the
+	// podman sidecar can reach no registry at all. Ignored by
+	// `engine.type: none`.
+	// +optional
+	RegistryMirror *RegistryMirrorService `json:"registryMirror,omitempty"`
+
 	// Ollama configures the local model inference endpoint.
 	// +optional
 	Ollama *OllamaService `json:"ollama,omitempty"`
@@ -214,6 +224,30 @@ type DependaProxyService struct {
 	// +kubebuilder:validation:Pattern=`^https?://`
 	// +optional
 	GoproxyURL string `json:"goproxyURL,omitempty"`
+}
+
+// RegistryMirrorService configures the pull-through container-registry cache
+// the container engine pulls workload images through. Rendered into the
+// podman sidecar's registries.conf as one `[[registry]]`/`[[registry.mirror]]`
+// pair per entry in Registries, and resolved by
+// internal/controller/network.go's serviceEndpoints into a NetworkPolicy
+// egress peer -- both from this single declaration.
+type RegistryMirrorService struct {
+	// URL is the mirror's base URL. Scheme is load-bearing: an http:// URL
+	// renders `insecure = true` on the mirror entry (a plain-HTTP in-cluster
+	// cache), https:// does not. A path component is preserved, so a
+	// multi-project mirror can be addressed as
+	// https://harbor.example.com/dockerhub.
+	// +kubebuilder:validation:Pattern=`^https?://`
+	URL string `json:"url"`
+
+	// Registries are the upstream registry prefixes this mirror serves.
+	// Empty means ["docker.io"] -- the only upstream a stock
+	// `registry:2` pull-through cache (REGISTRY_PROXY_REMOTEURL) can serve.
+	// Rendered in the given order, deduplicated, sorted for determinism.
+	// +optional
+	// +listType=atomic
+	Registries []string `json:"registries,omitempty"`
 }
 
 // OllamaService configures the local model inference endpoint sandboxes can

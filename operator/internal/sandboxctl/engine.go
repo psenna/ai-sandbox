@@ -3,6 +3,8 @@ package sandboxctl
 import (
 	"context"
 	"fmt"
+
+	"github.com/go-logr/logr"
 )
 
 // EngineTeardown stops and removes every workload container the sandbox's
@@ -39,10 +41,11 @@ func (noopEngineTeardown) Teardown(context.Context) (TeardownReport, error) {
 	}, nil
 }
 
-// notImplementedEngineTeardown fails closed, naming #24 -- mirroring
-// internal/render/engine.go's notImplementedEngine. Unreachable today:
-// RenderPod refuses to render a rootless-podman pod at all, so no such pod
-// (and no such sidecar) can exist yet.
+// notImplementedEngineTeardown fails closed, naming the issue that ships a
+// real implementation -- mirroring internal/render/engine.go's
+// notImplementedEngine. Reachable only for an engine type this operator does
+// not know at all (or a future engine, #25); both real v1 engine types
+// (none, rootless-podman) now have real implementations.
 type notImplementedEngineTeardown struct {
 	engine string
 	issue  int
@@ -52,15 +55,34 @@ func (e notImplementedEngineTeardown) Teardown(context.Context) (TeardownReport,
 	return TeardownReport{}, fmt.Errorf("sandboxctl: engine %q teardown is not implemented yet (see issue #%d)", e.engine, e.issue)
 }
 
+// failedEngineTeardown fails closed on a construction error (e.g. an
+// unparseable --engine-endpoint) -- Teardown returns the error the
+// constructor hit, rather than a nil EngineTeardown that would panic the
+// caller or a noop that would silently skip a real teardown.
+type failedEngineTeardown struct {
+	engine string
+	err    error
+}
+
+func (e failedEngineTeardown) Teardown(context.Context) (TeardownReport, error) {
+	return TeardownReport{}, fmt.Errorf("sandboxctl: engine %q teardown unavailable: %w", e.engine, e.err)
+}
+
 // NewEngineTeardown selects the EngineTeardown for engineType, normalizing
-// "" to "none" (the only implemented engine).
-func NewEngineTeardown(engineType string) EngineTeardown {
+// "" to "none". endpoint is the pod-loopback engine API endpoint (#24:
+// render.PodmanDockerHost, projected via sidecarSnapshotArgs'
+// --engine-endpoint flag); ignored for engine types that need none.
+func NewEngineTeardown(engineType, endpoint string, log logr.Logger) EngineTeardown {
 	switch engineType {
 	case "", "none":
 		return noopEngineTeardown{}
 	case "rootless-podman":
-		return notImplementedEngineTeardown{engine: "rootless-podman", issue: 24}
+		t, err := newPodmanTeardown(endpoint, log)
+		if err != nil {
+			return failedEngineTeardown{engine: engineType, err: err}
+		}
+		return t
 	default:
-		return notImplementedEngineTeardown{engine: engineType, issue: 24}
+		return notImplementedEngineTeardown{engine: engineType, issue: 25}
 	}
 }

@@ -154,21 +154,40 @@ func RenderPod(in Inputs) (*acorev1.PodApplyConfiguration, error) {
 	if err := validateNoReservedContainerNames(contribution); err != nil {
 		return nil, err
 	}
+	if err := CheckNamespacePodSecurity(
+		in.Env.Namespace, in.Class.Spec.Engine.Type,
+		in.NamespacePodSecurityEnforce, contribution.Relaxations,
+	); err != nil {
+		return nil, err
+	}
 
-	agent := agentContainer(in, names)
+	// The engine's agent-facing additions (#24: DOCKER_HOST/CONTAINER_HOST).
+	// Appended AFTER the base definition so an engine can only add, never
+	// rewrite -- and safe with zero contributions: the generated
+	// WithEnv/WithVolumeMounts are no-ops for an empty varargs, so the `none`
+	// engine's rendered pod is byte-identical to before.
+	agent := agentContainer(in, names).
+		WithEnv(contribution.AgentEnv...).
+		WithVolumeMounts(contribution.AgentVolumeMounts...)
 	containers := append([]*acorev1.ContainerApplyConfiguration{agent}, contribution.Containers...)
 
-	// sandboxctl is ALWAYS first among init containers: a restartable
-	// (native) sidecar that must be running for the whole pod lifetime,
-	// including during the restore init container (#29), so the agent
-	// never observes a pod without a control channel. The restore
-	// container (if any) is ALWAYS last: a plain (non-restartable) init
-	// container under restartPolicy: Never is the only way "never start
-	// the agent on a partially restored workspace" is enforced by the
-	// kubelet itself -- see restoreContainer's doc comment.
+	// Order: engine init containers, then sandboxctl, then (on a wake) restore.
+	//
+	// Engine FIRST, sandboxctl second -- reversed from #27/#29's original
+	// "sandboxctl is ALWAYS first" because #24 introduced a second native
+	// sidecar whose lifetime must ENCLOSE sandboxctl's. Native sidecars start
+	// in declaration order and terminate in REVERSE, so this order gives:
+	//   start:      podman -> sandboxctl -> [restore] -> agent
+	//   terminate:  agent  -> sandboxctl -> podman
+	// which is the only order in which sandboxctl's SIGTERM-path freeze can
+	// still call the engine's teardown API. The property #27's comment
+	// actually cared about -- "the agent never observes a pod without a
+	// control channel" -- is preserved either way, because the agent is a
+	// regular container and starts only after EVERY init container's
+	// startupProbe has succeeded.
 	initContainers := append(
-		[]*acorev1.ContainerApplyConfiguration{sidecarContainer(in, names)},
-		contribution.InitContainers...,
+		append([]*acorev1.ContainerApplyConfiguration{}, contribution.InitContainers...),
+		sidecarContainer(in, names),
 	)
 	if in.Restore != nil && isS3Backend(in) {
 		initContainers = append(initContainers, restoreContainer(in, names))
@@ -427,6 +446,10 @@ func sidecarSnapshotArgs(in Inputs) []string {
 	}
 
 	add("engine", string(in.Class.Spec.Engine.Type))
+	// The pod-loopback endpoint sandboxctl's EngineTeardown dials (#24).
+	// Empty (and therefore omitted entirely) for engine: none, which has no
+	// endpoint. Same single source of truth as the agent's DOCKER_HOST.
+	add("engine-endpoint", engineEndpoint(in.Class.Spec.Engine.Type))
 	add("cluster-id", in.ClusterID)
 	add("spec-hash", in.SpecHash)
 	add("agent-image", in.Class.Spec.Agent.Image)
@@ -455,6 +478,15 @@ func sidecarSnapshotArgs(in Inputs) []string {
 		"--snapshot-step-timeout="+defaultSnapshotStepTimeoutFlag,
 	)
 	return args
+}
+
+// engineEndpoint returns the pod-loopback API endpoint for engine type t, or
+// "" when the engine exposes none.
+func engineEndpoint(t v1alpha1.EngineType) string {
+	if t == v1alpha1.EngineTypeRootlessPodman {
+		return PodmanDockerHost
+	}
+	return ""
 }
 
 // restoreContainer renders the one-shot wake/restore init container (#29):
@@ -608,8 +640,11 @@ func applyRelaxation(sc *acorev1.SecurityContextApplyConfiguration, r Relaxation
 		// project's envtest-pinned 1.35 target needs no annotation
 		// fallback.
 		sc.AppArmorProfile = acorev1.AppArmorProfile().WithType(corev1.AppArmorProfileTypeUnconfined)
-	case RelaxSeccompUnset:
-		sc.SeccompProfile = nil
+	case RelaxSeccompUnconfined:
+		// Explicit Unconfined, NOT nil -- see RelaxSeccompUnconfined's doc
+		// comment: podSecurityContext() sets a pod-level RuntimeDefault that a
+		// nil container-level field would inherit, which is ladder case H.
+		sc.SeccompProfile = acorev1.SeccompProfile().WithType(corev1.SeccompProfileTypeUnconfined)
 	case RelaxAllowPrivilegeEscalation:
 		t := true
 		sc.AllowPrivilegeEscalation = &t
@@ -630,11 +665,25 @@ func applyRelaxation(sc *acorev1.SecurityContextApplyConfiguration, r Relaxation
 // findContainerSecurityContext returns the (possibly freshly-allocated)
 // SecurityContext of the container named name within pod, addressing the
 // slice element directly so mutations through the returned pointer persist
-// into pod.Spec.Containers (WithContainers stores ContainerApplyConfiguration
-// by value, not by pointer -- a range-copy would silently discard writes).
+// into pod.Spec.Containers/InitContainers (WithContainers/WithInitContainers
+// store ContainerApplyConfiguration by value, not by pointer -- a range-copy
+// would silently discard writes).
+//
+// Searches InitContainers as well as Containers: an engine's relaxations can
+// target a native sidecar (#24's podman container, restartPolicy: Always),
+// which RenderPod places in InitContainers, not Containers.
 func findContainerSecurityContext(pod *acorev1.PodApplyConfiguration, name string) (*acorev1.SecurityContextApplyConfiguration, error) {
 	for i := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[i]
+		if c.Name != nil && *c.Name == name {
+			if c.SecurityContext == nil {
+				c.SecurityContext = acorev1.SecurityContext()
+			}
+			return c.SecurityContext, nil
+		}
+	}
+	for i := range pod.Spec.InitContainers {
+		c := &pod.Spec.InitContainers[i]
 		if c.Name != nil && *c.Name == name {
 			if c.SecurityContext == nil {
 				c.SecurityContext = acorev1.SecurityContext()

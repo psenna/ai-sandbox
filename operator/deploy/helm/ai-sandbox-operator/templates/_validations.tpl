@@ -114,7 +114,18 @@ dict keys: path, value, flag, min, max (seconds, float), minLabel, maxLabel.
 {{/* engine these values ask for, whoever creates the class.            */}}
 {{/* ------------------------------------------------------------------ */}}
 {{- if and (eq (toString .Values.defaultClass.engine.type) "rootless-podman") (has (toString .Values.sandboxNamespaces.podSecurityEnforce) (list "baseline" "restricted")) -}}
-{{- fail (printf "ai-sandbox-operator: defaultClass.engine.type=\"rootless-podman\" cannot run in namespaces enforcing Pod Security Standard %q (sandboxNamespaces.podSecurityEnforce). \"baseline\" rejects the pod with an AppArmor-profile violation, and \"restricted\" additionally rejects allowPrivilegeEscalation, capabilities, runAsNonRoot and seccompProfile -- every one of which internal/render/engine.go's rootless-podman Relaxations requires. Supported values are \"\" (no PSS enforcement) and \"privileged\". Either label the sandbox namespaces pod-security.kubernetes.io/enforce=privileged and set sandboxNamespaces.podSecurityEnforce accordingly, or set defaultClass.engine.type=none." (toString .Values.sandboxNamespaces.podSecurityEnforce)) -}}
+{{- fail (printf "ai-sandbox-operator: defaultClass.engine.type=\"rootless-podman\" cannot run in namespaces enforcing Pod Security Standard %q (sandboxNamespaces.podSecurityEnforce). \"baseline\" rejects the pod on TWO independent grounds -- an AppArmor Unconfined profile and an explicit seccompProfile.type=Unconfined, both of which internal/render/engine_podman.go's podmanRelaxations requires -- and \"restricted\" rejects those same two plus allowPrivilegeEscalation=true (the third relaxation) and the absence of capabilities.drop=[ALL] (the sidecar's base securityContext deliberately sets no capabilities field at all). Supported values are \"\" (no PSS enforcement) and \"privileged\". Either label the sandbox namespaces pod-security.kubernetes.io/enforce=privileged and set sandboxNamespaces.podSecurityEnforce accordingly, or set defaultClass.engine.type=none." (toString .Values.sandboxNamespaces.podSecurityEnforce)) -}}
+{{- end -}}
+
+{{/* ------------------------------------------------------------------ */}}
+{{/* G21 -- rootless-podman with an image override that is not          */}}
+{{/* digest-pinned. Not gated on defaultClass.create, like G6: this is  */}}
+{{/* about the engine image these values ask for.                       */}}
+{{/* ------------------------------------------------------------------ */}}
+{{- if and (eq (toString .Values.defaultClass.engine.type) "rootless-podman") .Values.defaultClass.engine.image -}}
+{{- if not (contains "@sha256:" (toString .Values.defaultClass.engine.image)) -}}
+{{- fail (printf "ai-sandbox-operator: defaultClass.engine.image=%q is not pinned by digest. internal/render/engine_podman.go's validatePodmanImage returns \"engine \\\"rootless-podman\\\" image %q is not pinned by digest\" and RenderPod fails at render time, so no pod is ever created. The securityContext this engine requires was established empirically against podman 5.8.2 (operator/docs/spike-rootless-podman.md) and a version change can invalidate it. Use a repository@sha256:... reference, or leave defaultClass.engine.image empty to get the operator's own pinned default." (toString .Values.defaultClass.engine.image) (toString .Values.defaultClass.engine.image)) -}}
+{{- end -}}
 {{- end -}}
 
 {{/* ================================================================== */}}
@@ -187,6 +198,9 @@ dict keys: path, value, flag, min, max (seconds, float), minLabel, maxLabel.
 {{- $eps = append $eps (dict "what" "dependaProxy pypi" "url" $dc.services.dependaProxy.pypiURL) -}}
 {{- $eps = append $eps (dict "what" "dependaProxy goproxy" "url" $dc.services.dependaProxy.goproxyURL) -}}
 {{- end -}}
+{{- if $dc.services.registryMirror.enabled -}}
+{{- $eps = append $eps (dict "what" "registryMirror" "url" $dc.services.registryMirror.url) -}}
+{{- end -}}
 {{- if $dc.services.ollama.enabled -}}
 {{- $eps = append $eps (dict "what" "ollama" "url" $dc.services.ollama.baseURL) -}}
 {{- end -}}
@@ -200,6 +214,21 @@ dict keys: path, value, flag, min, max (seconds, float), minLabel, maxLabel.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* ------------------------------------------------------------------ */}}
+{{/* G22 -- rootless-podman + Restricted isolation with no way to reach  */}}
+{{/* a container registry (neither a registryMirror nor a covering      */}}
+{{/* extraEgress cidr).                                                  */}}
+{{/* ------------------------------------------------------------------ */}}
+{{- if and (eq (toString $dc.engine.type) "rootless-podman") (eq (toString $dc.network.isolation) "Restricted") -}}
+{{- $hasCIDR := false -}}
+{{- range $dc.network.extraEgress -}}
+{{- if .cidr -}}{{- $hasCIDR = true -}}{{- end -}}
+{{- end -}}
+{{- if and (not $dc.services.registryMirror.enabled) (not $hasCIDR) -}}
+{{- fail "ai-sandbox-operator: defaultClass.engine.type=\"rootless-podman\" with network.isolation=\"Restricted\" needs a way to reach a container registry, and this class declares neither defaultClass.services.registryMirror nor an extraEgress cidr. internal/render/networkpolicy.go's RenderNetworkPolicy default-denies egress except to the class's declared peers, so the podman sidecar could pull no image at all and every `docker run` inside the sandbox would fail with a registry timeout. Set defaultClass.services.registryMirror.enabled=true with a url, add a covering extraEgress cidr, or set defaultClass.network.isolation=Open." -}}
 {{- end -}}
 {{- end -}}
 

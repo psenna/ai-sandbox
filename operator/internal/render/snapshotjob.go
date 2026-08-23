@@ -54,6 +54,12 @@ func RenderSnapshotJob(in Inputs) (*abatchv1.JobApplyConfiguration, error) {
 	// nothing to archive under that path. flag.FlagSet's last-flag-wins
 	// semantics makes this override correct positionally (appended last).
 	args = append(args, "--agent-home-path=")
+	// Overrides sidecarSnapshotArgs' own --engine=<class engine>: the recovery
+	// Job is a standalone pod with NO engine sidecar, so there is no engine
+	// API to dial and, by construction, no workload container to tear down
+	// (podman containers cannot outlive the pod whose netns/userns they run
+	// in). Same last-flag-wins mechanism as --agent-home-path above.
+	args = append(args, "--engine=none")
 
 	container := acorev1.Container().
 		WithName(SidecarContainerName).

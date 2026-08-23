@@ -92,6 +92,35 @@ func (h *Harness) S3ProxyInClusterEndpoint() string {
 	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8082", h.Cfg.ServicesNamespace)
 }
 
+// RegistryCacheInClusterURL is the address a SandboxClass's
+// services.registryMirror.url uses to route the podman sidecar's image
+// pulls through the in-cluster pull-through cache (#24,
+// test/e2e/manifests/registry-cache.yaml) -- see WithRegistryMirror /
+// WithPodmanEngine.
+func (h *Harness) RegistryCacheInClusterURL() string {
+	return fmt.Sprintf("http://registry-cache.%s.svc.cluster.local:5000", h.Cfg.ServicesNamespace)
+}
+
+// NpmRegistryInClusterURL is the address a SandboxClass's
+// services.dependaProxy.npmURL uses to route npm traffic through the e2e
+// npm-registry double (#24, test/e2e/doubles/npmregistry.go) -- see
+// WithDependaProxyNpm. Trailing slash deliberate: npm's own registry-fetch
+// resolves a package request as `new URL(name, registry)`, which DROPS the
+// registry URL's last path segment when it has no trailing "/" (standard
+// WHATWG URL join semantics) -- every real npm registry URL
+// (https://registry.npmjs.org/) ends in "/" for exactly this reason.
+func (h *Harness) NpmRegistryInClusterURL() string {
+	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8083/npm/", h.Cfg.ServicesNamespace)
+}
+
+// DoublesBrokerInClusterURL is the in-cluster address of the fake git-proxy
+// broker (test/e2e/doubles/broker.go) -- a real Service no class declares
+// as a peer by default, used as the BLOCKED destination isolation_test.go's
+// specs assert against under Restricted isolation (and reach under Open).
+func (h *Harness) DoublesBrokerInClusterURL() string {
+	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8080", h.Cfg.ServicesNamespace)
+}
+
 type controlPutBody struct {
 	Path   string `json:"path"`
 	Status int    `json:"status"`

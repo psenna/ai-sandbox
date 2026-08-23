@@ -148,8 +148,17 @@ defaultClass:
     resources: {}
     model: {default: "", haiku: "", sonnet: "", opus: ""}
   engine:
+    # rootless-podman is implemented as of #24 and is the CRD default.
     type: rootless-podman          # rootless-podman | none
+    # "" -> the operator's own digest-pinned default
+    # (internal/render/engine_podman.go's DefaultPodmanImage,
+    # quay.io/podman/stable v5.8.2). An override MUST be digest-pinned
+    # (guard G21): the required securityContext was established empirically
+    # against 5.8.2 and a version change can invalidate it.
     image: ""
+    # auto resolves to overlay DETERMINISTICALLY -- there is no node probe
+    # and no vfs fallback (#24's Update; spike #23 measured native rootless
+    # overlay working). vfs remains selectable explicitly, and is very slow.
     storageDriver: auto            # auto | overlay | vfs
   services:
     gitProxy:
@@ -162,6 +171,17 @@ defaultClass:
       npmURL: ""
       pypiURL: ""
       goproxyURL: ""
+    # Pull-through container-registry cache the rootless-podman engine pulls
+    # workload images through. Effectively REQUIRED for
+    # engine.type=rootless-podman with network.isolation=Restricted (guard
+    # G22): a Restricted NetworkPolicy allows egress only to the peers this
+    # class declares, so with no mirror the podman sidecar reaches no
+    # registry at all. A stock `registry:2` with REGISTRY_PROXY_REMOTEURL can
+    # front exactly ONE upstream, hence the default single-element list.
+    registryMirror:
+      enabled: false
+      url: ""                    # http:// renders `insecure = true`
+      registries: []             # [] -> ["docker.io"]
     ollama:
       enabled: false
       baseURL: ""

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
@@ -44,6 +45,36 @@ func TestRenderSnapshotJob_NoneMinimal(t *testing.T) {
 		}
 		if v.Name != nil && *v.Name == configVolumeName {
 			t.Error("snapshot job must not declare a config volume")
+		}
+	}
+}
+
+// TestRenderSnapshotJob_ForcesEngineNone proves the recovery Job always
+// renders --engine=none, even when the class's engine is rootless-podman:
+// the recovery Job pod has no podman sidecar at all (#24), so there is no
+// engine API to dial and, by construction, no workload container to tear
+// down.
+func TestRenderSnapshotJob_ForcesEngineNone(t *testing.T) {
+	class := withEngine(minimalClass(), v1alpha1.EngineTypeRootlessPodman)
+	in := Inputs{Env: baseEnv("podman-snapshotjob"), Class: class, ClusterID: "test-cluster", SidecarImage: "test-sidecar:test"}
+	job, err := RenderSnapshotJob(in)
+	if err != nil {
+		t.Fatalf("RenderSnapshotJob: %v", err)
+	}
+	if job.Spec == nil || job.Spec.Template == nil || job.Spec.Template.Spec == nil {
+		t.Fatal("job.Spec.Template.Spec is nil")
+	}
+	for _, c := range job.Spec.Template.Spec.Containers {
+		lastEngine := ""
+		for _, a := range c.Args {
+			if a == "--engine=none" {
+				lastEngine = "none"
+			} else if strings.HasPrefix(a, "--engine=") {
+				lastEngine = a
+			}
+		}
+		if lastEngine != "none" {
+			t.Errorf("last --engine= flag = %q, want \"none\" (flag.FlagSet's last-flag-wins semantics); args=%v", lastEngine, c.Args)
 		}
 	}
 }

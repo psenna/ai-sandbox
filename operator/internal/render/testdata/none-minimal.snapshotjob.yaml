@@ -51,6 +51,7 @@ spec:
         - --snapshot-retries=4
         - --snapshot-step-timeout=2m
         - --agent-home-path=
+        - --engine=none
         command:
         - /sandboxctl
         image: test-sidecar:test

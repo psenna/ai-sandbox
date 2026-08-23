@@ -38,7 +38,16 @@ func (r *Reconciler) ensurePod(ctx context.Context, env *v1alpha1.SandboxEnviron
 		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable: spec hash", "reason", err.Error())
 		return nil
 	}
-	pod, err := render.RenderPod(render.Inputs{Env: env, Class: class, ClusterID: r.ClusterID, SidecarImage: r.SidecarImage, SpecHash: specHash, Restore: restorePlanFor(env)})
+	pod, err := render.RenderPod(render.Inputs{
+		Env: env, Class: class, ClusterID: r.ClusterID,
+		SidecarImage: r.SidecarImage, SpecHash: specHash,
+		Restore: restorePlanFor(env),
+		// The render-time PSS guard's input. Resolved here rather than
+		// threaded through actions.go's actionFunc signature: the read is
+		// cache-backed, and changing that signature for one engine-specific
+		// value would ripple through every action handler.
+		NamespacePodSecurityEnforce: r.namespacePodSecurityEnforce(ctx, env.Namespace),
+	})
 	if err != nil {
 		ctrl.LoggerFrom(ctx).V(1).Info("agent pod not renderable", "reason", err.Error())
 		return nil

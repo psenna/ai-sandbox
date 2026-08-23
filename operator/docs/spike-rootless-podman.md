@@ -4,6 +4,20 @@ Decision record for [#23](https://github.com/psenna/ai-sandbox/issues/23). Resol
 `rootless-podman` can be the default container engine for `SandboxEnvironment`
 ([#15](https://github.com/psenna/ai-sandbox/issues/15)).
 
+> **Shipped.** This spike's recommendations were implemented in full by
+> [#24](https://github.com/psenna/ai-sandbox/issues/24):
+> `internal/render/engine_podman.go` is the engine, and this document's
+> ladder became a permanent CI regression test
+> (`internal/render/spikeladder_test.go`) rather than a one-off record. The
+> **Results**, **Root cause**, **Minimum viable configuration** and **Pod
+> Security Standards** sections below are the historical record of what was
+> measured and are left as originally recorded — do not edit them to match
+> the shipped implementation. Where the shipped pod diverges from what the
+> ladder measured, a note says so explicitly (see "A correction: seccomp on
+> the rendered pod" below). See [`engines.md`](engines.md#rootless-podman---what-you-get)
+> and [`security.md`](security.md#engine-relaxations) for the shipped
+> engine's own documentation.
+
 ## Verdict
 
 **Rootless podman works, and the agent container stays fully hardened.** It is viable as the
@@ -173,3 +187,58 @@ guard in the chart.
 5. **Surface the relaxation in a condition** on `SandboxEnvironment`, as #21 requires, so the
    weakened posture is visible in `kubectl describe`.
 6. **Follow up on an SELinux cluster** to test whether `baseline` is achievable there.
+
+## A correction: seccomp on the rendered pod
+
+The ladder's own pods (`spike/podman-privilege-ladder.yaml`) set no
+pod-level `securityContext` at all, so a container that left its own
+`seccompProfile` unset there inherited the **kubelet's** `seccompDefault`
+(`Unconfined` unless the node runs `--seccomp-default=true`) — which is why
+case G's "no seccomp override" worked.
+
+The pod `internal/render.RenderPod` actually builds is different: its
+pod-level `securityContext.seccompProfile` is `RuntimeDefault`
+(`podSecurityContext()` in `internal/render/pod.go`), and every container
+that leaves its own `seccompProfile` nil **inherits that pod-level value**
+— reproducing the ladder's failing case H, not case G's success. The
+shipped engine therefore sets `seccompProfile.type: Unconfined`
+**explicitly** on the `podman` sidecar (`RelaxSeccompUnconfined` in
+`internal/render/engine.go`) rather than leaving the field unset. The
+practical effect — podman starts, `baseline` still rejects it — is
+identical to what the ladder measured; only the *mechanism* by which
+`baseline` rejects it changed, from one AppArmor violation to two
+(AppArmor **and** seccomp). See
+[`engines.md`](engines.md#the-pss-constraint) for the resulting
+`baseline`/`restricted` story on the shipped pod.
+
+## Re-running the ladder on a podman bump
+
+`internal/render/spikeladder_test.go` fails CI automatically if
+`spike/podman-privilege-ladder.yaml`'s image references stop matching
+`internal/render/engine_podman.go`'s `DefaultPodmanImage` — so a digest bump
+cannot land silently. But the mechanical test only checks that the *ladder
+file* and the *shipped constant* agree; it cannot re-verify that the ladder
+itself still behaves the same way on a new podman version. Before merging a
+`DefaultPodmanImage` bump, re-run the ladder for real against a live
+cluster:
+
+```sh
+kubectl apply -f operator/spike/podman-privilege-ladder.yaml
+for p in pm-baseline pm-hostusers pm-sysadmin pm-sysadmin-root \
+         pm-apparmor pm-aa-seccomp pm-aa-noprivesc pm-privileged; do
+  kubectl -n spike wait --for=condition=Ready pod/$p --timeout=120s
+  echo -n "$p: "; kubectl -n spike exec $p -- \
+    podman run --rm docker.io/library/alpine:3.20 echo RUN-OK || echo FAIL
+done
+kubectl delete ns spike
+```
+
+The expected column in the **Results** table above must still hold:
+
+- If `pm-aa-seccomp` or `pm-aa-noprivesc` starts **passing** on the new
+  version, the corresponding `Relaxation` in
+  `internal/render/engine_podman.go`'s `podmanRelaxations` is no longer
+  necessary and should be removed (a relaxation the engine no longer needs
+  is an unnecessary PSS violation to carry).
+- If `pm-apparmor` (case G) starts **failing**, this engine is broken on
+  that podman version — do not merge the bump until you understand why.

@@ -401,6 +401,38 @@ spec:
                     required:
                     - baseURL
                     type: object
+                  registryMirror:
+                    description: |-
+                      RegistryMirror configures a pull-through container-registry cache the
+                      rootless-podman engine pulls workload images through (#24). Required
+                      in practice for `engine.type: rootless-podman` under
+                      `network.isolation: Restricted`: a Restricted NetworkPolicy allows
+                      egress only to the peers this class declares, so without a mirror the
+                      podman sidecar can reach no registry at all. Ignored by
+                      `engine.type: none`.
+                    properties:
+                      registries:
+                        description: |-
+                          Registries are the upstream registry prefixes this mirror serves.
+                          Empty means ["docker.io"] -- the only upstream a stock
+                          `registry:2` pull-through cache (REGISTRY_PROXY_REMOTEURL) can serve.
+                          Rendered in the given order, deduplicated, sorted for determinism.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      url:
+                        description: |-
+                          URL is the mirror's base URL. Scheme is load-bearing: an http:// URL
+                          renders `insecure = true` on the mirror entry (a plain-HTTP in-cluster
+                          cache), https:// does not. A path component is preserved, so a
+                          multi-project mirror can be addressed as
+                          https://harbor.example.com/dockerhub.
+                        pattern: ^https?://
+                        type: string
+                    required:
+                    - url
+                    type: object
                 type: object
               storage:
                 description: |-

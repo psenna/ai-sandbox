@@ -45,8 +45,10 @@ type serviceEndpoint struct {
 
 // serviceEndpoints enumerates every endpoint a sandbox created from class
 // must reach: the git-proxy git+broker URLs, the DependaProxy npm/pypi/goproxy
-// URLs, the Ollama base URL, and (for an S3 storage backend) the S3 endpoint.
-// A PVC backend has no S3 endpoint, so it contributes no storage peer.
+// URLs, the registry mirror URL (#24: what the rootless-podman engine pulls
+// workload images through), the Ollama base URL, and (for an S3 storage
+// backend) the S3 endpoint. A PVC backend has no S3 endpoint, so it
+// contributes no storage peer.
 func serviceEndpoints(class *v1alpha1.SandboxClass) []serviceEndpoint {
 	var eps []serviceEndpoint
 	if gp := class.Spec.Services.GitProxy; gp != nil {
@@ -61,6 +63,9 @@ func serviceEndpoints(class *v1alpha1.SandboxClass) []serviceEndpoint {
 			serviceEndpoint{"dependaProxy pypi", dp.PypiURL},
 			serviceEndpoint{"dependaProxy goproxy", dp.GoproxyURL},
 		)
+	}
+	if rm := class.Spec.Services.RegistryMirror; rm != nil {
+		eps = append(eps, serviceEndpoint{"registryMirror", rm.URL})
 	}
 	if o := class.Spec.Services.Ollama; o != nil {
 		eps = append(eps, serviceEndpoint{"ollama", o.BaseURL})

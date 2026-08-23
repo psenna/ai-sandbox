@@ -52,7 +52,7 @@ func buildFreezeHook(store Store, cfg Config, log logr.Logger) (FreezeHook, erro
 			return nil, fmt.Errorf("building snapshot backend: %w", err)
 		}
 	}
-	return NewSnapshotHook(store, be, NewEngineTeardown(cfg.Snapshot.Engine), cfg.Snapshot, log), nil
+	return NewSnapshotHook(store, be, NewEngineTeardown(cfg.Snapshot.Engine, cfg.Snapshot.EngineEndpoint, log), cfg.Snapshot, log), nil
 }
 
 // Run wires together the direct Kubernetes client, the Store, the Poller,

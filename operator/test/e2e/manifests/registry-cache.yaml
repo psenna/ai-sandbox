@@ -1,0 +1,68 @@
+# registry-cache: a REAL pull-through container-registry cache (registry:2's
+# own REGISTRY_PROXY_REMOTEURL feature), not a preloaded registry -- precisely
+# so #24's specs exercise the registries.conf mirror path
+# internal/render/engine_podman.go's podmanRegistriesConf actually renders,
+# rather than a stand-in that never gets asked to proxy anything. It has no
+# NetworkPolicy of its own and reaches Docker Hub directly; test/e2e/
+# harness.go's WithPodmanEngine/WithRegistryMirror declares it as a class
+# peer so the Restricted-isolation NetworkPolicy admits egress to it.
+#
+# ai-sandbox-e2e namespace already exists (created by manifests/minio.yaml,
+# applied first by hack/e2e-up.sh), so this file does not redeclare it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-cache
+  namespace: ai-sandbox-e2e
+  labels:
+    app: registry-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-cache
+  template:
+    metadata:
+      labels:
+        app: registry-cache
+    spec:
+      containers:
+        - name: registry-cache
+          # Pinned, NOT `latest` -- see minio.yaml's header comment on why a
+          # floating tag is avoided in this suite.
+          image: registry:2.8.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REGISTRY_PROXY_REMOTEURL
+              value: https://registry-1.docker.io
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          ports:
+            - name: registry
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: 5000
+            periodSeconds: 2
+            failureThreshold: 30
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-cache
+  namespace: ai-sandbox-e2e
+spec:
+  type: ClusterIP
+  selector:
+    app: registry-cache
+  ports:
+    - name: registry
+      port: 5000
+      targetPort: 5000

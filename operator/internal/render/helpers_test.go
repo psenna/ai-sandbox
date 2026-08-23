@@ -1,10 +1,13 @@
 package render
 
 import (
+	"testing"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	acorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
@@ -139,4 +142,27 @@ func pvcBackendClass() *v1alpha1.SandboxClass {
 func withEngine(class *v1alpha1.SandboxClass, t v1alpha1.EngineType) *v1alpha1.SandboxClass {
 	class.Spec.Engine.Type = t
 	return class
+}
+
+// podmanClass returns minimalClass with engine.type=rootless-podman and a
+// declared registry mirror.
+func podmanClass() *v1alpha1.SandboxClass {
+	class := withEngine(minimalClass(), v1alpha1.EngineTypeRootlessPodman)
+	class.Spec.Services.RegistryMirror = &v1alpha1.RegistryMirrorService{
+		URL: "http://registry-cache.ai-sandbox-e2e.svc.cluster.local:5000",
+	}
+	return class
+}
+
+// podmanContainerOf finds the `podman` init container in a rendered pod.
+func podmanContainerOf(t *testing.T, pod *acorev1.PodApplyConfiguration) *acorev1.ContainerApplyConfiguration {
+	t.Helper()
+	for i := range pod.Spec.InitContainers {
+		c := &pod.Spec.InitContainers[i]
+		if c.Name != nil && *c.Name == PodmanContainerName {
+			return c
+		}
+	}
+	t.Fatal("podman init container not found in rendered pod")
+	return nil
 }

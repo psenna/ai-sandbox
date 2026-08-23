@@ -84,6 +84,23 @@ func TestConfig_Validate_ShutdownTimeoutBounds(t *testing.T) {
 	}
 }
 
+func TestSnapshotConfig_EngineEndpointRequiredForPodman(t *testing.T) {
+	c := SnapshotConfig{Engine: "rootless-podman"}
+	if err := c.Validate(); err == nil {
+		t.Error("Validate() with engine=rootless-podman and no engine-endpoint: expected error, got nil")
+	}
+
+	c.EngineEndpoint = "tcp://127.0.0.1:2375"
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with engine=rootless-podman and an engine-endpoint: %v, want nil", err)
+	}
+
+	none := SnapshotConfig{Engine: "none"}
+	if err := none.Validate(); err != nil {
+		t.Errorf("Validate() with engine=none and no engine-endpoint: %v, want nil", err)
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	c, err := Load(nil, emptyEnv)
 	if err != nil {

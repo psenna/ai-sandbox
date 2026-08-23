@@ -15,6 +15,7 @@ package controller
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
@@ -224,11 +225,14 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	facts.Timeouts = lifecycle.ResolveTimeouts(class)
 
+	nsEnforce := r.namespacePodSecurityEnforce(ctx, env.Namespace)
+
 	d := lifecycle.Next(env, facts, r.now())
-	d.Conditions = append(d.Conditions, engineSecurityCondition(&env, class, r.now()))
+	d.Conditions = append(d.Conditions, engineSecurityCondition(&env, class, nsEnforce, r.now()))
 	d.Conditions = append(d.Conditions, networkPostureCondition(&env, class, r.now()))
 	d.Conditions = append(d.Conditions, cniEnforcementCondition(&env, r.cniResult(), r.now()))
 	r.warnIfNetworkNotEnforced(&env, class)
+	r.warnIfEngineNamespaceIncompatible(&env, class, nsEnforce)
 
 	if err := r.performActions(ctx, &env, class, d); err != nil {
 		return ctrl.Result{}, err

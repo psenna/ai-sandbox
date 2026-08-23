@@ -1,0 +1,28 @@
+# The LEGAL rootless-podman configuration, and the counterpart to guards G6,
+# G21 and G22: no PSS enforcement on sandbox namespaces, a declared registry
+# mirror, and no image override (so the operator's own digest-pinned default
+# is used).
+image:
+  tag: v0.1.0
+
+sandboxNamespaces:
+  podSecurityEnforce: ""
+
+defaultClass:
+  create: true
+  agent:
+    image: ghcr.io/psenna/ai-sandbox-agent:v1
+  engine:
+    type: rootless-podman
+    storageDriver: auto
+  services:
+    registryMirror:
+      enabled: true
+      url: http://registry-cache.registry.svc.cluster.local:5000
+  storage:
+    backend:
+      type: pvc
+      pvc:
+        claimName: sandbox-archives
+  network:
+    isolation: Restricted

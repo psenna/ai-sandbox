@@ -1,0 +1,261 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app.kubernetes.io/component: sandbox-environment
+    app.kubernetes.io/instance: podman-full
+    app.kubernetes.io/managed-by: ai-sandbox-operator
+    app.kubernetes.io/name: ai-sandbox
+    app.kubernetes.io/part-of: ai-sandbox
+    sandbox.psenna.dev/class: default
+    sandbox.psenna.dev/environment: podman-full
+  name: podman-full-run
+  namespace: default
+  ownerReferences:
+  - apiVersion: sandbox.psenna.dev/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: SandboxEnvironment
+    name: podman-full
+    uid: 11111111-1111-1111-1111-111111111111
+spec:
+  automountServiceAccountToken: false
+  containers:
+  - args:
+    - bash
+    - -c
+    - |
+      set -euo pipefail
+      exec claude -p "$(cat /etc/ai-sandbox/task.md)"
+    env:
+    - name: DOCKER_HOST
+      value: tcp://127.0.0.1:2375
+    - name: CONTAINER_HOST
+      value: tcp://127.0.0.1:2375
+    envFrom:
+    - secretRef:
+        name: podman-full-env
+    image: ghcr.io/psenna/ai-sandbox-agent:v1
+    name: agent
+    resources:
+      limits:
+        cpu: "2"
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: false
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    volumeMounts:
+    - mountPath: /workspace
+      name: workspace
+    - mountPath: /home/node/.claude-sandbox
+      name: agent-home
+    - mountPath: /etc/ai-sandbox
+      name: config
+      readOnly: true
+    workingDir: /workspace
+  initContainers:
+  - args:
+    - |
+      set -euo pipefail
+      umask 0022
+      mkdir -p /tmp/podman-conf /tmp/podman-run /home/podman/.local/share/containers/storage /home/podman/.local/share/containers/tmp
+      cat >/tmp/podman-conf/storage.conf <<'EOF'
+      [storage]
+      driver = "overlay"
+      runroot = "/tmp/podman-run/containers"
+      graphroot = "/home/podman/.local/share/containers/storage"
+      EOF
+      cat >/tmp/podman-conf/containers.conf <<'EOF'
+      [engine]
+      cgroup_manager = "cgroupfs"
+      events_logger = "file"
+      runtime = "crun"
+      EOF
+      cat >/tmp/podman-conf/registries.conf <<'EOF'
+      unqualified-search-registries = ["docker.io"]
+      short-name-mode = "permissive"
+
+      [[registry]]
+      prefix = "docker.io"
+      location = "docker.io"
+
+      [[registry.mirror]]
+      location = "registry-cache.ai-sandbox-e2e.svc.cluster.local:5000"
+      insecure = true
+
+      [[registry]]
+      prefix = "quay.io"
+      location = "quay.io"
+
+      [[registry.mirror]]
+      location = "registry-cache.ai-sandbox-e2e.svc.cluster.local:5000"
+      insecure = true
+      EOF
+      exec podman system service --time=0 tcp://127.0.0.1:2375
+    command:
+    - /bin/bash
+    - -c
+    env:
+    - name: HOME
+      value: /home/podman
+    - name: XDG_RUNTIME_DIR
+      value: /tmp/podman-run
+    - name: TMPDIR
+      value: /home/podman/.local/share/containers/tmp
+    - name: CONTAINERS_CONF
+      value: /tmp/podman-conf/containers.conf
+    - name: CONTAINERS_STORAGE_CONF
+      value: /tmp/podman-conf/storage.conf
+    - name: CONTAINERS_REGISTRIES_CONF
+      value: /tmp/podman-conf/registries.conf
+    image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
+    name: podman
+    resources:
+      limits:
+        cpu: "2"
+        memory: 2Gi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    restartPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: true
+      appArmorProfile:
+        type: Unconfined
+      readOnlyRootFilesystem: false
+      runAsGroup: 1000
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: Unconfined
+    startupProbe:
+      exec:
+        command:
+        - podman
+        - --remote
+        - --url
+        - tcp://127.0.0.1:2375
+        - info
+        - --format
+        - '{{.Host.Arch}}'
+      failureThreshold: 30
+      periodSeconds: 2
+    volumeMounts:
+    - mountPath: /workspace
+      name: workspace
+    - mountPath: /home/podman/.local/share/containers
+      name: podman-graph
+  - args:
+    - serve
+    - --environment=podman-full
+    - --namespace=default
+    - --listen=127.0.0.1:9099
+    - --engine=rootless-podman
+    - --engine-endpoint=tcp://127.0.0.1:2375
+    - --cluster-id=test-cluster
+    - --agent-image=ghcr.io/psenna/ai-sandbox-agent:v1
+    - --workspace-path=/workspace
+    - --agent-home-path=/home/node/.claude-sandbox
+    - --snapshot-backend=s3
+    - --s3-endpoint=https://s3.example.com
+    - --s3-bucket=sandbox-snapshots
+    - --s3-force-path-style=true
+    - --snapshot-credentials-dir=/var/run/secrets/ai-sandbox/snapshot
+    - --quiesce-delay=2s
+    - --snapshot-retries=4
+    - --snapshot-step-timeout=2m
+    command:
+    - /sandboxctl
+    image: test-sidecar:test
+    name: sandboxctl
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    restartPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    startupProbe:
+      exec:
+        command:
+        - /sandboxctl
+        - healthcheck
+      failureThreshold: 30
+      periodSeconds: 1
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: sandboxctl-token
+      readOnly: true
+    - mountPath: /workspace
+      name: workspace
+    - mountPath: /home/node/.claude-sandbox
+      name: agent-home
+    - mountPath: /var/run/secrets/ai-sandbox/snapshot
+      name: snapshot-credentials
+      readOnly: true
+  restartPolicy: Never
+  securityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsGroup: 1000
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: podman-full-agent
+  terminationGracePeriodSeconds: 120
+  volumes:
+  - name: workspace
+    persistentVolumeClaim:
+      claimName: podman-full-workspace
+  - emptyDir: {}
+    name: agent-home
+  - configMap:
+      defaultMode: 292
+      name: podman-full-config
+    name: config
+  - name: sandboxctl-token
+    projected:
+      defaultMode: 292
+      sources:
+      - serviceAccountToken:
+          expirationSeconds: 3600
+          path: token
+      - configMap:
+          items:
+          - key: ca.crt
+            path: ca.crt
+          name: kube-root-ca.crt
+      - downwardAPI:
+          items:
+          - fieldRef:
+              fieldPath: metadata.namespace
+            path: namespace
+  - name: snapshot-credentials
+    secret:
+      defaultMode: 256
+      optional: false
+      secretName: podman-full-snapshot
+  - emptyDir: {}
+    name: podman-graph

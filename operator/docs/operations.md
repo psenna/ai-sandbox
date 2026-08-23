@@ -16,8 +16,10 @@ security consequences, see [`engines.md`](engines.md) and
   CRD default). Without one, `Restricted` is declared but not actually
   enforced; see [`security.md`](security.md#cni-enforcement-is-measured-not-assumed).
 - The **Pod Security Standard** level enforced on namespaces that will hold
-  `SandboxEnvironment` pods matters: with the only implemented engine
-  (`none`), the rendered pod satisfies `restricted`. See
+  `SandboxEnvironment` pods matters: `engine.type: none` satisfies
+  `restricted`; `engine.type: rootless-podman` (the CRD default) needs a
+  namespace with **no** PSS enforcement or `enforce: privileged` — `baseline`
+  and `restricted` both reject its sidecar relaxations. See
   [`engines.md`](engines.md) for what each engine needs.
 - **Prometheus Operator CRDs** are only needed if you enable the chart's
   `metrics.serviceMonitor.enabled` (a `ServiceMonitor`); the operator's own
@@ -114,8 +116,9 @@ the environment holds no slot, since the PVC persists across freeze/wake).
 `queued at position N of M` is normal backpressure — raise `slots.capacity`
 or the environment's `spec.priority`. An environment that holds a slot (no
 longer `Queued`) but never advances past `Restoring` is a **different**
-problem — see [Troubleshooting](#stuck-in-restoring) below, most likely the
-`rootless-podman` trap.
+problem — see [Troubleshooting](#stuck-in-restoring) below, most likely a
+`rootless-podman` class in a namespace whose Pod Security Standard rejects
+its relaxations.
 
 ## Configuring storage
 
@@ -234,9 +237,9 @@ impactful for a busy cluster:
 1. `--retention-ttl` — bounds S3 bytes; the biggest lever for storage cost.
 2. `spec.storage.warmCacheTTL` per class — bounds PVC-hours; lower it for
    classes whose agents rarely resume quickly.
-3. `spec.timeouts.total` — bounds how long a stuck environment (e.g. parked
-   on the `rootless-podman` trap) holds a slot and a PVC before being force-
-   failed.
+3. `spec.timeouts.total` — bounds how long a stuck environment (e.g. a
+   `rootless-podman` class parked on a PSS-incompatible namespace) holds a
+   slot and a PVC before being force-failed.
 4. `spec.storage.workspace.size` — the per-environment PVC floor; oversizing
    multiplies the PVC-hours cost directly.
 
@@ -330,12 +333,20 @@ also logged at `V(1)` for free by controller-runtime's own recorder.
 `--log-verbosity` (`LOG_VERBOSITY` env, default `0`, valid `0`–`4`). `V(0)`/
 `Info` is rare, significant, and irreversible (process start/stop, permanent
 storage deletion). `V(1)` is per-reconcile/per-pass detail — this includes
-`ensurePod`'s **swallowed render error**: when a class selects an
-unimplemented engine, `RenderPod` fails, and `ensurePod` logs that failure
-at `V(1)` and returns `nil` rather than surfacing it as a reconcile error or
-an Event. If an environment is stuck `PodReady=False/PodNotCreated` in phase
-`Restoring`, `--log-verbosity=1` on the operator is the only place that
-failure is visible outside the `EngineSecurityRelaxed` condition.
+`ensurePod`'s **swallowed render error**: when `RenderPod` fails — most
+commonly a `rootless-podman` class in a namespace whose Pod Security
+Standard rejects the engine's relaxations, or (rare) an unresolvable engine
+type — `ensurePod` logs that failure at `V(1)` and returns `nil` rather than
+surfacing it as a reconcile error. (The PSS-incompatibility case is *also*
+surfaced as a `Warning EngineNamespaceIncompatible` Event and the
+`EngineSecurityRelaxed=Unknown/NamespacePodSecurityIncompatible` condition,
+so raising log verbosity is not the only way to see it — but the log is
+still the most detailed record.) If an environment is stuck
+`PodReady=False/PodNotCreated` in phase `Restoring`, check the
+`EngineSecurityRelaxed` condition and `kubectl get events` first;
+`--log-verbosity=1` on the operator is the most detailed record, and the
+only one at all for an unresolvable-engine-type render failure (which
+carries no condition or Event of its own).
 
 ## Troubleshooting
 
@@ -375,7 +386,7 @@ condition(s) it can be set on.
 |---|---|---|---|---|
 | `PodRunning` | PodReady | True | Pod is `Running` and its `Ready` condition is True. | — |
 | `PodPending` | PodReady | False | Pod exists but is not yet Running+Ready. | `kubectl describe pod`; usually image pull or scheduling. |
-| `PodNotCreated` | PodReady | False | No pod exists yet. In phase `Pending`/`Ready` this is normal. **In phase `Restoring` it is the rootless-podman trap** (see [engines.md](engines.md)) or a render error swallowed at `V(1)` by `ensurePod`. | Check `EngineSecurityRelaxed`; then `kubectl logs deploy/…-controller-manager` with `--log-verbosity=1`. |
+| `PodNotCreated` | PodReady | False | No pod exists yet. In phase `Pending`/`Ready` this is normal. **In phase `Restoring` it usually means a render error was swallowed at `V(1)` by `ensurePod`** — most commonly a `rootless-podman` class whose target namespace's Pod Security Standard rejects the engine's relaxations (see [engines.md](engines.md)). | Check `EngineSecurityRelaxed`; then `kubectl logs deploy/…-controller-manager` with `--log-verbosity=1`. |
 | `PodDeleted` | PodReady | False | Phase `Freezing`/`Waiting`; the pod is intentionally gone. | — |
 | `PodNotObserved` | PodReady | **Unknown** | The operator's `Get` on the pod **failed** — it cannot see pods at all. Deliberately distinct from "no pod". | Check operator RBAC on `pods` and API-server reachability. |
 | `PodSucceeded` | PodReady | False (phase `Done`) | Pod exited 0 **without** the agent calling `POST /v1/done`. | Normal for agents that do not use the control API. |
@@ -441,15 +452,16 @@ condition(s) it can be set on.
 |---|---|---|---|
 | `RunningTimeoutExceeded` | PodReady **and** Ready | `timeouts.running` (default `6h`) elapsed since `PodReady=True`. Only in phase `Running`. | Raise `spec.timeouts.running`. |
 | `WaitingTimeoutExceeded` | PodReady **and** Ready | `timeouts.waiting` (default `24h`) since `Frozen=True`. Only in phase `Waiting`. | The wait never cleared — fix the probe. |
-| `TotalTimeoutExceeded` | PodReady **and** Ready | `timeouts.total` (default `72h`) since `metadata.creationTimestamp`. Applies in **every** non-terminal phase and never pauses. **This is what eventually kills an environment stuck on an unimplemented engine.** | Fix the real cause; do not just raise the timeout. |
+| `TotalTimeoutExceeded` | PodReady **and** Ready | `timeouts.total` (default `72h`) since `metadata.creationTimestamp`. Applies in **every** non-terminal phase and never pauses. **This is what eventually kills an environment stuck on a render failure that never produces a pod** (e.g. a `rootless-podman` class in a PSS-incompatible namespace). | Fix the real cause; do not just raise the timeout. |
 
 **`EngineSecurityRelaxed`**:
 
 | Reason | Status | What it means | What to do |
 |---|---|---|---|
 | `NoRelaxation` | False | The engine needs no `securityContext` weakening. Today this means `engine.type: none`. | — |
-| `EngineRelaxationApplied` | True | The engine weakened the baseline; the message enumerates `<container>: <kind> (<reason>)` sorted by (container, kind). **No engine can produce this today.** | Read the message; see [`security.md`](security.md). |
-| `EngineUnavailable` | **Unknown** | The class is unresolved, **or** the engine is not implemented. Message: `engine "rootless-podman" is not implemented yet; its security posture is not yet known`. | **Set `engine.type: none`.** See [`engines.md`](engines.md). |
+| `EngineRelaxationApplied` | True | The engine weakened the baseline; the message enumerates `<container>: <kind> (<reason>)` sorted by (container, kind). `engine.type: rootless-podman` produces this: three relaxations (`AppArmorUnconfined`, `SeccompUnconfined`, `AllowPrivilegeEscalation`) on the `podman` sidecar only. | Read the message; see [`security.md`](security.md). |
+| `NamespacePodSecurityIncompatible` | **Unknown** | The engine *would* weaken the baseline, but the target namespace's `pod-security.kubernetes.io/enforce` label rejects the exact fields it needs — so `RenderPod` fails at render time and no pod is ever admitted. Nothing is actually relaxed, which is why this is `Unknown`, not `True`. Also emits a `Warning EngineNamespaceIncompatible` Event, since `ensurePod` swallows the underlying render error at `V(1)`. | Read the message (it names the namespace, the enforced level, and the exact relaxation kinds it rejects). Either label the namespace `pod-security.kubernetes.io/enforce=privileged` (or remove the label), or set `spec.engine.type: none` on the class. See [`engines.md`](engines.md#the-pss-constraint). |
+| `EngineUnavailable` | **Unknown** | The class is unresolved, **or** the selected engine type is not one the operator implements (any value outside `none`/`rootless-podman`). This reason no longer applies to `rootless-podman` — that engine is implemented as of [#24](https://github.com/psenna/ai-sandbox/issues/24). | If the class is unresolved, check `spec.classRef.name`. If the engine type is genuinely unimplemented, that class needs a different `engine.type`. See [`engines.md`](engines.md). |
 
 **`NetworkPosture`**:
 
@@ -496,19 +508,63 @@ Ready but never granted a slot, or granted one and never transitioning:
 
 ### Stuck in `Restoring`
 
-**Check this first: `EngineSecurityRelaxed=Unknown/EngineUnavailable`.**
-This is the rootless-podman trap: the CRD default for `spec.engine.type` is
-`rootless-podman`, which is **not implemented**. A class left at that
-default renders no pod at all — `ensurePod` swallows the render error at
-`V(1)` and returns `nil`. The environment parks in `Restoring` with
-`PodReady=False/PodNotCreated` until `TotalTimeoutExceeded` fires (default
-72h). Fix: set `spec.engine.type: none` on the class. See
-[`engines.md`](engines.md) for the full explanation.
+**Check this first: `EngineSecurityRelaxed=Unknown/NamespacePodSecurityIncompatible`.**
+This is the most common cause today: `spec.engine.type: rootless-podman`
+(the CRD default) requires three `securityContext` relaxations on its
+`podman` sidecar, and the target namespace's `pod-security.kubernetes.io/enforce`
+label — `baseline` or `restricted` — rejects them. `RenderPod` fails at
+render time, `ensurePod` swallows that error at `V(1)` and returns `nil`, and
+the environment parks in `Restoring` with `PodReady=False/PodNotCreated`
+until `TotalTimeoutExceeded` fires (default 72h). A `Warning
+EngineNamespaceIncompatible` Event is also emitted every reconcile, so
+`kubectl get events` shows it even without raising the operator's log
+verbosity. Fix: either label the namespace
+`pod-security.kubernetes.io/enforce=privileged` (or leave it unlabelled), or
+set `spec.engine.type: none` on the class. See
+[`engines.md`](engines.md#the-pss-constraint) for the full explanation, and
+"rootless-podman troubleshooting" below for the engine's other failure
+modes.
 
-If `EngineSecurityRelaxed` is `False/NoRelaxation` (engine is `none`) and
-you are still stuck: check `PodReady` for `ImagePullFailure`,
-`Unschedulable`, or `RestoreVerificationFailed` (a corrupt or incompatible
-snapshot — see "Wake failing" below).
+If `EngineSecurityRelaxed` is `False/NoRelaxation` (engine is `none`) or
+`True/EngineRelaxationApplied` (engine is `rootless-podman` and the
+namespace is compatible) and you are still stuck: check `PodReady` for
+`ImagePullFailure`, `Unschedulable`, or `RestoreVerificationFailed` (a
+corrupt or incompatible snapshot — see "Wake failing" below).
+
+### rootless-podman troubleshooting
+
+Four symptoms specific to `engine.type: rootless-podman`, beyond the
+PSS-incompatibility trap above:
+
+- **The `podman` init container never becomes Ready, and the agent never
+  starts.** Native sidecars gate every regular container on every init
+  container's `startupProbe` succeeding first — the `podman` sidecar's own
+  probe dials its own API (`podman --remote --url tcp://127.0.0.1:2375 info`),
+  so a service that started but failed to bind is caught here rather than
+  surfacing as a mysterious agent-side connection error. `kubectl logs <pod>
+  -c podman` shows the bootstrap script's output and, usually, why `podman
+  system service` did not come up (a bad `registryMirror` URL breaking
+  `registries.conf`, for instance, or the node lacking rootless-overlay
+  kernel support entirely).
+- **`docker` commands from the agent container fail with a connection
+  error.** `DOCKER_HOST`/`CONTAINER_HOST` are both `tcp://127.0.0.1:2375` on
+  the agent — verify the pod actually rendered the `podman` init container at
+  all (an unresolved class, or `engine.type: none`, means there is nothing
+  listening on that port).
+- **`docker run`/`docker pull` fails to reach any registry.** Under
+  `network.isolation: Restricted`, the podman sidecar can pull only from
+  peers the class declares — with no `services.registryMirror` configured, it
+  can reach *no* registry at all. This is exactly what Helm guard **G22**
+  catches at install time; if you are not using the chart, set
+  `spec.services.registryMirror` on the class, add a covering `extraEgress`
+  CIDR, or switch to `network.isolation: Open`.
+- **A `spec.engine.image` override is rejected at render time** with `is not
+  pinned by digest`. The `securityContext` this engine requires was
+  established empirically against podman 5.8.2
+  (`operator/docs/spike-rootless-podman.md`); an unpinned tag could silently
+  change the engine's security posture out from under that validation, so
+  `RenderPod` refuses it. Use a `repository@sha256:...` reference, or leave
+  `spec.engine.image` empty for the operator's own pinned default.
 
 ### Stuck in `Running`
 

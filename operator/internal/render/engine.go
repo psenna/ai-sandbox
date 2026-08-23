@@ -29,11 +29,14 @@ type Engine interface {
 // built for the agent container, and can only weaken a securityContext
 // through the closed Relaxations allowlist below.
 type Contribution struct {
-	// Containers are appended after the agent container, in slice order
-	// (#24: the `podman system service` sidecar).
+	// Containers are appended after the agent container, in slice order.
 	Containers []*acorev1.ContainerApplyConfiguration
-	// InitContainers are prepended before any the pod renderer adds itself
-	// (#29's restore init container).
+	// InitContainers are prepended BEFORE the pod renderer's own sandboxctl
+	// sidecar (#24: the `podman system service` native sidecar). Before, not
+	// after: native sidecars terminate in reverse start order, so an engine
+	// started before sandboxctl is torn down AFTER it -- which is what lets
+	// sandboxctl's SIGTERM-path freeze reach the engine's API to stop
+	// workload containers before /workspace is archived.
 	InitContainers []*acorev1.ContainerApplyConfiguration
 	// Volumes are extra pod volumes (#24: podman's emptyDir graph root,
 	// deliberately excluded from snapshots per the epic).
@@ -67,10 +70,30 @@ const (
 	// #23's ladder case G: the sole thing that unblocks podman on AppArmor
 	// distros, and the sole PSS `baseline` violation it causes.
 	RelaxAppArmorUnconfined RelaxationKind = "AppArmorUnconfined"
-	// RelaxSeccompUnset OMITS seccompProfile entirely (rather than setting
-	// it to Unconfined). Spike #23's ladder case H: seccomp RuntimeDefault
-	// blocks clone(CLONE_NEWUSER) independently of AppArmor.
-	RelaxSeccompUnset RelaxationKind = "SeccompUnset"
+	// RelaxSeccompUnconfined sets seccompProfile.type=Unconfined on the
+	// container. Spike #23's ladder case H: seccomp RuntimeDefault blocks
+	// clone(CLONE_NEWUSER) independently of AppArmor, so podman cannot start
+	// at all.
+	//
+	// It sets Unconfined EXPLICITLY rather than leaving the field nil (as an
+	// earlier draft of this enum did, named RelaxSeccompUnset). Leaving it nil
+	// is WRONG on the pod RenderPod actually builds: podSecurityContext() sets
+	// a POD-LEVEL seccompProfile: RuntimeDefault, which every container with a
+	// nil container-level field INHERITS -- reproducing ladder case H exactly.
+	// The ladder's own pods had no pod-level securityContext, so "unset" there
+	// meant "the kubelet's seccompDefault", which is Unconfined by default;
+	// that is the behaviour this kind must reproduce, and only an explicit
+	// Unconfined does so deterministically (a cluster running the kubelet with
+	// --seccomp-default=true would otherwise silently break the engine).
+	//
+	// CONSEQUENCE, stated plainly: an explicit Unconfined seccomp profile is a
+	// SECOND Pod Security Standard `baseline` violation, on top of AppArmor
+	// Unconfined. docs/spike-rootless-podman.md's "AppArmor Unconfined is the
+	// ONLY baseline violation" was measured on the ladder's bare pods, not on
+	// the pod this operator renders. The practical conclusion is unchanged
+	// (baseline and restricted are both closed to this engine), but the reason
+	// list is longer -- see docs/engines.md.
+	RelaxSeccompUnconfined RelaxationKind = "SeccompUnconfined"
 	// RelaxAllowPrivilegeEscalation sets allowPrivilegeEscalation=true.
 	// Spike #23's ladder case J: newuidmap carries cap_setuid=ep as a FILE
 	// capability and no-new-privileges prevents it from taking effect.
@@ -115,25 +138,7 @@ func engineFor(t v1alpha1.EngineType) (Engine, error) {
 
 var engineRegistry = map[v1alpha1.EngineType]Engine{
 	v1alpha1.EngineTypeNone:           noneEngine{},
-	v1alpha1.EngineTypeRootlessPodman: notImplementedEngine{typ: v1alpha1.EngineTypeRootlessPodman, issue: 24},
-}
-
-// notImplementedEngine is registered (so the dispatch/seam machinery is
-// real -- the interface, the registry, RenderPod's lookup -- all work
-// end-to-end) but always fails closed, naming the issue that ships the real
-// implementation. This is deliberately NOT a k8s-native stub: the epic (#15)
-// deferred a real k8s-native engine (#25) post-v1 pending a security
-// analysis that hasn't been written, and rootless-podman is the only v1
-// engine (see issue #21's scope-resolution note).
-type notImplementedEngine struct {
-	typ   v1alpha1.EngineType
-	issue int
-}
-
-func (e notImplementedEngine) Type() v1alpha1.EngineType { return e.typ }
-
-func (e notImplementedEngine) Contribute(Inputs) (Contribution, error) {
-	return Contribution{}, fmt.Errorf("render: engine %q %w (see issue #%d)", e.typ, ErrEngineNotImplemented, e.issue)
+	v1alpha1.EngineTypeRootlessPodman: podmanEngine{},
 }
 
 // EngineRelaxations returns the securityContext relaxations engine type t

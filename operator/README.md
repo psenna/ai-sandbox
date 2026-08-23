@@ -264,12 +264,15 @@ helm test ai-sandbox-operator -n ai-sandbox-operator-system --logs
 
 **5 — a `SandboxClass`**
 
-> **`engine.type: none` is not optional here.** The CRD default is
-> `rootless-podman`, which is **not implemented** — leave it at the default
-> and no pod is ever created. See [`docs/engines.md`](docs/engines.md).
-> `network.isolation: Open` keeps the quickstart to one moving part. The
-> CRD default is `Restricted`; see [`docs/security.md`](docs/security.md)
-> for exactly what it allows and what it does not.
+> This class sets `engine.type: none` deliberately — the quickstart's
+> `hello` environment never launches a container of its own, so the simpler
+> engine keeps this walkthrough to one moving part. The CRD default is
+> `rootless-podman`, which lets the agent run its own nested containers
+> (`docker run`, a service dependency like postgres); see
+> [`docs/engines.md`](docs/engines.md) for what it needs and how to enable
+> it. `network.isolation: Open` is the same kind of simplification — the CRD
+> default is `Restricted`; see [`docs/security.md`](docs/security.md) for
+> exactly what it allows and what it does not.
 
 ```sh quickstart
 kubectl apply -f - <<'EOF'
@@ -371,8 +374,9 @@ kind delete cluster --name ai-sandbox-quickstart
 
 ## Where to go next
 
-- [`docs/engines.md`](docs/engines.md) — what `engine.type: none` gives you
-  today, and why `rootless-podman` (the CRD default) does not work yet.
+- [`docs/engines.md`](docs/engines.md) — what `engine.type: none` gives you,
+  what `rootless-podman` (the CRD default) gives you, and which Pod Security
+  Standards each one can run under.
 - [`docs/security.md`](docs/security.md) — the trust boundary: what the
   agent can and cannot reach, what `Restricted` isolation actually
   protects, and the residual risks stated plainly.
@@ -427,7 +431,7 @@ operator/
 | NetworkPolicy + `Restricted` isolation + CNI probe | shipped |
 | Helm chart | shipped (#34) |
 | `engine.type: none` | shipped |
-| `engine.type: rootless-podman` | **not implemented** (#24) — fails closed at render |
+| `engine.type: rootless-podman` | **shipped** (#24) — needs a namespace with no PSS enforcement or `enforce: privileged` |
 | Kubernetes-native workload broker | **not started** (#25, post-v1) |
 | Published operator image / OCI chart | **not published yet** |
 

@@ -150,6 +150,14 @@ type Inputs struct {
 	// (resolveNetworkPeers). Zero-value (all nil) is valid for Open
 	// isolation (no policy rendered).
 	Network NetworkInputs
+
+	// NamespacePodSecurityEnforce is the value of the target namespace's
+	// pod-security.kubernetes.io/enforce label, resolved by
+	// internal/controller (namespacePodSecurityEnforce) -- render stays pure
+	// and never reads a Namespace itself, exactly like Credentials and
+	// Network. "" means "no label / unknown" and never blocks a render.
+	// Consulted only by RenderPod, via CheckNamespacePodSecurity.
+	NamespacePodSecurityEnforce string
 }
 
 // RestorePlan describes the snapshot a wake must restore, computed by

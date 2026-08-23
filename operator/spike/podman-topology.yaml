@@ -19,6 +19,24 @@
 # Requires a namespace with NO Pod Security Standards enforcement, or
 # enforce: privileged. Both `baseline` and `restricted` reject the sidecar
 # solely on the AppArmor profile.
+#
+# internal/render/engine_podman.go is the shipped implementation of this
+# topology (#24). Two deliberate divergences from what is written above,
+# both explained in RelaxSeccompUnconfined's doc comment
+# (internal/render/engine.go):
+#
+#   * The rendered pod sets seccompProfile: Unconfined EXPLICITLY on the
+#     sidecar, rather than leaving it unset as this reference does. The
+#     rendered pod ALSO sets a pod-level seccompProfile: RuntimeDefault
+#     (podSecurityContext, internal/render/pod.go), which a nil
+#     container-level field would inherit -- reproducing ladder case H. This
+#     bare reference pod has no pod-level securityContext, so "unset" here
+#     really does mean Unconfined (the kubelet default); the rendered pod
+#     must say so explicitly to get the same behaviour.
+#   * The rendered sidecar also sets runAsNonRoot: true and
+#     readOnlyRootFilesystem: false explicitly (podmanSecurityContext,
+#     internal/render/engine_podman.go) -- both implied here but not written
+#     out.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -28,7 +46,7 @@ spec:
   containers:
     # The engine sidecar. Non-root, no added capabilities, not privileged.
     - name: podman
-      image: quay.io/podman/stable
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       command: ["podman", "system", "service", "--time=0", "tcp://127.0.0.1:2375"]
       env:
         - name: HOME

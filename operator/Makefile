@@ -55,6 +55,9 @@ KUBECTL_VERSION    ?= v1.34.0
 # wrapped inside E2E_TOOLBOX_RUN's docker:28-cli image (which has neither).
 HELM_VERSION       ?= v3.16.4
 MINIO_IMAGE        ?= minio/minio:RELEASE.2025-09-07T16-13-09Z
+# #24: the in-cluster pull-through registry cache the rootless-podman engine
+# specs pull real workload images through (test/e2e/manifests/registry-cache.yaml).
+REGISTRY_IMAGE     ?= registry:2.8.3
 E2E_CLUSTER        ?= ai-sandbox-e2e
 # --- storage-conformance (operator/internal/storage's s3 leg; see that
 # package's doc.go) -- a plain MinIO server for a Go client library's own
@@ -95,7 +98,11 @@ E2E_ARTIFACT_DIR   ?= $(CURDIR)/test/e2e/_artifacts
 # the prior 25m ginkgo timeout mid-suite. Same reasoning as #25's bump:
 # leave headroom for runner variance and near-term growth, not just today's
 # measured total.
-E2E_TIMEOUT        ?= 32m
+#
+# Raised again to 45m for #24: three real image pulls through a cold
+# pull-through cache (alpine, postgres:18-alpine, node:22-alpine) dominate the
+# new engine_test.go specs, on top of the existing suite's total above.
+E2E_TIMEOUT        ?= 45m
 E2E_PROCS          ?= 4
 E2E_SEED           ?= 1
 GINKGO_FLAGS       ?= --timeout=$(E2E_TIMEOUT) --procs=$(E2E_PROCS) --seed=$(E2E_SEED) --flake-attempts=1 --fail-fast=false --keep-going --poll-progress-after=60s --poll-progress-interval=30s -v
@@ -194,6 +201,7 @@ E2E_TOOLBOX_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	--add-host=docker:$(DOCKER_HOST_IP) -e DOCKER_HOST=tcp://docker:2375 \
 	-e E2E_CLUSTER=$(E2E_CLUSTER) -e E2E_CNI=$(E2E_CNI) \
 	-e KIND_NODE_IMAGE=$(KIND_NODE_IMAGE) -e MINIO_IMAGE=$(MINIO_IMAGE) \
+	-e REGISTRY_IMAGE=$(REGISTRY_IMAGE) \
 	-e E2E_KUBECONFIG=$(E2E_KUBECONFIG_TARGET) -e E2E_ARTIFACT_DIR=$(E2E_ARTIFACT_TARGET_DIR) \
 	-e E2E_INTERNAL_KUBECONFIG=$(E2E_INTERNAL_KUBECONFIG) \
 	-e HOME=$(CACHE_DIR) \
@@ -362,7 +370,7 @@ e2e-tools:
 
 e2e-up: e2e-tools
 	E2E_CLUSTER=$(E2E_CLUSTER) E2E_CNI=$(E2E_CNI) KIND_NODE_IMAGE=$(KIND_NODE_IMAGE) \
-	MINIO_IMAGE=$(MINIO_IMAGE) E2E_KUBECONFIG=$(E2E_KUBECONFIG_TARGET) \
+	MINIO_IMAGE=$(MINIO_IMAGE) REGISTRY_IMAGE=$(REGISTRY_IMAGE) E2E_KUBECONFIG=$(E2E_KUBECONFIG_TARGET) \
 	E2E_INTERNAL_KUBECONFIG=$(E2E_INTERNAL_KUBECONFIG) \
 	PATH="$(E2E_BIN_TARGET_DIR):$$PATH" \
 	$(E2E_TOOLBOX_RUN) ./hack/e2e-up.sh

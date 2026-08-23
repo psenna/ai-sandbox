@@ -27,6 +27,7 @@ E2E_CLUSTER="${E2E_CLUSTER:-ai-sandbox-e2e}"
 E2E_CNI="${E2E_CNI:-kindnet}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.34.0}"
 MINIO_IMAGE="${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}"
+REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:2.8.3}"
 E2E_KUBECONFIG="${E2E_KUBECONFIG:-$PWD/.e2e-kubeconfig}"
 E2E_INTERNAL_KUBECONFIG="${E2E_INTERNAL_KUBECONFIG:-}"
 # kustomize (default): kubectl apply -k test/e2e/manifests/operator, as
@@ -64,6 +65,8 @@ kind_pid=$!
   docker buildx build --load -f test/e2e/doubles/Dockerfile -t "$DOUBLES_IMAGE" test/e2e/doubles
   echo "--> pulling $MINIO_IMAGE"
   docker pull "$MINIO_IMAGE"
+  echo "--> pulling $REGISTRY_IMAGE"
+  docker pull "$REGISTRY_IMAGE"
 ) &
 build_pid=$!
 
@@ -99,9 +102,9 @@ if [ "$E2E_CNI" = "calico" ]; then
 fi
 
 echo "==> loading images into the cluster"
-kind load docker-image --name "$E2E_CLUSTER" "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$DOUBLES_IMAGE" "$MINIO_IMAGE"
+kind load docker-image --name "$E2E_CLUSTER" "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$DOUBLES_IMAGE" "$MINIO_IMAGE" "$REGISTRY_IMAGE"
 
-echo "==> deploying operator + MinIO + platform doubles (E2E_DEPLOY=$E2E_DEPLOY)"
+echo "==> deploying operator + MinIO + platform doubles + registry cache (E2E_DEPLOY=$E2E_DEPLOY)"
 if [ "$E2E_DEPLOY" = "helm" ]; then
   helm install ai-sandbox-operator deploy/helm/ai-sandbox-operator \
     --namespace ai-sandbox-operator-system --create-namespace \
@@ -109,12 +112,13 @@ if [ "$E2E_DEPLOY" = "helm" ]; then
 else
   kubectl apply -k test/e2e/manifests/operator
 fi
-kubectl apply -f test/e2e/manifests/minio.yaml -f test/e2e/manifests/doubles.yaml
+kubectl apply -f test/e2e/manifests/minio.yaml -f test/e2e/manifests/doubles.yaml -f test/e2e/manifests/registry-cache.yaml
 
 echo "==> waiting for rollouts"
 kubectl -n ai-sandbox-operator-system rollout status deployment/ai-sandbox-operator-controller-manager --timeout=300s
 kubectl -n ai-sandbox-e2e rollout status deployment/minio --timeout=300s
 kubectl -n ai-sandbox-e2e rollout status deployment/platform-doubles --timeout=300s
+kubectl -n ai-sandbox-e2e rollout status deployment/registry-cache --timeout=300s
 kubectl -n ai-sandbox-e2e wait --for=condition=complete job/minio-bootstrap --timeout=180s
 
 echo "==> writing kubeconfig to $E2E_KUBECONFIG"

@@ -6,9 +6,13 @@
 # how the agent container is invoked. Never pushed anywhere; only
 # `kind load docker-image`ed by hack/e2e-up.sh, tagged `:test` (never
 # `:latest` -- see RenderPod's imagePullPolicy note in the e2e README).
+#
+# docker-cli is present so #24's specs can drive the rootless-podman engine's
+# Docker-compatible API over $DOCKER_HOST -- the same client a real agent
+# uses.
 FROM alpine:3.21
 
-RUN apk add --no-cache bash coreutils curl \
+RUN apk add --no-cache bash coreutils curl docker-cli \
 	&& addgroup -g 1000 node \
 	&& adduser -D -u 1000 -G node node
 
