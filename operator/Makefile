@@ -105,7 +105,12 @@ E2E_ARTIFACT_DIR   ?= $(CURDIR)/test/e2e/_artifacts
 E2E_TIMEOUT        ?= 45m
 E2E_PROCS          ?= 4
 E2E_SEED           ?= 1
-GINKGO_FLAGS       ?= --timeout=$(E2E_TIMEOUT) --procs=$(E2E_PROCS) --seed=$(E2E_SEED) --flake-attempts=1 --fail-fast=false --keep-going --poll-progress-after=60s --poll-progress-interval=30s -v
+# Lets CI split the suite into parallel jobs (e.g. --focus-file=... on one
+# runner, the complementary --skip-file=... on another) without editing
+# GINKGO_FLAGS itself. Empty by default: a plain `make e2e-run` still runs
+# every spec.
+E2E_GINKGO_EXTRA_FLAGS ?=
+GINKGO_FLAGS       ?= --timeout=$(E2E_TIMEOUT) --procs=$(E2E_PROCS) --seed=$(E2E_SEED) --flake-attempts=1 --fail-fast=false --keep-going --poll-progress-after=60s --poll-progress-interval=30s -v $(E2E_GINKGO_EXTRA_FLAGS)
 
 # Pass-through overrides for test/e2e/harness.go's LoadConfig (E2E_* env
 # vars); empty defaults are fine -- LoadConfig treats "" as unset and falls

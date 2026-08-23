@@ -60,7 +60,7 @@ jobs:
           echo "runs=$runs" >>"$GITHUB_OUTPUT"
 
   e2e:
-    name: kind e2e
+    name: kind e2e (${{ matrix.group.name }})
     needs: matrix
     runs-on: ubuntu-latest
     # e2e-up (~3m) + e2e-run (ginkgo --timeout=55m via the "e2e run" step's
@@ -76,6 +76,21 @@ jobs:
       fail-fast: false
       matrix:
         run: ${{ fromJson(needs.matrix.outputs.runs) }}
+        # #24: split into two groups, each on its own runner with its own
+        # kind cluster, running in parallel. "podman" carries the new,
+        # heavy, cold-image-pulling engine_test.go/isolation_test.go specs;
+        # "core" carries everything else (the previously-stable suite,
+        # including the metrics spec whose 480s archive-wait timeout
+        # pattern predates #24 and was suspected of being aggravated by
+        # sharing a 2-vCPU runner with the podman specs). This also
+        # isolates whether the podman specs' own failures reproduce with a
+        # runner entirely to themselves, ruling resource contention in or
+        # out as a cause.
+        group:
+          - name: core
+            ginkgo_flags: --skip-file=engine_test.go --skip-file=isolation_test.go
+          - name: podman
+            ginkgo_flags: --focus-file=engine_test.go --focus-file=isolation_test.go
     steps:
       - uses: actions/checkout@v4
 
@@ -114,7 +129,7 @@ jobs:
         # count. E2E_TIMEOUT is raised accordingly: less parallelism means a
         # longer wall-clock total even though each individual spec sees less
         # contention and is less likely to itself stall.
-        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig E2E_PROCS=2 E2E_TIMEOUT=55m e2e-run
+        run: make IN_CONTAINER=1 E2E_KUBECONFIG=$PWD/.e2e-kubeconfig E2E_PROCS=2 E2E_TIMEOUT=55m E2E_GINKGO_EXTRA_FLAGS="${{ matrix.group.ginkgo_flags }}" e2e-run
 
       - name: e2e collect (diagnostics)
         if: always()
@@ -123,7 +138,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: operator-e2e-artifacts-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.run }}
+          name: operator-e2e-artifacts-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.run }}-${{ matrix.group.name }}
           path: operator/test/e2e/_artifacts
           retention-days: 14
           if-no-files-found: warn
