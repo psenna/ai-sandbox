@@ -199,11 +199,22 @@ func TestEnsurePod_OwnershipGuard(t *testing.T) {
 	}
 }
 
-func TestEnsurePod_UnimplementedEngineCreatesNoPod(t *testing.T) {
-	// mustCreateClass leaves spec.engine.type unset, so the CRD default
-	// (rootless-podman) applies -- the deliberately unimplemented engine.
+// TestEnsurePod_PSSIncompatibleNamespaceCreatesNoPod is #24's controller-level
+// counterpart to the old (pre-#24) "unimplemented engine creates no pod"
+// case, which this test replaced: with rootless-podman NOW implemented and
+// the CRD default, the "no pod, Unknown condition" path that used to be
+// reachable just by leaving spec.engine.type unset is no longer reachable
+// that way -- the CRD default engine renders a real pod. The genuinely
+// analogous "no pod is ever created" case #24 introduces is a namespace
+// whose Pod Security Admission level rejects the engine's relaxations:
+// RenderPod's guard (internal/render/podsecurity.go) returns an error,
+// ensurePod logs it at V(1) and creates no pod, and the reconciler surfaces
+// Unknown/NamespacePodSecurityIncompatible instead.
+func TestEnsurePod_PSSIncompatibleNamespaceCreatesNoPod(t *testing.T) {
+	const ns = "ensure-pod-pss-restricted"
+	mustCreateLabelledNamespace(t, ns, "restricted")
 	class := mustCreateClass(t)
-	env := mustCreateEnv(t, "ensure-pod-unimplemented")
+	env := mustCreateEnvIn(t, ns, "ensure-pod-pss-restricted", 0)
 	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
 
 	r := newResourceReconciler(t, newFakeClock(fixedStart))
@@ -228,8 +239,8 @@ func TestEnsurePod_UnimplementedEngineCreatesNoPod(t *testing.T) {
 	if c == nil {
 		t.Fatal("EngineSecurityRelaxed condition missing")
 	}
-	if c.Status != metav1.ConditionUnknown || c.Reason != ReasonEngineUnavailable {
-		t.Errorf("EngineSecurityRelaxed = %s/%s, want Unknown/%s", c.Status, c.Reason, ReasonEngineUnavailable)
+	if c.Status != metav1.ConditionUnknown || c.Reason != ReasonNamespacePSSIncompatible {
+		t.Errorf("EngineSecurityRelaxed = %s/%s, want Unknown/%s", c.Status, c.Reason, ReasonNamespacePSSIncompatible)
 	}
 }
 
