@@ -43,6 +43,19 @@ const (
 	ReasonCNIUnconfirmed = "Unconfirmed" // Unknown: the probe has not run yet, or could not verify enforcement
 )
 
+// AllNetworkConditionReasons lists every reason string this file can put on
+// a NetworkPosture or CNIEnforcement condition. ReasonCNIProbeFailed is
+// deliberately excluded: it is an internal CNIProbeResult.Reason value
+// only (see cniEnforcementCondition's routing comment above), never a
+// reason a condition itself carries -- cniEnforcementCondition always maps
+// it to ReasonCNIUnconfirmed before it reaches a Condition. Same
+// "declared list of every member" idiom as lifecycle.AllReasons;
+// internal/docs's reasons_test.go enforces both halves of that contract.
+var AllNetworkConditionReasons = []string{
+	ReasonPostureRestricted, ReasonPostureOpen, ReasonPostureUnknown,
+	ReasonCNIEnforced, ReasonCNINotEnforced, ReasonCNIUnconfirmed,
+}
+
 // networkPostureCondition computes the NetworkPosture condition for env's
 // resolved class. class may be nil (unresolved).
 func networkPostureCondition(env *v1alpha1.SandboxEnvironment, class *v1alpha1.SandboxClass, now time.Time) metav1.Condition {

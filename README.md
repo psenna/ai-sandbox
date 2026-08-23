@@ -29,7 +29,47 @@ other way.
 
 ---
 
-## Architecture
+## Two ways to run this: the compose stack, or the Kubernetes operator
+
+This repository ships **two** ways to run an agent, and they solve different
+problems. Pick one before reading further.
+
+| | **Compose stack** (this README) | **Kubernetes operator** (`operator/`) |
+|---|---|---|
+| What it is | Five containers on one Ubuntu host, started with `docker compose up`. | A Kubernetes operator with two CRDs, `SandboxClass` and `SandboxEnvironment`. |
+| How you start a run | You attach to the `claude` container and drive it interactively, or run one headless task. | `kubectl apply` a `SandboxEnvironment`. |
+| How many at once | One. The stack is a single agent workstation. | As many as `slots.capacity` allows, queued by priority. |
+| Long-running / paused work | Not modelled. The container runs until you stop it. | Modelled: an agent can declare a wait, the sandbox is **frozen** (snapshotted, pod deleted, slot released) and **woken** when the wait clears. |
+| What survives a restart | The `workspace` volume. | A checksum-verified snapshot in S3, plus a terminal archive (`run.json` + the session transcript) with a retention policy. |
+| Isolation | Docker bridge networks + a rootless DinD daemon with registry egress blocked. | Kubernetes `NetworkPolicy` (`Restricted`/`Open`), a hardened pod, and no Kubernetes credential in the agent container at all. |
+| Nested containers for dev work | Yes — rootless DinD (`DOCKER_HOST=tcp://docker:2375`). | **Not yet.** The only implemented engine is `none`; `rootless-podman` is designed and spiked but unimplemented ([#24](https://github.com/psenna/ai-sandbox/issues/24)). |
+| Operational surface | `docker compose logs`. | Conditions, Events, Prometheus metrics, a Helm chart. |
+| Maturity | Working, in daily use. | `v1alpha1`; no image or chart published yet. |
+
+**Use the compose stack** when you want one agent, on one machine, working on
+one repository, right now — and especially when the agent needs to launch
+containers of its own (databases, language runtimes) via the DinD daemon.
+
+**Use the operator** when you want many concurrent, policy-isolated agent runs
+on a cluster; when runs must survive being paused for hours while CI or a
+review completes; or when you need an auditable archive of what each run did.
+
+The two share their trust model — git-proxy holds the upstream PAT and the
+agent never sees it, DependaProxy gates every dependency — and the operator
+consumes the same git-proxy, DependaProxy and Ollama endpoints this stack
+provides. Start with the compose stack; move to the operator when one agent
+stops being enough.
+
+Operator docs: [`operator/README.md`](operator/README.md) ·
+[quickstart](operator/README.md#quickstart) ·
+[engines](operator/docs/engines.md) ·
+[operations](operator/docs/operations.md) ·
+[security](operator/docs/security.md) ·
+[CRD reference](operator/docs/crd-reference.md)
+
+---
+
+## Architecture (compose stack)
 
 Five services on three isolated bridge networks (see `docker-compose.yaml`):
 
@@ -352,7 +392,7 @@ claude plugin install code-simplifier@claude-plugins-official
 - `.env.example` — operator secrets template (copy to `.env`).
 - `setup-ubuntu-host.sh` — installs Docker + sysbox-ce on Ubuntu 24.04.
 - `scripts/check-no-secrets.sh` — pre-commit secret scan backstop.
-- `operator/` — Kubernetes operator scaffold (Go module, kubebuilder v4 layout, CI); see [issue #15](https://github.com/psenna/ai-sandbox/issues/15).
+- `operator/` — the Kubernetes operator: `SandboxClass`/`SandboxEnvironment` CRDs, the reconciler, the `sandboxctl` sidecar, and a Helm chart. See [`operator/README.md`](operator/README.md) and the [compose-vs-operator comparison](#two-ways-to-run-this-the-compose-stack-or-the-kubernetes-operator) above; design context in [issue #15](https://github.com/psenna/ai-sandbox/issues/15).
 
 ## Teardown
 

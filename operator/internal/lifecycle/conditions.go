@@ -84,6 +84,73 @@ var PodFailureReasons = []string{ReasonPodFailed, ReasonImagePullFailure, Reason
 // SanitizeReason.
 var StepFailureReasons = []string{ReasonSnapshotFailed, ReasonProbeFailed}
 
+// AllReasons lists every reason string this package can put on a
+// condition, in the same order as the const block above. Same "declared
+// list of every member" idiom as ConditionTypes above and
+// v1alpha1.AllPhases. internal/docs's reasons_test.go asserts (a) this
+// list is complete against the const block itself, and (b) every entry
+// appears in operator/docs/operations.md -- issue #35's "every condition
+// reason the operator can emit appears in the troubleshooting guide".
+var AllReasons = []string{
+	// scheduling
+	ReasonSlotGranted,
+	ReasonQueued,
+	ReasonResourcesNotReady,
+	ReasonSuspended,
+	ReasonWaiting,
+	ReasonTerminal,
+
+	// pod
+	ReasonPodRunning,
+	ReasonPodPending,
+	ReasonPodNotCreated,
+	ReasonPodDeleted,
+	ReasonPodNotObserved,
+	ReasonPodSucceeded,
+
+	// pod failure
+	ReasonPodFailed,
+	ReasonImagePullFailure,
+	ReasonUnschedulable,
+	ReasonRestoreVerificationFailed,
+
+	// freeze
+	ReasonWaitDeclared,
+	ReasonSnapshotInProgress,
+	ReasonPodTerminating,
+	ReasonSnapshotFailed,
+	ReasonNotFrozen,
+
+	// probes
+	ReasonProbeSatisfied,
+	ReasonProbePending,
+	ReasonProbeNotEvaluated,
+	ReasonNoWaitDeclared,
+	ReasonProbeFailed,
+
+	// archive
+	ReasonArchiveWritten,
+	ReasonArchivePending,
+	ReasonNotTerminal,
+
+	// summary / lifecycle
+	ReasonPending,
+	ReasonRestoring,
+	ReasonRunning,
+	ReasonFreezing,
+	ReasonSucceeded,
+	ReasonClassNotResolved,
+
+	// agent
+	ReasonAgentReportedSuccess,
+	ReasonAgentReportedFailure,
+
+	// timeouts
+	ReasonRunningTimeoutExceeded,
+	ReasonWaitingTimeoutExceeded,
+	ReasonTotalTimeoutExceeded,
+}
+
 // SanitizeReason returns r if it appears in allow, else fallback. Next runs
 // every externally-supplied reason (from PodFailure/StepFailure) through this
 // so a later issue's subsystem can never inject an arbitrary string into a

@@ -1,0 +1,81 @@
+name: docs
+
+# The quickstart in operator/README.md is executed as a documentation test
+# (#35): hack/quickstart-check.sh extracts the `sh quickstart`-tagged fenced
+# blocks from that file and runs them verbatim against a real kind cluster,
+# so the documented commands cannot rot silently. Structure copied from this
+# repo's own .github/workflows/helm.yml `kind-install-upgrade` job
+# (checkout / setup-buildx / setup-helm / e2e-tools / diagnostics on failure
+# / upload-artifact / teardown).
+#
+# The CRD-reference drift check is deliberately NOT here: operator.yml's
+# `api` job already runs `make manifests generate crd-docs` followed by
+# `git diff --exit-code`, and it triggers on `operator/**` -- which covers
+# every path this workflow does.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'operator/README.md'
+      - 'operator/docs/**'
+      - 'operator/hack/quickstart-check.sh'
+      - 'operator/deploy/helm/**'
+      - 'operator/config/crd/**'
+      - 'operator/test/e2e/agent/**'
+      - 'operator/Dockerfile'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'operator/README.md'
+      - 'operator/docs/**'
+      - 'operator/hack/quickstart-check.sh'
+      - 'operator/deploy/helm/**'
+      - 'operator/config/crd/**'
+      - 'operator/test/e2e/agent/**'
+      - 'operator/Dockerfile'
+      - '.github/workflows/docs.yml'
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quickstart:
+    name: quickstart (kind, documentation test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: operator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      # Only kind/kubectl are actually needed here (helm comes from
+      # setup-helm above), but this is the one existing, pinned way this
+      # repo fetches them -- reused rather than reimplemented.
+      - name: fetch e2e tools (kind, kubectl, helm)
+        run: make IN_CONTAINER=1 E2E_BIN_DIR=$PWD/.e2e-bin e2e-tools
+      - name: run the documented quickstart, verbatim
+        run: |
+          export PATH="$PWD/.e2e-bin:$PATH"
+          make IN_CONTAINER=1 E2E_ARTIFACT_DIR=$PWD/test/e2e/_artifacts quickstart-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quickstart-artifacts-${{ github.run_id }}
+          path: operator/test/e2e/_artifacts/quickstart
+          retention-days: 14
+          if-no-files-found: warn
+      - name: delete the quickstart cluster (belt and braces)
+        if: always()
+        run: |
+          export PATH="$PWD/.e2e-bin:$PATH"
+          kind delete cluster --name ai-sandbox-quickstart || true
