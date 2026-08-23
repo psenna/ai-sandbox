@@ -339,9 +339,10 @@ Standard rejects the engine's relaxations, or (rare) an unresolvable engine
 type — `ensurePod` logs that failure at `V(1)` and returns `nil` rather than
 surfacing it as a reconcile error. (The PSS-incompatibility case is *also*
 surfaced as a `Warning EngineNamespaceIncompatible` Event and the
-`EngineSecurityRelaxed=Unknown/NamespacePodSecurityIncompatible` condition,
-so raising log verbosity is not the only way to see it — but the log is
-still the most detailed record.) If an environment is stuck
+`EngineSecurityRelaxed` condition (status `Unknown`, reason
+`NamespacePodSecurityIncompatible`), so raising log verbosity is not the
+only way to see it — but the log is still the most detailed record.) If an
+environment is stuck
 `PodReady=False/PodNotCreated` in phase `Restoring`, check the
 `EngineSecurityRelaxed` condition and `kubectl get events` first;
 `--log-verbosity=1` on the operator is the most detailed record, and the
@@ -508,7 +509,8 @@ Ready but never granted a slot, or granted one and never transitioning:
 
 ### Stuck in `Restoring`
 
-**Check this first: `EngineSecurityRelaxed=Unknown/NamespacePodSecurityIncompatible`.**
+**Check this first: the `EngineSecurityRelaxed` condition, status `Unknown`,
+reason `NamespacePodSecurityIncompatible`.**
 This is the most common cause today: `spec.engine.type: rootless-podman`
 (the CRD default) requires three `securityContext` relaxations on its
 `podman` sidecar, and the target namespace's `pod-security.kubernetes.io/enforce`

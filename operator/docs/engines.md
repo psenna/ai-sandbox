@@ -212,9 +212,9 @@ rejected.
 
 **The runtime condition.** `ensurePod` swallows that render error at `V(1)`
 (consistent with how every other render error is handled), so the
-reconciler also surfaces it as its own signal:
-`EngineSecurityRelaxed=Unknown/NamespacePodSecurityIncompatible`, with the
-identical message text. See
+reconciler also surfaces it as its own signal: condition type
+`EngineSecurityRelaxed`, status `Unknown`, reason
+`NamespacePodSecurityIncompatible`, with the identical message text. See
 [`operations.md`](operations.md#stuck-in-restoring) for the full
 troubleshooting path.
 
@@ -304,9 +304,10 @@ measured against.
 
 ## The three ways the operator tells you your engine choice does not fit
 
-1. **`EngineSecurityRelaxed=Unknown/NamespacePodSecurityIncompatible`** —
-   the condition, with a message naming the namespace, the enforced PSS
-   level, and the exact relaxation kinds it rejects.
+1. **The `EngineSecurityRelaxed` condition, status `Unknown`, reason
+   `NamespacePodSecurityIncompatible`** — with a message naming the
+   namespace, the enforced PSS level, and the exact relaxation kinds it
+   rejects.
 2. **`Warning EngineNamespaceIncompatible`** — an Event, emitted every
    reconcile the incompatibility persists, so it shows up in `kubectl get
    events` without reading a condition.
