@@ -270,3 +270,114 @@ SandboxEnvironment is a namespaced resource representing a single agent run: the
 | `spec.repo` | `self == oldSelf` | repo is immutable |
 | `spec.task` | `self == oldSelf` | task is immutable |
 | `spec.task` | `(has(self.prompt) && size(self.prompt) > 0) \|\| has(self.issueRef)` | task requires at least one of prompt or issueRef |
+
+## ServiceSet
+
+- **API group/version:** `sandbox.psenna.dev/v1alpha1`
+- **Scope:** Namespaced
+- **Short names:** sbset
+- **Categories:** sandbox
+- **Status subresource:** yes
+
+### Printer columns
+
+| Name | Type | JSONPath | Priority |
+|---|---|---|---|
+| Ready | string | `.status.conditions[?(@.type=="Ready")].status` | 0 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### .spec
+
+| Field | Type | Required | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| `spec.environmentName` | string | yes | — | minLength: 1 | environmentName is the SandboxEnvironment this set belongs to. Used to derive the shared workspace PVC name (<environmentName>-workspace) that runtime pods mount. |
+| `spec.runtimes` | array<object> | no | — | — | runtimes are long-lived dev-tool pods the agent execs into. They mount the shared workspace PVC and have no Service. |
+| `spec.runtimes[]` | object | no | — | — | RuntimeSpec describes one long-lived dev-tool pod the agent execs into. |
+| `spec.runtimes[].args` | array<string> | no | — | — |  |
+| `spec.runtimes[].args[]` | string | no | — | — |  |
+| `spec.runtimes[].command` | array<string> | no | — | — |  |
+| `spec.runtimes[].command[]` | string | no | — | — |  |
+| `spec.runtimes[].dependsOn` | array<string> | no | — | — |  |
+| `spec.runtimes[].dependsOn[]` | string | no | — | — |  |
+| `spec.runtimes[].env` | map[string]string | no | — | — |  |
+| `spec.runtimes[].env{}` | string | no | — | — |  |
+| `spec.runtimes[].healthcheck` | object | no | — | — | HealthcheckSpec maps to a k8s readinessProbe. Exactly one of exec/http/tcp. |
+| `spec.runtimes[].healthcheck.exec` | array<string> | no | — | — |  |
+| `spec.runtimes[].healthcheck.exec[]` | string | no | — | — |  |
+| `spec.runtimes[].healthcheck.http` | object | no | — | — |  |
+| `spec.runtimes[].healthcheck.http.path` | string | yes | — | — |  |
+| `spec.runtimes[].healthcheck.http.port` | integer | yes | — | format: int32 |  |
+| `spec.runtimes[].healthcheck.interval` | string | no | — | — | interval defaults to 5s when empty. |
+| `spec.runtimes[].healthcheck.tcp` | object | no | — | — |  |
+| `spec.runtimes[].healthcheck.tcp.port` | integer | yes | — | format: int32 |  |
+| `spec.runtimes[].image` | string | yes | — | — |  |
+| `spec.runtimes[].mountWorkspace` | boolean | no | `true` | — | mountWorkspace mounts the shared workspace PVC at /workspace. Defaults to true when omitted. |
+| `spec.runtimes[].name` | string | yes | — | minLength: 1; maxLength: 63 |  |
+| `spec.runtimes[].resources` | object | no | — | — | ResourceRequirements describes the compute resource requirements. |
+| `spec.runtimes[].resources.claims` | array<object> | no | — | — | Claims lists the names of resources, defined in spec.resourceClaims, that are used by this container. This field depends on the DynamicResourceAllocation feature gate. This field is immutable. It can only be set for containers. |
+| `spec.runtimes[].resources.claims[]` | object | no | — | — | ResourceClaim references one entry in PodSpec.ResourceClaims. |
+| `spec.runtimes[].resources.claims[].name` | string | yes | — | — | Name must match the name of one entry in pod.spec.resourceClaims of the Pod where this field is used. It makes that resource available inside a container. |
+| `spec.runtimes[].resources.claims[].request` | string | no | — | — | Request is the name chosen for a request in the referenced claim. If empty, everything from the claim is made available, otherwise only the result of this request. |
+| `spec.runtimes[].resources.limits` | map[string] | no | — | — | Limits describes the maximum amount of compute resources allowed. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+| `spec.runtimes[].resources.limits{}` | (int-or-string) | no | — | pattern: `^(\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))(([KMGTPE]i)\|[numkMGTPE]\|([eE](\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))))?$` |  |
+| `spec.runtimes[].resources.requests` | map[string] | no | — | — | Requests describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+| `spec.runtimes[].resources.requests{}` | (int-or-string) | no | — | pattern: `^(\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))(([KMGTPE]i)\|[numkMGTPE]\|([eE](\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))))?$` |  |
+| `spec.runtimes[].runAsUser` | integer | no | — | format: int64 |  |
+| `spec.services` | array<object> | no | — | — | services are long-lived dependency pods. Each gets a Service (cluster DNS <name>.<ns>.svc) and, if storage is set, a retained data PVC. |
+| `spec.services[]` | object | no | — | — | ServiceSpec describes one long-lived dependency pod. |
+| `spec.services[].args` | array<string> | no | — | — |  |
+| `spec.services[].args[]` | string | no | — | — |  |
+| `spec.services[].command` | array<string> | no | — | — |  |
+| `spec.services[].command[]` | string | no | — | — |  |
+| `spec.services[].dependsOn` | array<string> | no | — | — | dependsOn names other service/runtime entries that must be Ready first. |
+| `spec.services[].dependsOn[]` | string | no | — | — |  |
+| `spec.services[].env` | map[string]string | no | — | — |  |
+| `spec.services[].env{}` | string | no | — | — |  |
+| `spec.services[].envFromSecret` | string | no | — | — | envFromSecret references a Secret name whose keys become env vars. |
+| `spec.services[].expose` | integer | no | — | format: int32 | expose, if set, publishes the first port as a NodePort on this host port. |
+| `spec.services[].healthcheck` | object | no | — | — | HealthcheckSpec maps to a k8s readinessProbe. Exactly one of exec/http/tcp. |
+| `spec.services[].healthcheck.exec` | array<string> | no | — | — |  |
+| `spec.services[].healthcheck.exec[]` | string | no | — | — |  |
+| `spec.services[].healthcheck.http` | object | no | — | — |  |
+| `spec.services[].healthcheck.http.path` | string | yes | — | — |  |
+| `spec.services[].healthcheck.http.port` | integer | yes | — | format: int32 |  |
+| `spec.services[].healthcheck.interval` | string | no | — | — | interval defaults to 5s when empty. |
+| `spec.services[].healthcheck.tcp` | object | no | — | — |  |
+| `spec.services[].healthcheck.tcp.port` | integer | yes | — | format: int32 |  |
+| `spec.services[].image` | string | yes | — | — |  |
+| `spec.services[].imagePullPolicy` | string | no | — | — | PullPolicy describes a policy for if/when to pull a container image |
+| `spec.services[].name` | string | yes | — | minLength: 1; maxLength: 63 |  |
+| `spec.services[].ports` | array<integer> | no | — | — |  |
+| `spec.services[].ports[]` | integer | no | — | format: int32 |  |
+| `spec.services[].resources` | object | no | — | — | ResourceRequirements describes the compute resource requirements. |
+| `spec.services[].resources.claims` | array<object> | no | — | — | Claims lists the names of resources, defined in spec.resourceClaims, that are used by this container. This field depends on the DynamicResourceAllocation feature gate. This field is immutable. It can only be set for containers. |
+| `spec.services[].resources.claims[]` | object | no | — | — | ResourceClaim references one entry in PodSpec.ResourceClaims. |
+| `spec.services[].resources.claims[].name` | string | yes | — | — | Name must match the name of one entry in pod.spec.resourceClaims of the Pod where this field is used. It makes that resource available inside a container. |
+| `spec.services[].resources.claims[].request` | string | no | — | — | Request is the name chosen for a request in the referenced claim. If empty, everything from the claim is made available, otherwise only the result of this request. |
+| `spec.services[].resources.limits` | map[string] | no | — | — | Limits describes the maximum amount of compute resources allowed. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+| `spec.services[].resources.limits{}` | (int-or-string) | no | — | pattern: `^(\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))(([KMGTPE]i)\|[numkMGTPE]\|([eE](\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))))?$` |  |
+| `spec.services[].resources.requests` | map[string] | no | — | — | Requests describes the minimum amount of compute resources required. If Requests is omitted for a container, it defaults to Limits if that is explicitly specified, otherwise to an implementation-defined value. Requests cannot exceed Limits. More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+| `spec.services[].resources.requests{}` | (int-or-string) | no | — | pattern: `^(\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))(([KMGTPE]i)\|[numkMGTPE]\|([eE](\+\|-)?(([0-9]+(\.[0-9]*)?)\|(\.[0-9]+))))?$` |  |
+| `spec.services[].runAsUser` | integer | no | — | format: int64 |  |
+| `spec.services[].storage` | object | no | — | — | ServiceStorageSpec creates a per-service RWO data PVC, retained by name across Pod recreates. |
+| `spec.services[].storage.mountPath` | string | yes | — | — | mountPath is the in-container mount point for the data PVC. |
+| `spec.services[].storage.size` | string | yes | — | — | size is a quantity string, e.g. "1Gi". |
+
+### .status
+
+| Field | Type | Required | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| `status.conditions` | array<object> | no | — | — |  |
+| `status.conditions[]` | object | no | — | — | Condition contains details for one aspect of the current state of this API Resource. |
+| `status.conditions[].lastTransitionTime` | string | yes | — | format: date-time | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `status.conditions[].message` | string | yes | — | maxLength: 32768 | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `status.conditions[].observedGeneration` | integer | no | — | minimum: 0; format: int64 | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `status.conditions[].reason` | string | yes | — | minLength: 1; maxLength: 1024; pattern: `^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$` | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status.conditions[].status` | string | yes | — | enum: True, False, Unknown | status of the condition, one of True, False, Unknown. |
+| `status.conditions[].type` | string | yes | — | maxLength: 316; pattern: `^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$` | type of condition in CamelCase or in foo.example.com/CamelCase. |
+| `status.entries` | array<object> | no | — | — |  |
+| `status.entries[]` | object | no | — | — | EntryStatus is the readiness of one service or runtime entry. |
+| `status.entries[].kind` | string | yes | — | — | kind is "service" or "runtime". |
+| `status.entries[].name` | string | yes | — | — |  |
+| `status.entries[].ready` | boolean | yes | — | — |  |
+| `status.entries[].reason` | string | no | — | — |  |

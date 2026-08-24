@@ -313,7 +313,8 @@ generate: bin/controller-gen
 # COMMITTED CRD YAML, so it needs only the operator module's own deps and
 # runs in a plain golang container with no hack/tools build.
 CRD_FILES ?= config/crd/bases/sandbox.psenna.dev_sandboxclasses.yaml \
-             config/crd/bases/sandbox.psenna.dev_sandboxenvironments.yaml
+             config/crd/bases/sandbox.psenna.dev_sandboxenvironments.yaml \
+             config/crd/bases/sandbox.psenna.dev_servicesets.yaml
 
 crd-docs:
 	$(DOCKER_RUN) sh -c 'go run ./hack/crdref $(CRD_FILES) > docs/crd-reference.md'

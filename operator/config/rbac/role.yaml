@@ -22,6 +22,7 @@ rules:
   resources:
   - persistentvolumeclaims
   - pods
+  - services
   verbs:
   - create
   - delete
@@ -29,14 +30,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - services
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - ""
@@ -94,6 +87,7 @@ rules:
   resources:
   - sandboxclasses/status
   - sandboxenvironments/status
+  - servicesets/status
   verbs:
   - get
   - patch
@@ -102,6 +96,7 @@ rules:
   - sandbox.psenna.dev
   resources:
   - sandboxenvironments
+  - servicesets
   verbs:
   - create
   - delete
@@ -114,5 +109,6 @@ rules:
   - sandbox.psenna.dev
   resources:
   - sandboxenvironments/finalizers
+  - servicesets/finalizers
   verbs:
   - update

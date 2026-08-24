@@ -5,6 +5,26 @@ workload. There is currently exactly **one implemented engine**, and the
 CRD's own default is a **different, unimplemented** one — read this page
 before you write a `SandboxClass`.
 
+## ServiceSet controller (k8s-native foundation)
+
+A `ServiceSet` (`sandbox.psenna.dev/v1alpha1`, namespaced, short name `sbset`)
+declares long-lived dependency **services** and dev-tool **runtimes** for a
+`SandboxEnvironment`. The `ServiceSetReconciler` reconciles each entry to native
+Pods/Services/PVCs in the ServiceSet's namespace, owns them (garbage-collected
+with the ServiceSet), and reports per-entry `Ready` status gated by `dependsOn`.
+
+- **services** → `Service/<name>` (cluster DNS `<name>.<ns>.svc`) + `Pod/<name>`
+  + optional `PVC/<name>-data` (RWO, retained by name across Pod recreates).
+- **runtimes** → `Pod/<name>` mounting the shared workspace PVC
+  (`<environmentName>-workspace`) at `/workspace`; the agent `exec`s into them.
+
+Pod readiness drives the `ServiceSet`'s `Ready` condition. Changing a
+pod-affecting field (image/env/command) recreates only that Pod; the data PVC is
+retained. Removing an entry prunes its Pod/Service/PVC.
+
+The agent-facing control-API surface (`apply`/`exec`/`compose`) that creates and
+drives `ServiceSet`s is documented in Plan 2.
+
 ## The matrix
 
 | `spec.engine.type` | Status today | What runs in the pod | Cluster requirements | Pod Security Standard the sandbox namespace may enforce | securityContext relaxations |
