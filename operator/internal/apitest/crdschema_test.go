@@ -85,7 +85,7 @@ func TestCRDSchema_SandboxClass(t *testing.T) {
 	if got := string(engineType.Default.Raw); got != `"rootless-podman"` {
 		t.Errorf("spec.engine.type default = %s, want %q", got, "rootless-podman")
 	}
-	if want := []string{"rootless-podman", "none"}; !enumMatches(engineType.Enum, want) {
+	if want := []string{"rootless-podman", "none", "k8s-native"}; !enumMatches(engineType.Enum, want) {
 		t.Errorf("spec.engine.type enum = %v, want %v", engineType.Enum, want)
 	}
 

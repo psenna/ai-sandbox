@@ -107,22 +107,33 @@ func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) {
 		t.Errorf("PolicyTypes = %v, want [Ingress Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Egress: rule 0 = kube-dns, then the two CIDR peers sorted by CIDR
-	// (0.0.0.0/0 before 10.0.0.1/32 -- the external S3 endpoint is covered by
-	// the extraEgress CIDR, so it contributes no selector peer of its own).
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("Egress has %d rules, want 3 (kube-dns + api-server + extraEgress)", len(np.Spec.Egress))
+	// Egress: rule 0 = kube-dns, rule 1 = env-pods (agent -> env-labeled pods),
+	// then the two CIDR peers sorted by CIDR (0.0.0.0/0 before 10.0.0.1/32 --
+	// the external S3 endpoint is covered by the extraEgress CIDR, so it
+	// contributes no selector peer of its own).
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("Egress has %d rules, want 4 (kube-dns + env-pods + api-server + extraEgress)", len(np.Spec.Egress))
 	}
 	dns := np.Spec.Egress[0]
 	if len(dns.To) != 1 || dns.To[0].NamespaceSelector == nil ||
 		dns.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "kube-system" {
 		t.Errorf("kube-dns rule To = %+v, want namespaceSelector kube-system", dns.To)
 	}
-	extra := np.Spec.Egress[1]
+	envRule := np.Spec.Egress[1]
+	if len(envRule.To) != 1 || envRule.To[0].PodSelector == nil || envRule.To[0].NamespaceSelector != nil {
+		t.Errorf("env-pod rule To = %+v, want podSelector-only (no namespaceSelector)", envRule.To)
+	}
+	if envRule.To[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] != render.EnvironmentLabelValue(env.Name) {
+		t.Errorf("env-pod rule podSelector = %+v, want sandbox.psenna.dev/environment=%s", envRule.To[0].PodSelector, render.EnvironmentLabelValue(env.Name))
+	}
+	if len(envRule.Ports) != 0 {
+		t.Errorf("env-pod rule has %d ports, want 0 (all ports)", len(envRule.Ports))
+	}
+	extra := np.Spec.Egress[2]
 	if len(extra.To) != 1 || extra.To[0].IPBlock == nil || extra.To[0].IPBlock.CIDR != "0.0.0.0/0" {
 		t.Errorf("extraEgress rule To = %+v, want ipBlock 0.0.0.0/0", extra.To)
 	}
-	api := np.Spec.Egress[2]
+	api := np.Spec.Egress[3]
 	if len(api.To) != 1 || api.To[0].IPBlock == nil {
 		t.Fatalf("api-server rule To = %+v, want ipBlock", api.To)
 	}

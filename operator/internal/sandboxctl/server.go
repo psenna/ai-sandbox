@@ -12,21 +12,25 @@ const maxHeaderBytes = 8 << 10
 
 // NewServer builds the control API's *http.Server. It does not start
 // listening -- call Serve/ListenAndServe or run.go's own accept loop.
-func NewServer(cfg Config, store Store, poll *Poller, env EnvironmentRef, now func() time.Time, log func(format string, args ...any)) *http.Server {
+func NewServer(cfg Config, store Store, poll *Poller, env EnvironmentRef, sets serviceSetApplier, execer Execer, now func() time.Time, log func(format string, args ...any)) *http.Server {
 	if log == nil {
 		log = func(string, ...any) {}
 	}
-	h := &handlers{store: store, poll: poll, env: env, now: now, log: log}
+	h := &handlers{store: store, poll: poll, env: env, sets: sets, execer: execer, now: now, log: log}
 
 	waitDoneBucket := newTokenBucket(waitDoneRatePerSec, waitDoneBurst)
 	progressBucket := newTokenBucket(progressRatePerSec, progressBurst)
 	statusBucket := newTokenBucket(statusRatePerSec, statusBurst)
+	servicesBucket := newTokenBucket(servicesRatePerSec, servicesBurst)
+	execBucket := newTokenBucket(execRatePerSec, execBurst)
 
 	mux := http.NewServeMux()
 
 	mux.Handle("POST /v1/wait", postChain(http.HandlerFunc(h.handleWait), log, waitDoneBucket, maxWaitDoneBodyBytes))
 	mux.Handle("POST /v1/done", postChain(http.HandlerFunc(h.handleDone), log, waitDoneBucket, maxWaitDoneBodyBytes))
 	mux.Handle("POST /v1/progress", postChain(http.HandlerFunc(h.handleProgress), log, progressBucket, maxProgressBodyBytes))
+	mux.Handle("POST /v1/services", postChain(http.HandlerFunc(h.handleServicesApply), log, servicesBucket, maxServicesBodyBytes))
+	mux.Handle("POST /v1/exec", postChain(http.HandlerFunc(h.handleExec), log, execBucket, maxExecBodyBytes))
 	mux.Handle("GET /v1/status", chain(http.HandlerFunc(h.handleStatus), recoverer(log), requestLog(log), rateLimit(statusBucket)))
 	// /healthz is exempt from rate limiting (the kubelet probes it every
 	// second) and keeps answering even once freezing is latched.
@@ -43,6 +47,8 @@ func NewServer(cfg Config, store Store, poll *Poller, env EnvironmentRef, now fu
 	mux.HandleFunc("/v1/wait", methodNotAllowed)
 	mux.HandleFunc("/v1/done", methodNotAllowed)
 	mux.HandleFunc("/v1/progress", methodNotAllowed)
+	mux.HandleFunc("/v1/services", methodNotAllowed)
+	mux.HandleFunc("/v1/exec", methodNotAllowed)
 	mux.HandleFunc("/v1/status", methodNotAllowed)
 	mux.HandleFunc("/healthz", methodNotAllowed)
 

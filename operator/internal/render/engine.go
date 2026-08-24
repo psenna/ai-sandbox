@@ -116,15 +116,14 @@ func engineFor(t v1alpha1.EngineType) (Engine, error) {
 var engineRegistry = map[v1alpha1.EngineType]Engine{
 	v1alpha1.EngineTypeNone:           noneEngine{},
 	v1alpha1.EngineTypeRootlessPodman: notImplementedEngine{typ: v1alpha1.EngineTypeRootlessPodman, issue: 24},
+	v1alpha1.EngineTypeK8sNative:      k8sNativeEngine{},
 }
 
-// notImplementedEngine is registered (so the dispatch/seam machinery is
-// real -- the interface, the registry, RenderPod's lookup -- all work
-// end-to-end) but always fails closed, naming the issue that ships the real
-// implementation. This is deliberately NOT a k8s-native stub: the epic (#15)
-// deferred a real k8s-native engine (#25) post-v1 pending a security
-// analysis that hasn't been written, and rootless-podman is the only v1
-// engine (see issue #21's scope-resolution note).
+// notImplementedEngine is registered (so the dispatch/seam machinery is real)
+// but always fails closed, naming the issue that ships the real implementation.
+// rootless-podman remains the unimplemented stub: issue #24 was re-scoped to a
+// k8s-native engine (see engine_k8snative.go + the approved design), so the
+// rootless-podman-in-a-pod approach is abandoned and its branch excluded.
 type notImplementedEngine struct {
 	typ   v1alpha1.EngineType
 	issue int

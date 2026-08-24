@@ -55,7 +55,17 @@ func RenderNetworkPolicy(in Inputs) (*anetworkingv1.NetworkPolicyApplyConfigurat
 	// Egress rule 1: DNS to kube-dns (see the doc comment above).
 	egress := []*anetworkingv1.NetworkPolicyEgressRuleApplyConfiguration{dnsEgressRule()}
 
-	// Egress rule 2: the caller-resolved peers, sorted for determinism so two
+	// Egress rule 2: the agent reaches other env-labeled pods in this
+	// namespace -- the dependency/runtime pods the ServiceSet reconciles carry
+	// the same env label (serviceset_controller.entryLabels), so the agent can
+	// connect to deps via Service DNS and to runtimes by pod IP. A
+	// podSelector-only peer (no namespaceSelector) selects pods in THIS
+	// NetworkPolicy's namespace. No ports => all ports (the agent needs only the
+	// declared service ports, but a single all-ports rule is simpler and the
+	// namespace is already the trust boundary).
+	egress = append(egress, envPodEgressRule(in.Env.Name))
+
+	// Egress rule 3: the caller-resolved peers, sorted for determinism so two
 	// renders are byte-identical. An empty Egress list is a controller bug
 	// (the controller guarantees at least the K8s API peer), but render still
 	// emits the DNS rule and does not error -- a DNS-only policy is a safe
@@ -99,6 +109,18 @@ func dnsEgressRule() *anetworkingv1.NetworkPolicyEgressRuleApplyConfiguration {
 			anetworkingv1.NetworkPolicyPort().WithProtocol(corev1.ProtocolUDP).WithPort(intstr.FromInt(53)),
 			anetworkingv1.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt(53)),
 		)
+}
+
+// envPodEgressRule allows egress to pods in this namespace carrying the
+// environment label (the agent + the ServiceSet's dep/runtime pods). A
+// podSelector-only peer (no namespaceSelector) selects pods in THIS
+// NetworkPolicy's namespace; no ports means all ports.
+func envPodEgressRule(envName string) *anetworkingv1.NetworkPolicyEgressRuleApplyConfiguration {
+	return anetworkingv1.NetworkPolicyEgressRule().
+		WithTo(anetworkingv1.NetworkPolicyPeer().
+			WithPodSelector(metav1ac.LabelSelector().WithMatchLabels(map[string]string{
+				"sandbox.psenna.dev/environment": EnvironmentLabelValue(envName),
+			})))
 }
 
 // peerEgressRule renders one caller-resolved peer as a single egress rule.

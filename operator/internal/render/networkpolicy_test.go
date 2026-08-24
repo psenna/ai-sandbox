@@ -110,13 +110,14 @@ func assertNPSpec(t *testing.T, spec *anetworkingv1.NetworkPolicySpecApplyConfig
 	}
 }
 
-// assertNPEgress checks the three egress rules: rule 0 is the fixed kube-dns
-// rule; rules 1-2 are the resolved peers (sorted: CIDR peers first, then
-// selector peers by namespace).
+// assertNPEgress checks the four egress rules: rule 0 is the fixed kube-dns
+// rule; rule 1 is the env-pod egress rule (agent -> env-labeled pods); rules
+// 2-3 are the resolved peers (sorted: CIDR peers first, then selector peers by
+// namespace).
 func assertNPEgress(t *testing.T, egress []anetworkingv1.NetworkPolicyEgressRuleApplyConfiguration) {
 	t.Helper()
-	if len(egress) != 3 {
-		t.Fatalf("Egress has %d rules, want 3 (kube-dns + 2 peers)", len(egress))
+	if len(egress) != 4 {
+		t.Fatalf("Egress has %d rules, want 4 (kube-dns + env + 2 peers)", len(egress))
 	}
 	dns := egress[0]
 	if len(dns.To) != 1 || dns.To[0].NamespaceSelector == nil || dns.To[0].PodSelector == nil {
@@ -132,7 +133,18 @@ func assertNPEgress(t *testing.T, egress []anetworkingv1.NetworkPolicyEgressRule
 		t.Errorf("kube-dns rule has %d ports, want 2 (53/UDP + 53/TCP)", len(dns.Ports))
 	}
 
-	cidrRule := egress[1]
+	envRule := egress[1]
+	if len(envRule.To) != 1 || envRule.To[0].PodSelector == nil || envRule.To[0].NamespaceSelector != nil {
+		t.Fatalf("env-pod rule To = %+v, want podSelector-only (no namespaceSelector)", envRule.To)
+	}
+	if envRule.To[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] != EnvironmentLabelValue("restricted-env") {
+		t.Errorf("env-pod rule podSelector = %+v, want sandbox.psenna.dev/environment=%s", envRule.To[0].PodSelector, EnvironmentLabelValue("restricted-env"))
+	}
+	if len(envRule.Ports) != 0 {
+		t.Errorf("env-pod rule has %d ports, want 0 (all ports)", len(envRule.Ports))
+	}
+
+	cidrRule := egress[2]
 	if len(cidrRule.To) != 1 || cidrRule.To[0].IPBlock == nil || cidrRule.To[0].IPBlock.CIDR == nil || *cidrRule.To[0].IPBlock.CIDR != "140.82.112.0/20" {
 		t.Fatalf("cidr peer rule To = %+v, want ipBlock 140.82.112.0/20", cidrRule.To)
 	}
@@ -140,7 +152,7 @@ func assertNPEgress(t *testing.T, egress []anetworkingv1.NetworkPolicyEgressRule
 		t.Errorf("cidr peer rule Ports = %+v, want [443]", cidrRule.Ports)
 	}
 
-	selRule := egress[2]
+	selRule := egress[3]
 	if len(selRule.To) != 1 || selRule.To[0].IPBlock != nil {
 		t.Fatalf("selector peer rule To = %+v, want a namespaceSelector peer", selRule.To)
 	}
@@ -178,10 +190,10 @@ func TestRenderNetworkPolicy_ExtraEgressCIDR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNetworkPolicy: %v", err)
 	}
-	if len(np.Spec.Egress) != 2 {
-		t.Fatalf("Egress has %d rules, want 2 (kube-dns + cidr)", len(np.Spec.Egress))
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("Egress has %d rules, want 3 (kube-dns + env + cidr)", len(np.Spec.Egress))
 	}
-	peer := np.Spec.Egress[1]
+	peer := np.Spec.Egress[2]
 	if len(peer.To) != 1 || peer.To[0].IPBlock == nil || peer.To[0].IPBlock.CIDR == nil || *peer.To[0].IPBlock.CIDR != "10.0.0.0/8" {
 		t.Errorf("cidr peer To = %+v, want ipBlock 10.0.0.0/8", peer.To)
 	}
@@ -195,10 +207,10 @@ func TestRenderNetworkPolicy_ExtraEgressSelector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNetworkPolicy: %v", err)
 	}
-	if len(np.Spec.Egress) != 2 {
-		t.Fatalf("Egress has %d rules, want 2 (kube-dns + selector)", len(np.Spec.Egress))
+	if len(np.Spec.Egress) != 3 {
+		t.Fatalf("Egress has %d rules, want 3 (kube-dns + env + selector)", len(np.Spec.Egress))
 	}
-	peer := np.Spec.Egress[1]
+	peer := np.Spec.Egress[2]
 	if len(peer.To) != 1 || peer.To[0].NamespaceSelector == nil {
 		t.Fatalf("selector peer To = %+v, want a namespaceSelector peer", peer.To)
 	}
@@ -275,4 +287,42 @@ func TestRenderNetworkPolicy_Golden(t *testing.T) {
 		t.Fatalf("RenderNetworkPolicy: %v", err)
 	}
 	assertGolden(t, "networkpolicy_restricted.yaml", marshalForGolden(t, np))
+}
+
+// TestNetworkPolicyEnvEgress asserts the Restricted NetworkPolicy carries an
+// env-egress rule letting the agent reach other env-labeled pods in this
+// namespace (the ServiceSet's dep/runtime pods, which carry the same env label
+// via serviceset_controller.entryLabels). The rule is a podSelector-only peer
+// (no namespaceSelector => this namespace) with no ports (all ports). It is
+// found by its podSelector matchLabels, not by index, so egress ordering does
+// not break the assertion.
+func TestNetworkPolicyEnvEgress(t *testing.T) {
+	in := restrictedInputs()
+	np, err := RenderNetworkPolicy(in)
+	if err != nil {
+		t.Fatalf("RenderNetworkPolicy: %v", err)
+	}
+	if np == nil || np.Spec == nil {
+		t.Fatal("Restricted isolation: got nil NetworkPolicy/Spec")
+	}
+
+	wantLabel := EnvironmentLabelValue(in.Env.Name)
+	var found bool
+	for i := range np.Spec.Egress {
+		rule := &np.Spec.Egress[i]
+		if len(rule.Ports) != 0 {
+			continue // the env rule is all-ports
+		}
+		if len(rule.To) != 1 || rule.To[0].PodSelector == nil {
+			continue
+		}
+		if rule.To[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] == wantLabel &&
+			rule.To[0].NamespaceSelector == nil {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no env-egress rule with podSelector{sandbox.psenna.dev/environment=%q} (no namespaceSelector, no ports) in egress %+v", wantLabel, np.Spec.Egress)
+	}
 }
