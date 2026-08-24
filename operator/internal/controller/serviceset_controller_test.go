@@ -380,3 +380,51 @@ func TestServiceSetReconciler_PrunesRemovedEntries(t *testing.T) {
 		t.Fatalf("keep pod should remain: %v", err)
 	}
 }
+
+func TestServiceSetReconciler_CyclicDependsOnTerminatesNotReady(t *testing.T) {
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-cycle",
+		Services: []sandboxv1alpha1.ServiceSpec{
+			{Name: "a", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, DependsOn: []string{"b"}},
+			{Name: "b", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, DependsOn: []string{"a"}},
+		},
+	}}
+	ss.Name, ss.Namespace = "set-cycle", "default"
+	mustCreateServiceSet(t, ss)
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+	reconcileServiceSetOnce(t, r, key) // must not hang or crash
+
+	markPodReady(t, "a", "default")
+	markPodReady(t, "b", "default")
+	reconcileServiceSetOnce(t, r, key) // cycle now reachable: must still terminate
+
+	assertReadyCondition(t, key, metav1.ConditionFalse)
+	assertEntryReady(t, key, "a", false)
+	assertEntryReady(t, key, "b", false)
+}
+
+func TestServiceSetReconciler_DiamondDependsOnNotACycle(t *testing.T) {
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-diamond",
+		Services: []sandboxv1alpha1.ServiceSpec{
+			{Name: "a", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, DependsOn: []string{"b", "c"}},
+			{Name: "b", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, DependsOn: []string{"d"}},
+			{Name: "c", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, DependsOn: []string{"d"}},
+			{Name: "d", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}},
+		},
+	}}
+	ss.Name, ss.Namespace = "set-diamond", "default"
+	mustCreateServiceSet(t, ss)
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+	reconcileServiceSetOnce(t, r, key)
+	for _, n := range []string{"a", "b", "c", "d"} {
+		markPodReady(t, n, "default")
+	}
+	reconcileServiceSetOnce(t, r, key)
+	assertReadyCondition(t, key, metav1.ConditionTrue)
+	for _, n := range []string{"a", "b", "c", "d"} {
+		assertEntryReady(t, key, n, true)
+	}
+}

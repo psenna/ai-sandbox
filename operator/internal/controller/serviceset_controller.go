@@ -189,15 +189,32 @@ func (r *ServiceSetReconciler) computeReady(ctx context.Context, ss *sandboxv1al
 	}
 	var resolve readyMap
 	resolve = func(name string) (bool, string) {
-		if !podReady[name] {
-			return false, "PodNotReady"
-		}
-		for _, dep := range depMap[name] {
-			if ok, _ := resolve(dep); !ok {
-				return false, "DependenciesNotReady"
+		// Path-based cycle guard: seen tracks the names on the CURRENT DFS path,
+		// not all-ever-visited. Backtracking (delete after the dep loop) keeps a
+		// diamond (a→b→d, a→c→d) from false-positiving as a cycle: once d resolves
+		// via b and the b-branch unwinds, d leaves seen, so reaching d via c is a
+		// normal revisit, not a cycle. Each top-level resolve(name) call from
+		// writeStatus starts with a fresh seen, so path state never leaks across
+		// entries.
+		seen := map[string]struct{}{}
+		var visit func(n string) (bool, string)
+		visit = func(n string) (bool, string) {
+			if _, ok := seen[n]; ok {
+				return false, "CircularDependency"
 			}
+			if !podReady[n] {
+				return false, "PodNotReady"
+			}
+			seen[n] = struct{}{}
+			for _, dep := range depMap[n] {
+				if ok, _ := visit(dep); !ok {
+					return false, "DependenciesNotReady"
+				}
+			}
+			delete(seen, n)
+			return true, ""
 		}
-		return true, ""
+		return visit(name)
 	}
 	return resolve
 }
