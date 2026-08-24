@@ -622,6 +622,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -859,10 +860,8 @@ func readinessProbe(hc sandboxv1alpha1.HealthcheckSpec) *corev1.Probe {
 }
 
 func ownerRef(ss *sandboxv1alpha1.ServiceSet) metav1.OwnerReference {
-	return metav1.OwnerReference{APIVersion: sandboxv1alpha1.GroupVersion.String(), Kind: "ServiceSet", Name: ss.Name, UID: ss.UID, Controller: ptr(true), BlockOwnerDeletion: ptr(true)}
+	return metav1.OwnerReference{APIVersion: sandboxv1alpha1.GroupVersion.String(), Kind: "ServiceSet", Name: ss.Name, UID: ss.UID, Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true)}
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // podSpecHash is the recreate-detection key: any change to a pod-affecting
 // field yields a different hash, so ensurePod deletes+recreates the Pod.
