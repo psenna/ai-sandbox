@@ -43,7 +43,6 @@ const (
 	CodeDanglingDependsOn      = "dangling_depends_on"
 	CodeInvalidDeclaration     = "invalid_declaration"
 	CodeServiceSetUpsertFailed = "serviceset_upsert_failed"
-	CodeExecFailed             = "exec_failed"
 	CodeInternal               = "internal"
 )
 
