@@ -11,6 +11,7 @@ package controller
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -61,10 +62,26 @@ package controller
 // The pods marker lands with this issue (#21): ensurePod/deletePod/observePod
 // need get/list/watch/create/update/patch/delete on pods in the environment's
 // own namespace. delete is required (not just get/create/update/patch)
-// because terminalOutcome/nextFreezing issue ActionDeletePod. pods/log and
-// pods/exec are deliberately NOT granted -- log retrieval belongs to a later
-// issue, and pods/exec (a shell into a running agent pod) must never be
-// granted to the operator at all.
+// because terminalOutcome/nextFreezing issue ActionDeletePod. pods/log is
+// deliberately NOT granted -- log retrieval belongs to a later issue.
+//
+// The pods/exec marker is the k8s-native engine's hold-to-grant exception
+// (#24, Plan 2). The k8s-native sidecar Role (internal/render/rbac.go) grants
+// the sidecar pods/exec create so it can one-shot exec into declared runtime
+// pods (POST /v1/exec -> SPDY pods/exec) via the loopback control API. RBAC's
+// escalation/bind check forbids creating a Role that grants a permission the
+// creator does not itself hold, so the operator must hold pods/exec create to
+// render+apply that Role -- WITHOUT it, the Role apply is Forbidden-swallowed
+// by applyOne (logged only at V(1) as "child resource apply rejected") and the
+// environment wedges in Pending with the RoleBinding apply then failing
+// "not found" (its roleRef Role was never created). The operator itself never
+// execs into any pod -- only the sidecar does, into declared runtime pods, not
+// the agent pod -- so this grants the operator the CAPABILITY only to satisfy
+// the hold-to-grant rule; the original #21 stance ("never shell into the
+// agent pod") still holds in practice. pods/exec cannot be name-pinned (runtime
+// pod names are dynamic), so the grant is namespace-scoped, matching the
+// sidecar's own Role. The non-k8s-native engines (none, rootless-podman) never
+// render a pods/exec rule, so this grant is inert for them.
 //
 // The events.k8s.io marker lands with #33: mgr.GetEventRecorder (this
 // package's Recorder field, and SlotScheduler's) sinks through
