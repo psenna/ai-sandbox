@@ -15,6 +15,7 @@ Copied verbatim from the design spec (`docs/superpowers/specs/2026-08-23-k8s-nat
 - The operator's API group/version is `sandbox.psenna.dev/v1alpha1`; new types go in `operator/api/v1alpha1/` and self-register via `func init() { SchemeBuilder.Register(&T{}, &TList{}) }`. `operator/internal/operator/manager.go:Scheme()` already calls `sandboxv1alpha1.AddToScheme`, so no scheme change is needed.
 - Generated artifacts are produced by the existing Make targets and are committed: `make generate` (deepcopy → `operator/api/v1alpha1/zz_generated.deepcopy.go`), `make manifests` (CRD → `operator/config/crd/bases/`, RBAC → `operator/config/rbac/manager-role.yaml`), `make helm-crds` (copy CRDs into `operator/deploy/helm/ai-sandbox-operator/crds/`). A new CRD file must ALSO be appended to the `CRD_FILES` Makefile variable so `make crd-docs` regenerates `operator/docs/crd-reference.md`.
 - envtest loads CRDs from `operator/config/crd/bases/` (`operator/internal/controller/suite_test.go` `CRDDirectoryPaths`), so `make manifests` must run before envtest tests see the new CRD.
+- **Local (non-Docker) Make invocations:** the targets `generate`, `manifests`, `crd-docs`, `crd-docs-check`, `envtest-assets`, and `test-envtest` are wrapped in `$(DOCKER_RUN)`, which by default shells out to Docker and requires `CURDIR` under `SHARED_DIR`. For a local run on the host (no Docker), pass `IN_CONTAINER=1` — it empties `DOCKER_RUN` so the command runs with the host Go toolchain directly. So write e.g. `make IN_CONTAINER=1 generate`, `make IN_CONTAINER=1 manifests`, `make IN_CONTAINER=1 crd-docs`, `make IN_CONTAINER=1 envtest-assets`, `make IN_CONTAINER=1 test-envtest`, `make IN_CONTAINER=1 crd-docs-check`. The `helm-crds` and `helm-crds-check` targets are plain `cp`/`diff` (no `DOCKER_RUN`) and need NO flag. Run all `make` targets from the `operator/` directory. Plain `go test ./api/v1alpha1/...` (the unit test for the types) runs directly with no Make wrapper.
 - Controllers live in `operator/internal/controller/` with package-level `+kubebuilder:rbac:` markers, a `Reconcile(ctx, req) (ctrl.Result, error)` method, and a `SetupWithManager`; wired in `operator/internal/operator/controllers.go:SetupControllers`.
 - envtest runs no kube-controller-manager/kubelet: PVCs do not bind and Pods do not run. Tests simulate Pod readiness by patching `pod.Status.Conditions` and PVCs by creating them as fixtures. The controller must read readiness from `pod.Status.Conditions` (PodReady), not from pod `Phase`.
 - The agent holds no k8s credential and never creates the `ServiceSet` directly — that is Plan 2's control-API surface. Plan 1 only defines the CRD + controller and tests them via envtest fixtures.
@@ -26,7 +27,7 @@ Copied verbatim from the design spec (`docs/superpowers/specs/2026-08-23-k8s-nat
 ## File Structure
 
 **Create:**
-- `operator/api/v1alpha1/serviceset_types.go` — the `ServiceSet` CRD types (Spec, Status, `ServiceSpec`, `RuntimeSpec`, `HealthcheckSpec`, `StorageSpec`, `EntryStatus`, root + list types, `init()` registration, kubebuilder markers).
+- `operator/api/v1alpha1/serviceset_types.go` — the `ServiceSet` CRD types (Spec, Status, `ServiceSpec`, `RuntimeSpec`, `HealthcheckSpec`, `ServiceStorageSpec`, `EntryStatus`, root + list types, `init()` registration, kubebuilder markers).
 - `operator/internal/controller/serviceset_controller.go` — `ServiceSetReconciler` (`Reconcile`, `SetupWithManager`, RBAC markers) + unexported reconcile helpers (`reconcileService`, `reconcileRuntime`, `desiredService`, `desiredPod`, `desiredPVC`, `podSpecHash`, `isPodReady`, `computeReady`, `pruneChildren`).
 - `operator/internal/controller/serviceset_controller_test.go` — envtest tests for each task (one `Test*` per behavior, using the shared suite helpers).
 
@@ -56,7 +57,7 @@ Copied verbatim from the design spec (`docs/superpowers/specs/2026-08-23-k8s-nat
 - Test: `operator/api/v1alpha1/serviceset_types_test.go`
 
 **Interfaces:**
-- Produces: `ServiceSet`, `ServiceSetList`, `ServiceSetSpec`, `ServiceSetStatus`, `ServiceSpec`, `RuntimeSpec`, `HealthcheckSpec`, `StorageSpec`, `EntryStatus` (all in package `v1alpha1`), self-registered via `SchemeBuilder.Register(&ServiceSet{}, &ServiceSetList{})`. Later tasks reference these by exact name.
+- Produces: `ServiceSet`, `ServiceSetList`, `ServiceSetSpec`, `ServiceSetStatus`, `ServiceSpec`, `RuntimeSpec`, `HealthcheckSpec`, `ServiceStorageSpec`, `EntryStatus` (all in package `v1alpha1`), self-registered via `SchemeBuilder.Register(&ServiceSet{}, &ServiceSetList{})`. Later tasks reference these by exact name.
 
 - [ ] **Step 1: Write the types file**
 
@@ -114,7 +115,7 @@ type ServiceSpec struct {
 	Healthcheck HealthcheckSpec `json:"healthcheck,omitempty"`
 	// dependsOn names other service/runtime entries that must be Ready first.
 	DependsOn []string `json:"dependsOn,omitempty"`
-	Storage *StorageSpec `json:"storage,omitempty"`
+	Storage *ServiceStorageSpec `json:"storage,omitempty"`
 	// expose, if set, publishes the first port as a NodePort on this host port.
 	Expose *int32 `json:"expose,omitempty"`
 }
@@ -158,9 +159,9 @@ type TCPProbe struct {
 	Port int32 `json:"port"`
 }
 
-// StorageSpec creates a per-service RWO data PVC, retained by name across
+// ServiceStorageSpec creates a per-service RWO data PVC, retained by name across
 // Pod recreates.
-type StorageSpec struct {
+type ServiceStorageSpec struct {
 	// size is a quantity string, e.g. "1Gi".
 	// +kubebuilder:validation:Required
 	Size string `json:"size"`
@@ -236,7 +237,7 @@ func TestServiceSet_RoundTripsJSON(t *testing.T) {
 				Image: "postgres:18-alpine",
 				Ports: []int32{5432},
 				Env:   map[string]string{"POSTGRES_USER": "e2e"},
-				Storage: &StorageSpec{Size: "1Gi", MountPath: "/var/lib/postgresql/data"},
+				Storage: &ServiceStorageSpec{Size: "1Gi", MountPath: "/var/lib/postgresql/data"},
 				Healthcheck: HealthcheckSpec{Exec: []string{"pg_isready"}, Interval: "5s"},
 			}},
 			Runtimes: []RuntimeSpec{{
@@ -279,7 +280,7 @@ Expected: FAIL — `undefined: ServiceSet` (types file not yet compiled in) unti
 - [ ] **Step 3: Generate deepcopy + CRD + RBAC**
 
 ```sh
-cd operator && make generate && make manifests
+cd operator && make IN_CONTAINER=1 generate && make IN_CONTAINER=1 manifests
 ```
 
 Verify the generated artifacts exist:
@@ -291,10 +292,10 @@ grep -q "servicesets" config/rbac/manager-role.yaml
 
 - [ ] **Step 4: Copy CRD into the Helm chart + regenerate CRD docs**
 
-Append the new CRD filename to `CRD_FILES` in `operator/Makefile` (find the existing `CRD_FILES :=` assignment, add `config/crd/bases/sandbox.psenna.dev_servicesets.yaml` on the list). Then:
+Append the new CRD filename to `CRD_FILES` in `operator/Makefile` (the assignment at Makefile:315 is `CRD_FILES ?= config/crd/bases/sandbox.psenna.dev_sandboxclasses.yaml \ config/crd/bases/sandbox.psenna.dev_sandboxenvironments.yaml` — append ` \\\n             config/crd/bases/sandbox.psenna.dev_servicesets.yaml` to it). Then:
 
 ```sh
-cd operator && make helm-crds && make crd-docs
+cd operator && make helm-crds && make IN_CONTAINER=1 crd-docs
 ```
 
 Verify:
@@ -396,7 +397,7 @@ if err := (&controller.ServiceSetReconciler{Client: mgr.GetClient()}).SetupWithM
 - [ ] **Step 3: Regenerate RBAC and write the failing test**
 
 ```sh
-cd operator && make manifests
+cd operator && make IN_CONTAINER=1 manifests
 ```
 
 Create `operator/internal/controller/serviceset_controller_test.go`:
@@ -456,7 +457,7 @@ func reconcileServiceSetOnce(t *testing.T, r *ServiceSetReconciler, key types.Na
 - [ ] **Step 4: Run envtest**
 
 ```sh
-cd operator && make envtest-assets && make test-envtest 2>&1 | grep -E "ServiceSet|serviceset|FAIL|ok"
+cd operator && make IN_CONTAINER=1 envtest-assets && make IN_CONTAINER=1 test-envtest 2>&1 | grep -E "ServiceSet|serviceset|FAIL|ok"
 ```
 Expected: the new test PASSES (reconcile fetches the CR and returns nil). The CRD is visible because Task 1 generated it into `config/crd/bases`.
 
@@ -494,7 +495,7 @@ func TestServiceSetReconciler_CreatesServicePodAndPVC(t *testing.T) {
 			Image:  "postgres:18-alpine",
 			Ports:  []int32{5432},
 			Env:    map[string]string{"POSTGRES_USER": "e2e", "POSTGRES_PASSWORD": "e2e"},
-			Storage: &sandboxv1alpha1.StorageSpec{Size: "1Gi", MountPath: "/var/lib/postgresql/data"},
+			Storage: &sandboxv1alpha1.ServiceStorageSpec{Size: "1Gi", MountPath: "/var/lib/postgresql/data"},
 			Healthcheck: sandboxv1alpha1.HealthcheckSpec{Exec: []string{"pg_isready", "-U", "e2e"}, Interval: "5s"},
 		}},
 	}}
@@ -592,7 +593,7 @@ func ownedBy(obj client.Object, owner *sandboxv1alpha1.ServiceSet) bool {
 - [ ] **Step 2: Run the test to verify it fails**
 
 ```sh
-cd operator && make envtest-assets && KUBEBUILDER_ASSETS=$(...go run ...) go test ./internal/controller/ -run TestServiceSetReconciler_CreatesServicePodAndPVC -v
+cd operator && make IN_CONTAINER=1 envtest-assets && KUBEBUILDER_ASSETS=$(...go run ...) go test ./internal/controller/ -run TestServiceSetReconciler_CreatesServicePodAndPVC -v
 ```
 Expected: FAIL — no Pod/Service/PVC created (reconcile is still a no-op).
 
@@ -1236,7 +1237,7 @@ func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
 		EnvironmentName: "env-recreate",
 		Services: []sandboxv1alpha1.ServiceSpec{{
 			Name: "python", Image: "python:3.11-slim",
-			Storage: &sandboxv1alpha1.StorageSpec{Size: "1Gi", MountPath: "/data"},
+			Storage: &sandboxv1alpha1.ServiceStorageSpec{Size: "1Gi", MountPath: "/data"},
 		}},
 	}}
 	ss.Name, ss.Namespace = "set-rec", "default"
@@ -1463,16 +1464,16 @@ git commit -m "feat(controller): prune ServiceSet children no longer in the spec
 - [ ] **Step 1: Run the full envtest suite**
 
 ```sh
-cd operator && make envtest-assets && make test-envtest 2>&1 | tail -20
+cd operator && make IN_CONTAINER=1 envtest-assets && make IN_CONTAINER=1 test-envtest 2>&1 | tail -20
 ```
 Expected: PASS, no failures (existing `sandboxenvironment` tests unaffected — the new controller is additive).
 
 - [ ] **Step 2: Helm CRD + RBAC + crd-doc drift checks**
 
 ```sh
-cd operator && make helm-crds-check && make manifests && git diff --exit-code config/rbac/manager-role.yaml && make crd-docs-check
+cd operator && make helm-crds-check && make IN_CONTAINER=1 manifests && git diff --exit-code config/rbac/manager-role.yaml && make IN_CONTAINER=1 crd-docs-check
 ```
-Expected: no drift. If `make manifests` after the RBAC additions in Task 2 produced changes that weren't committed, commit them now.
+Expected: no drift. If `make IN_CONTAINER=1 manifests` after the RBAC additions in Task 2 produced changes that weren't committed, commit them now.
 
 - [ ] **Step 3: Add a short docs note**
 
@@ -1521,7 +1522,7 @@ git commit -m "docs: document the ServiceSet controller (k8s-native foundation)"
 - §7 scope cuts (no ephemeral run, no image build) — Plan 1 adds no such surface. ✓
 - §8 open decisions — `ServiceSet` as separate CR (Task 1) ✓; RWO+affinity vs RWX → Plan 1 uses RWO single-node (documented), deferring the affinity/RWX machinery. ✓
 
-**Placeholder scan:** No TBD/TODO. The one dead-code block in Task 7 Step 3 is explicitly called out for cleanup before commit. All code steps contain real code. All referenced types (`ServiceSet`, `ServiceSpec`, `RuntimeSpec`, `HealthcheckSpec`, `StorageSpec`, `EntryStatus`) are defined in Task 1. All helpers (`ensurePod`, `podSpecHash`, `isPodReady`, `computeReady`, `pruneChildren`, `entryLabels`, `ownerRef`, `readinessProbe`, `toEnvVars`) are defined within these tasks.
+**Placeholder scan:** No TBD/TODO. The one dead-code block in Task 7 Step 3 is explicitly called out for cleanup before commit. All code steps contain real code. All referenced types (`ServiceSet`, `ServiceSpec`, `RuntimeSpec`, `HealthcheckSpec`, `ServiceStorageSpec`, `EntryStatus`) are defined in Task 1. All helpers (`ensurePod`, `podSpecHash`, `isPodReady`, `computeReady`, `pruneChildren`, `entryLabels`, `ownerRef`, `readinessProbe`, `toEnvVars`) are defined within these tasks.
 
 **Type consistency:** `ServiceSetReconciler`, `Reconcile`, `SetupWithManager`, `reconcileServiceSetOnce`, `entryLabels`, `ensurePod`, `podSpecHash`, `isPodReady`, `computeReady`, `writeStatus`, `pruneChildren`, `ownerRef`, `readinessProbe` — names match across tasks. Label constants (`labelServiceset`, `labelEntry`, `labelKind`, `specHashAnnotation`) defined once (Task 3) and reused. `readyMap`/`computeReady` closure type is defined in Task 5 and used there.
 
