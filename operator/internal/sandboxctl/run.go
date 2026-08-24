@@ -79,7 +79,8 @@ func Run(ctx context.Context, cfg Config, log logr.Logger) error {
 	poll := NewPoller(store, cfg.PollInterval, hook, logf)
 
 	env := EnvironmentRef{Name: cfg.Environment, Namespace: cfg.Namespace}
-	srv := NewServer(cfg, store, poll, env, time.Now, logf)
+	sets := newServiceSetStore(c, env)
+	srv := NewServer(cfg, store, poll, env, sets, time.Now, logf)
 
 	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

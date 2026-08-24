@@ -19,6 +19,7 @@ type handlers struct {
 	store Store
 	poll  *Poller
 	env   EnvironmentRef
+	sets  serviceSetApplier // nil for non-k8s-native envs (services apply then 404s)
 	now   func() time.Time
 	log   func(format string, args ...any)
 }
@@ -192,6 +193,49 @@ func (h *handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 // the kubelet does not kill the container mid-freeze.
 func (h *handlers) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, HealthzResponse{Status: "ok"})
+}
+
+// handleServicesApply handles POST /v1/services. The agent POSTs a declaration
+// (services + runtimes, no environmentName); the server validates it, stamps
+// EnvironmentName from its own identity, and upserts the ServiceSet CR owned by
+// the environment. The ServiceSetReconciler then reconciles it to Pods.
+func (h *handlers) handleServicesApply(w http.ResponseWriter, r *http.Request) {
+	if h.sets == nil {
+		// Not a k8s-native environment: the sidecar Role grants no servicesets
+		// RBAC, so upsert would 403. Surface it as a clean 404 rather than a
+		// confusing 502 RBAC message.
+		writeError(w, http.StatusNotFound, CodeNotFound, "services are not enabled on this environment (requires the k8s-native engine)", "", nil)
+		return
+	}
+	var req ServicesApplyRequest
+	if err := decodeStrict(r.Body, &req); err != nil {
+		writeDecodeErr(w, err)
+		return
+	}
+	spec := v1alpha1.ServiceSetSpec{EnvironmentName: h.env.Name, Services: req.Services, Runtimes: req.Runtimes}
+	if err := ValidateServiceSet(spec); err != nil {
+		var ve *ValidationError
+		if errors.As(err, &ve) {
+			writeValidationError(w, http.StatusUnprocessableEntity, ve)
+			return
+		}
+		writeError(w, http.StatusBadRequest, CodeInvalidDeclaration, err.Error(), "", nil)
+		return
+	}
+	if err := h.sets.Upsert(r.Context(), spec); err != nil {
+		h.log("services apply failed: %v", err)
+		// All upsert failures (RBAC forbidden, invalid CR, env-not-found, or a
+		// transport error) surface as 502: the sidecar could not apply the
+		// ServiceSet on the agent's behalf. The error message carries the cause.
+		writeError(w, http.StatusBadGateway, CodeServiceSetUpsertFailed, err.Error(), "", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, ServicesApplyResponse{
+		Environment: h.env.Name,
+		Services:    len(spec.Services),
+		Runtimes:    len(spec.Runtimes),
+		Applied:     true,
+	})
 }
 
 func writeDecodeErr(w http.ResponseWriter, err error) {

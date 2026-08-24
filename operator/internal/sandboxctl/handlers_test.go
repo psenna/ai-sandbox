@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
 )
 
@@ -80,7 +83,7 @@ func newTestServer(t *testing.T, store *fakeStore, poll *Poller) *httptest.Serve
 	}
 	env := EnvironmentRef{Name: "test-env", Namespace: "test-ns"}
 	cfg := Config{Listen: "127.0.0.1:0"}
-	srv := NewServer(cfg, store, poll, env, time.Now, nil)
+	srv := NewServer(cfg, store, poll, env, nil, time.Now, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts
@@ -334,5 +337,112 @@ func TestHandleHealthz(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// fakeApplier is a minimal serviceSetApplier double for exercising
+// handleServicesApply without a real client.Client.
+type fakeApplier struct {
+	mu        sync.Mutex
+	got       v1alpha1.ServiceSetSpec
+	upsertErr error
+}
+
+func (f *fakeApplier) Upsert(_ context.Context, s v1alpha1.ServiceSetSpec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.got = s
+	return f.upsertErr
+}
+
+// newServicesTestServer builds a control API server wired with the given
+// serviceSetApplier (the existing newTestServer passes nil for sets, which
+// makes /v1/services 404; this helper lets the apply handler tests exercise
+// the real path).
+func newServicesTestServer(t *testing.T, sets serviceSetApplier) *httptest.Server {
+	t.Helper()
+	store := &fakeStore{}
+	poll := NewPoller(store, time.Second, nil, nil)
+	env := EnvironmentRef{Name: "env-1", Namespace: "ns-1"}
+	srv := NewServer(Config{Listen: "127.0.0.1:0"}, store, poll, env, sets, time.Now, nil)
+	ts := httptest.NewServer(srv.Handler)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestHandleServicesApply_HappyPath(t *testing.T) {
+	applier := &fakeApplier{}
+	ts := newServicesTestServer(t, applier)
+
+	resp := postJSON(t, ts, "/v1/services", ServicesApplyRequest{
+		Services: []v1alpha1.ServiceSpec{{Name: "postgres", Image: "postgres:18"}},
+		Runtimes: []v1alpha1.RuntimeSpec{{Name: "python", Image: "python:3.13"}},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var sr ServicesApplyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !sr.Applied || sr.Environment != "env-1" || sr.Services != 1 || sr.Runtimes != 1 {
+		t.Errorf("response = %+v, want Applied=true env=env-1 services=1 runtimes=1", sr)
+	}
+	applier.mu.Lock()
+	defer applier.mu.Unlock()
+	if applier.got.EnvironmentName != "env-1" {
+		t.Errorf("upserted spec EnvironmentName = %q, want env-1 (server stamps it)", applier.got.EnvironmentName)
+	}
+}
+
+func TestHandleServicesApply_CrossListCollision(t *testing.T) {
+	applier := &fakeApplier{}
+	ts := newServicesTestServer(t, applier)
+
+	resp := postJSON(t, ts, "/v1/services", ServicesApplyRequest{
+		Services: []v1alpha1.ServiceSpec{{Name: "shared", Image: "a"}},
+		Runtimes: []v1alpha1.RuntimeSpec{{Name: "shared", Image: "b"}},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	env := decodeEnvelope(t, resp)
+	if env.Error.Code != CodeDuplicateEntryName {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeDuplicateEntryName)
+	}
+}
+
+func TestHandleServicesApply_UpsertFailureMapsToBadGateway(t *testing.T) {
+	applier := &fakeApplier{upsertErr: apierrors.NewForbidden(
+		schema.GroupResource{Group: "sandbox.psenna.dev", Resource: "servicesets"}, "env-1", fmt.Errorf("denied"))}
+	ts := newServicesTestServer(t, applier)
+
+	resp := postJSON(t, ts, "/v1/services", ServicesApplyRequest{
+		Services: []v1alpha1.ServiceSpec{{Name: "postgres", Image: "postgres:18"}},
+	})
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	env := decodeEnvelope(t, resp)
+	if env.Error.Code != CodeServiceSetUpsertFailed {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeServiceSetUpsertFailed)
+	}
+}
+
+func TestHandleServicesApply_NotEnabledReturns404(t *testing.T) {
+	// nil sets => services not enabled (non-k8s-native env). The handler
+	// returns a clean 404, not a confusing 502 RBAC message.
+	store := &fakeStore{}
+	ts := newTestServer(t, store, nil)
+
+	resp := postJSON(t, ts, "/v1/services", ServicesApplyRequest{
+		Services: []v1alpha1.ServiceSpec{{Name: "postgres", Image: "postgres:18"}},
+	})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	env := decodeEnvelope(t, resp)
+	if env.Error.Code != CodeNotFound {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeNotFound)
 	}
 }

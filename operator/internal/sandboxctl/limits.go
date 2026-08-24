@@ -68,12 +68,15 @@ const (
 	progressBurst      = 10
 	statusRatePerSec   = 5.0
 	statusBurst        = 20
+	servicesRatePerSec = 0.5 // apply is rare (on edits); allow a burst then throttle
+	servicesBurst      = 3
 )
 
 // payload size limits (bytes).
 const (
 	maxWaitDoneBodyBytes = 16 << 10
 	maxProgressBodyBytes = 4 << 10
+	maxServicesBodyBytes = 256 << 10 // 256KiB: a declaration with many services/runtimes
 )
 
 // recoverer converts a panic in a handler into a 500, so a bug in one

@@ -1,6 +1,10 @@
 package sandboxctl
 
-import "time"
+import (
+	"time"
+
+	"github.com/psenna/ai-sandbox/operator/api/v1alpha1"
+)
 
 // ErrorEnvelope is the uniform, actionable error shape returned by every
 // non-2xx response.
@@ -115,4 +119,20 @@ type StatusResponse struct {
 // HealthzResponse is the GET /healthz response body.
 type HealthzResponse struct {
 	Status string `json:"status"`
+}
+
+// ServicesApplyRequest is the POST /v1/services body: the declaration
+// (services + runtimes). EnvironmentName is NOT sent -- the server stamps it
+// from its own identity, so a declaration is portable across environments.
+type ServicesApplyRequest struct {
+	Services []v1alpha1.ServiceSpec `json:"services,omitempty"`
+	Runtimes []v1alpha1.RuntimeSpec `json:"runtimes,omitempty"`
+}
+
+// ServicesApplyResponse is the POST /v1/services 200/201 body.
+type ServicesApplyResponse struct {
+	Environment string `json:"environment"`
+	Services    int    `json:"services"`
+	Runtimes    int    `json:"runtimes"`
+	Applied     bool   `json:"applied"`
 }
