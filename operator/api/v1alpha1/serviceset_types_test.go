@@ -13,11 +13,11 @@ func TestServiceSet_RoundTripsJSON(t *testing.T) {
 		Spec: ServiceSetSpec{
 			EnvironmentName: "env-1",
 			Services: []ServiceSpec{{
-				Name:  "postgres",
-				Image: "postgres:18-alpine",
-				Ports: []int32{5432},
-				Env:   map[string]string{"POSTGRES_USER": "e2e"},
-				Storage: &ServiceStorageSpec{Size: "1Gi", MountPath: "/var/lib/postgresql/data"},
+				Name:        "postgres",
+				Image:       "postgres:18-alpine",
+				Ports:       []int32{5432},
+				Env:         map[string]string{"POSTGRES_USER": "e2e"},
+				Storage:     &ServiceStorageSpec{Size: "1Gi", MountPath: "/var/lib/postgresql/data"},
 				Healthcheck: HealthcheckSpec{Exec: []string{"pg_isready"}, Interval: "5s"},
 			}},
 			Runtimes: []RuntimeSpec{{

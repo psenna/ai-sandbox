@@ -36,20 +36,20 @@ type ServiceSpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	Name string `json:"name"`
 	// +kubebuilder:validation:Required
-	Image string `json:"image"`
-	Ports []int32 `json:"ports,omitempty"`
-	Env map[string]string `json:"env,omitempty"`
+	Image string            `json:"image"`
+	Ports []int32           `json:"ports,omitempty"`
+	Env   map[string]string `json:"env,omitempty"`
 	// envFromSecret references a Secret name whose keys become env vars.
-	EnvFromSecret *string `json:"envFromSecret,omitempty"`
-	Command []string `json:"command,omitempty"`
-	Args []string `json:"args,omitempty"`
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
-	RunAsUser *int64 `json:"runAsUser,omitempty"`
-	Healthcheck HealthcheckSpec `json:"healthcheck,omitempty"`
+	EnvFromSecret   *string                     `json:"envFromSecret,omitempty"`
+	Command         []string                    `json:"command,omitempty"`
+	Args            []string                    `json:"args,omitempty"`
+	Resources       corev1.ResourceRequirements `json:"resources,omitempty"`
+	ImagePullPolicy corev1.PullPolicy           `json:"imagePullPolicy,omitempty"`
+	RunAsUser       *int64                      `json:"runAsUser,omitempty"`
+	Healthcheck     HealthcheckSpec             `json:"healthcheck,omitempty"`
 	// dependsOn names other service/runtime entries that must be Ready first.
-	DependsOn []string `json:"dependsOn,omitempty"`
-	Storage *ServiceStorageSpec `json:"storage,omitempty"`
+	DependsOn []string            `json:"dependsOn,omitempty"`
+	Storage   *ServiceStorageSpec `json:"storage,omitempty"`
 	// expose, if set, publishes the first port as a NodePort on this host port.
 	Expose *int32 `json:"expose,omitempty"`
 }
@@ -65,28 +65,28 @@ type RuntimeSpec struct {
 	// mountWorkspace mounts the shared workspace PVC at /workspace. Defaults to
 	// true when omitted.
 	// +kubebuilder:default=true
-	MountWorkspace *bool `json:"mountWorkspace,omitempty"`
-	Command []string `json:"command,omitempty"`
-	Args []string `json:"args,omitempty"`
-	Env map[string]string `json:"env,omitempty"`
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-	RunAsUser *int64 `json:"runAsUser,omitempty"`
-	Healthcheck HealthcheckSpec `json:"healthcheck,omitempty"`
-	DependsOn []string `json:"dependsOn,omitempty"`
+	MountWorkspace *bool                       `json:"mountWorkspace,omitempty"`
+	Command        []string                    `json:"command,omitempty"`
+	Args           []string                    `json:"args,omitempty"`
+	Env            map[string]string           `json:"env,omitempty"`
+	Resources      corev1.ResourceRequirements `json:"resources,omitempty"`
+	RunAsUser      *int64                      `json:"runAsUser,omitempty"`
+	Healthcheck    HealthcheckSpec             `json:"healthcheck,omitempty"`
+	DependsOn      []string                    `json:"dependsOn,omitempty"`
 }
 
 // HealthcheckSpec maps to a k8s readinessProbe. Exactly one of exec/http/tcp.
 type HealthcheckSpec struct {
-	Exec []string `json:"exec,omitempty"`
+	Exec []string   `json:"exec,omitempty"`
 	HTTP *HTTPProbe `json:"http,omitempty"`
-	TCP *TCPProbe `json:"tcp,omitempty"`
+	TCP  *TCPProbe  `json:"tcp,omitempty"`
 	// interval defaults to 5s when empty.
 	Interval string `json:"interval,omitempty"`
 }
 
 type HTTPProbe struct {
 	Path string `json:"path"`
-	Port int32 `json:"port"`
+	Port int32  `json:"port"`
 }
 
 type TCPProbe struct {
@@ -108,8 +108,8 @@ type ServiceStorageSpec struct {
 type EntryStatus struct {
 	Name string `json:"name"`
 	// kind is "service" or "runtime".
-	Kind string `json:"kind"`
-	Ready bool `json:"ready"`
+	Kind   string `json:"kind"`
+	Ready  bool   `json:"ready"`
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -120,7 +120,7 @@ type ServiceSetStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	Entries []EntryStatus `json:"entries,omitempty"`
+	Entries    []EntryStatus      `json:"entries,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -131,15 +131,15 @@ type ServiceSetStatus struct {
 type ServiceSet struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec   ServiceSetSpec   `json:"spec,omitempty"`
-	Status ServiceSetStatus `json:"status,omitempty"`
+	Spec              ServiceSetSpec   `json:"spec,omitempty"`
+	Status            ServiceSetStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 type ServiceSetList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items []ServiceSet `json:"items"`
+	Items           []ServiceSet `json:"items"`
 }
 
 func init() {
