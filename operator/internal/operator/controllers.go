@@ -42,6 +42,11 @@ func SetupControllers(mgr manager.Manager, cfg config.Config) error {
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
+	// ServiceSetReconciler reconciles a ServiceSet to native Pods/Services/PVCs
+	// (the k8s-native engine). No-op body for now; later tasks fill the body.
+	if err := (&controller.ServiceSetReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		return err
+	}
 	// The slot scheduler is a Runnable, not a controller: admission compares
 	// every environment in the watch scope, which no per-object Reconcile
 	// can do deterministically (#20). mgr.Add places it in the
