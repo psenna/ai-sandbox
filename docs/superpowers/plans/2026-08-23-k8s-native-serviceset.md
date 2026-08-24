@@ -13,9 +13,9 @@
 Copied verbatim from the design spec (`docs/superpowers/specs/2026-08-23-k8s-native-execution-model-design.md`) and the codebase conventions the exploration mapped:
 
 - The operator's API group/version is `sandbox.psenna.dev/v1alpha1`; new types go in `operator/api/v1alpha1/` and self-register via `func init() { SchemeBuilder.Register(&T{}, &TList{}) }`. `operator/internal/operator/manager.go:Scheme()` already calls `sandboxv1alpha1.AddToScheme`, so no scheme change is needed.
-- Generated artifacts are produced by the existing Make targets and are committed: `make generate` (deepcopy → `operator/api/v1alpha1/zz_generated.deepcopy.go`), `make manifests` (CRD → `operator/config/crd/bases/`, RBAC → `operator/config/rbac/manager-role.yaml`), `make helm-crds` (copy CRDs into `operator/deploy/helm/ai-sandbox-operator/crds/`). A new CRD file must ALSO be appended to the `CRD_FILES` Makefile variable so `make crd-docs` regenerates `operator/docs/crd-reference.md`.
+- Generated artifacts are produced by the existing Make targets and are committed: `make generate` (deepcopy → `operator/api/v1alpha1/zz_generated.deepcopy.go`), `make manifests` (CRD → `operator/config/crd/bases/`, RBAC → `operator/config/rbac/role.yaml`), `make helm-crds` (copy CRDs into `operator/deploy/helm/ai-sandbox-operator/crds/`). A new CRD file must ALSO be appended to the `CRD_FILES` Makefile variable so `make crd-docs` regenerates `operator/docs/crd-reference.md`.
 - envtest loads CRDs from `operator/config/crd/bases/` (`operator/internal/controller/suite_test.go` `CRDDirectoryPaths`), so `make manifests` must run before envtest tests see the new CRD.
-- **Local (non-Docker) Make invocations:** the targets `generate`, `manifests`, `crd-docs`, `crd-docs-check`, `envtest-assets`, and `test-envtest` are wrapped in `$(DOCKER_RUN)`, which by default shells out to Docker and requires `CURDIR` under `SHARED_DIR`. For a local run on the host (no Docker), pass `IN_CONTAINER=1` — it empties `DOCKER_RUN` so the command runs with the host Go toolchain directly. So write e.g. `make IN_CONTAINER=1 generate`, `make IN_CONTAINER=1 manifests`, `make IN_CONTAINER=1 crd-docs`, `make IN_CONTAINER=1 envtest-assets`, `make IN_CONTAINER=1 test-envtest`, `make IN_CONTAINER=1 crd-docs-check`. The `helm-crds` and `helm-crds-check` targets are plain `cp`/`diff` (no `DOCKER_RUN`) and need NO flag. Run all `make` targets from the `operator/` directory. Plain `go test ./api/v1alpha1/...` (the unit test for the types) runs directly with no Make wrapper.
+- **Local (non-Docker) Make invocations:** pass `IN_CONTAINER=1` to EVERY `make` target run locally. The Makefile has a parse-time guard that errors (`CURDIR is not under SHARED_DIR -- set SHARED_DIR=, or run with IN_CONTAINER=1`) for any target when `IN_CONTAINER` is unset, even plain-`cp` targets like `helm-crds`/`helm-crds-check` that do not otherwise use `$(DOCKER_RUN)`. With `IN_CONTAINER=1`, `DOCKER_RUN` is emptied so `generate`, `manifests`, `crd-docs`, `crd-docs-check`, `envtest-assets`, `test-envtest` run with the host Go toolchain, and `helm-crds`/`helm-crds-check` still run as plain `cp`/`diff`. So always write e.g. `make IN_CONTAINER=1 generate`, `make IN_CONTAINER=1 helm-crds`, `make IN_CONTAINER=1 test-envtest`. Run all `make` targets from the `operator/` directory. Plain `go test ./api/v1alpha1/...` (the unit test for the types) runs directly with no Make wrapper.
 - Controllers live in `operator/internal/controller/` with package-level `+kubebuilder:rbac:` markers, a `Reconcile(ctx, req) (ctrl.Result, error)` method, and a `SetupWithManager`; wired in `operator/internal/operator/controllers.go:SetupControllers`.
 - envtest runs no kube-controller-manager/kubelet: PVCs do not bind and Pods do not run. Tests simulate Pod readiness by patching `pod.Status.Conditions` and PVCs by creating them as fixtures. The controller must read readiness from `pod.Status.Conditions` (PodReady), not from pod `Phase`.
 - The agent holds no k8s credential and never creates the `ServiceSet` directly — that is Plan 2's control-API surface. Plan 1 only defines the CRD + controller and tests them via envtest fixtures.
@@ -34,7 +34,7 @@ Copied verbatim from the design spec (`docs/superpowers/specs/2026-08-23-k8s-nat
 **Modify (generated — via Make targets, then committed):**
 - `operator/api/v1alpha1/zz_generated.deepcopy.go` — `make generate`.
 - `operator/config/crd/bases/sandbox.psenna.dev_servicesets.yaml` — `make manifests`.
-- `operator/config/rbac/manager-role.yaml` — `make manifests` (adds the ServiceSet RBAC rules from the markers).
+- `operator/config/rbac/role.yaml` — `make manifests` (adds the ServiceSet RBAC rules from the markers).
 - `operator/deploy/helm/ai-sandbox-operator/crds/sandbox.psenna.dev_servicesets.yaml` — `make helm-crds`.
 - `operator/docs/crd-reference.md` — `make crd-docs` (after appending to `CRD_FILES`).
 - `operator/Makefile` — append `sandbox.psenna.dev_servicesets.yaml` to the `CRD_FILES` variable.
@@ -53,7 +53,7 @@ Copied verbatim from the design spec (`docs/superpowers/specs/2026-08-23-k8s-nat
 
 **Files:**
 - Create: `operator/api/v1alpha1/serviceset_types.go`
-- Modify: `operator/api/v1alpha1/zz_generated.deepcopy.go` (`make generate`), `operator/config/crd/bases/sandbox.psenna.dev_servicesets.yaml` (`make manifests`), `operator/config/rbac/manager-role.yaml` (`make manifests`), `operator/deploy/helm/ai-sandbox-operator/crds/sandbox.psenna.dev_servicesets.yaml` (`make helm-crds`), `operator/docs/crd-reference.md` (`make crd-docs`), `operator/Makefile` (`CRD_FILES`)
+- Modify: `operator/api/v1alpha1/zz_generated.deepcopy.go` (`make generate`), `operator/config/crd/bases/sandbox.psenna.dev_servicesets.yaml` (`make manifests`), `operator/config/rbac/role.yaml` (`make manifests`), `operator/deploy/helm/ai-sandbox-operator/crds/sandbox.psenna.dev_servicesets.yaml` (`make helm-crds`), `operator/docs/crd-reference.md` (`make crd-docs`), `operator/Makefile` (`CRD_FILES`)
 - Test: `operator/api/v1alpha1/serviceset_types_test.go`
 
 **Interfaces:**
@@ -268,7 +268,7 @@ func TestServiceSet_RegisteredInScheme(t *testing.T) {
 	if err := AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
-	if !scheme.RecognizesGVK(GroupVersion.WithKind("ServiceSet")) {
+	if !scheme.Recognizes(GroupVersion.WithKind("ServiceSet")) {
 		t.Fatal("ServiceSet not registered; check the init() in serviceset_types.go")
 	}
 }
@@ -287,15 +287,15 @@ Verify the generated artifacts exist:
 ```sh
 test -f api/v1alpha1/zz_generated.deepcopy.go && grep -q "func (in \*ServiceSet) DeepCopy" api/v1alpha1/zz_generated.deepcopy.go
 test -f config/crd/bases/sandbox.psenna.dev_servicesets.yaml
-grep -q "servicesets" config/rbac/manager-role.yaml
 ```
+(There is no `servicesets` RBAC yet — RBAC rules are generated from `+kubebuilder:rbac` markers on the `ServiceSetReconciler`, which does not exist until Task 2. `make manifests` regenerates `config/rbac/role.yaml` but leaves it byte-identical at Task 1. The `servicesets` RBAC verification happens in Task 2.)
 
 - [ ] **Step 4: Copy CRD into the Helm chart + regenerate CRD docs**
 
 Append the new CRD filename to `CRD_FILES` in `operator/Makefile` (the assignment at Makefile:315 is `CRD_FILES ?= config/crd/bases/sandbox.psenna.dev_sandboxclasses.yaml \ config/crd/bases/sandbox.psenna.dev_sandboxenvironments.yaml` — append ` \\\n             config/crd/bases/sandbox.psenna.dev_servicesets.yaml` to it). Then:
 
 ```sh
-cd operator && make helm-crds && make IN_CONTAINER=1 crd-docs
+cd operator && make IN_CONTAINER=1 helm-crds && make IN_CONTAINER=1 crd-docs
 ```
 
 Verify:
@@ -306,7 +306,7 @@ grep -q "ServiceSet" docs/crd-reference.md
 
 Run `make helm-crds-check` to confirm no drift:
 ```sh
-cd operator && make helm-crds-check
+cd operator && make IN_CONTAINER=1 helm-crds-check
 ```
 
 - [ ] **Step 5: Commit**
@@ -314,10 +314,11 @@ cd operator && make helm-crds-check
 ```sh
 git add api/v1alpha1/serviceset_types.go api/v1alpha1/serviceset_types_test.go \
   api/v1alpha1/zz_generated.deepcopy.go config/crd/bases/sandbox.psenna.dev_servicesets.yaml \
-  config/rbac/manager-role.yaml deploy/helm/ai-sandbox-operator/crds/sandbox.psenna.dev_servicesets.yaml \
+  deploy/helm/ai-sandbox-operator/crds/sandbox.psenna.dev_servicesets.yaml \
   docs/crd-reference.md Makefile
 git commit -m "feat(api): add ServiceSet CRD types for declared services/runtimes"
 ```
+(Do NOT add `config/rbac/role.yaml` — `make manifests` regenerates it but leaves it byte-identical at Task 1, so there is no RBAC change to commit. The `servicesets` RBAC rules appear in Task 2 once the `ServiceSetReconciler` and its `+kubebuilder:rbac` markers exist.)
 
 ---
 
@@ -400,6 +401,11 @@ if err := (&controller.ServiceSetReconciler{Client: mgr.GetClient()}).SetupWithM
 cd operator && make IN_CONTAINER=1 manifests
 ```
 
+Now the `+kubebuilder:rbac:...,resources=servicesets,...` markers on `ServiceSetReconciler` generate real RBAC rules. Verify them (this is the check deferred from Task 1):
+```sh
+grep -q "servicesets" config/rbac/role.yaml && grep -q "pods" config/rbac/role.yaml
+```
+
 Create `operator/internal/controller/serviceset_controller_test.go`:
 
 ```go
@@ -467,7 +473,7 @@ If envtest fails to find the CRD, confirm `config/crd/bases/sandbox.psenna.dev_s
 
 ```sh
 git add internal/controller/serviceset_controller.go internal/controller/serviceset_controller_test.go \
-  internal/operator/controllers.go config/rbac/manager-role.yaml
+  internal/operator/controllers.go config/rbac/role.yaml
 git commit -m "feat(controller): add ServiceSetReconciler skeleton wired into SetupControllers"
 ```
 
@@ -1471,7 +1477,7 @@ Expected: PASS, no failures (existing `sandboxenvironment` tests unaffected — 
 - [ ] **Step 2: Helm CRD + RBAC + crd-doc drift checks**
 
 ```sh
-cd operator && make helm-crds-check && make IN_CONTAINER=1 manifests && git diff --exit-code config/rbac/manager-role.yaml && make IN_CONTAINER=1 crd-docs-check
+cd operator && make IN_CONTAINER=1 helm-crds-check && make IN_CONTAINER=1 manifests && git diff --exit-code config/rbac/role.yaml && make IN_CONTAINER=1 crd-docs-check
 ```
 Expected: no drift. If `make IN_CONTAINER=1 manifests` after the RBAC additions in Task 2 produced changes that weren't committed, commit them now.
 
@@ -1504,7 +1510,7 @@ drives `ServiceSet`s is documented in Plan 2.
 - [ ] **Step 4: Commit**
 
 ```sh
-git add docs/engines.md config/rbac/manager-role.yaml
+git add docs/engines.md config/rbac/role.yaml
 git commit -m "docs: document the ServiceSet controller (k8s-native foundation)"
 ```
 
