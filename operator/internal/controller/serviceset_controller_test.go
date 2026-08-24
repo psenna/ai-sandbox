@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -143,4 +146,53 @@ func ownedBy(obj client.Object, owner *sandboxv1alpha1.ServiceSet) bool {
 		}
 	}
 	return false
+}
+
+func TestServiceSetReconciler_CreatesRuntimePodWithWorkspace(t *testing.T) {
+	// The workspace PVC is created by the environment controller in production;
+	// in envtest pre-create it as a fixture so the runtime pod's volume resolves.
+	ws := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "env-rt-workspace", Namespace: "default"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+		},
+	}
+	if err := k8s.Create(ctx, ws); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create workspace pvc: %v", err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(ctx, ws) })
+
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-rt",
+		Runtimes: []sandboxv1alpha1.RuntimeSpec{{
+			Name:    "python",
+			Image:   "python:3.13-slim",
+			Command: []string{"sleep", "infinity"},
+		}},
+	}}
+	ss.Name, ss.Namespace = "set-rt", "default"
+	mustCreateServiceSet(t, ss)
+
+	r := newServiceSetReconciler(t)
+	if _, err := reconcileServiceSetOnce(t, r, types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var pod corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "python", Namespace: "default"}, &pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if !hasVolumeMount(pod, "env-rt-workspace", "/workspace") {
+		t.Fatal("runtime pod missing workspace PVC mount env-rt-workspace at /workspace")
+	}
+	if pod.Spec.Containers[0].Image != "python:3.13-slim" {
+		t.Fatalf("runtime image = %q", pod.Spec.Containers[0].Image)
+	}
+	if len(pod.Spec.Containers[0].Command) == 0 || pod.Spec.Containers[0].Command[0] != "sleep" {
+		t.Fatalf("runtime command = %+v", pod.Spec.Containers[0].Command)
+	}
+	if !ownedBy(&pod, ss) {
+		t.Fatal("runtime pod not owned by ServiceSet")
+	}
 }

@@ -54,8 +54,30 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 	}
-	// Runtimes are reconciled in Task 4.
+	for i := range ss.Spec.Runtimes {
+		if err := r.reconcileRuntime(ctx, &ss, &ss.Spec.Runtimes[i]); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	return ctrl.Result{}, nil
+}
+
+func (r *ServiceSetReconciler) reconcileRuntime(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, rt *sandboxv1alpha1.RuntimeSpec) error {
+	labels := entryLabels(ss, rt.Name, "runtime")
+	mount := true
+	if rt.MountWorkspace != nil {
+		mount = *rt.MountWorkspace
+	}
+	command := rt.Command
+	if len(command) == 0 {
+		command = []string{"sleep", "infinity"}
+	}
+	var mounts []corev1.VolumeMount
+	if mount {
+		mounts = []corev1.VolumeMount{{Name: ss.Spec.EnvironmentName + "-workspace", MountPath: "/workspace"}}
+	}
+	return r.ensurePod(ctx, ss, rt.Name, rt.Image, command, rt.Args, rt.Env, nil,
+		rt.Resources, "", rt.RunAsUser, rt.Healthcheck, labels, mounts, nil)
 }
 
 func (r *ServiceSetReconciler) reconcileService(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, s *sandboxv1alpha1.ServiceSpec) error {
