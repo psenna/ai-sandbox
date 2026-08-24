@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -586,6 +587,45 @@ func (h *Harness) applyServices(ctx context.Context, ns, envName, servicesYAML s
 // the isolation specs (Restricted egress blocks it, Open egress allows it).
 func (h *Harness) brokerURL() string {
 	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8080", h.Cfg.ServicesNamespace)
+}
+
+// readTeardownMarker reads the env's teardown marker JSON from the agent
+// container's workspace. The marker is written by the snapshot freeze flow
+// (sandboxctl snapshot.go -> WriteMarkers) into <workspace>/.sandbox/
+// last-freeze.json DURING Freezing, before the workspace is archived. The agent
+// pod is alive throughout Freezing, so the marker is readable once written; the
+// write races the test's read, so poll (Eventually) rather than reading once.
+// Returns the parsed marker; fails the spec if it never appears or is unparseable.
+func (h *Harness) readTeardownMarker(ctx context.Context, ns, envName string) TeardownMarkerJSON {
+	podName := render.ChildNames(envName).Pod
+	path := render.WorkspaceMountPath + "/.sandbox/last-freeze.json"
+	var marker TeardownMarkerJSON
+	gomega.Eventually(func() error {
+		stdout, _, err := h.Exec(ctx, ns, podName, render.AgentContainerName, "cat", path)
+		if err != nil {
+			return err // marker not written yet (or pod gone) -- keep polling
+		}
+		if err := json.Unmarshal([]byte(stdout), &marker); err != nil {
+			return fmt.Errorf("parsing teardown marker JSON: %w", err)
+		}
+		return nil
+	}, h.Cfg.PodTimeout, h.Cfg.Poll).Should(gomega.Succeed(),
+		"teardown marker %s never appeared in the agent workspace", path)
+	return marker
+}
+
+// TeardownMarkerJSON is the e2e-side mirror of sandboxctl.TeardownMarker's
+// JSON shape, capturing only the fields the specs assert. Defined here -- not
+// imported from internal/sandboxctl -- so the e2e module has no dependency on
+// the sidecar's internal package. json.Unmarshal ignores the extra fields
+// (schemaVersion, seq, frozenAt, trigger, reason, preserved, snapshotURI,
+// destroyed.imageLayerCache, destroyed.notes).
+type TeardownMarkerJSON struct {
+	Engine    string `json:"engine"`
+	Destroyed struct {
+		Containers []string `json:"containers"`
+		Pods       []string `json:"pods"`
+	} `json:"destroyed"`
 }
 
 // GetEnv fetches key's SandboxEnvironment, failing the spec if it cannot be

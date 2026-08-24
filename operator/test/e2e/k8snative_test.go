@@ -336,16 +336,59 @@ runtimes:
 		// Assert the equivalent fields round-trip through the real binary.
 		// Input uses dependsOn (camelCase); compose emits depends_on (snake).
 		for _, want := range []string{
-			"db:",                   // service name
+			"db:", // service name
 			"postgres:17-alpine",
 			"5432",
 			"POSTGRES_PASSWORD: secret",
-			"app:",                  // runtime name
+			"app:", // runtime name
 			"python:3.11-alpine",
-			"depends_on:",           // dependsOn -> depends_on
+			"depends_on:", // dependsOn -> depends_on
 		} {
 			Expect(stdout).To(ContainSubstring(want),
 				"compose output missing %q:\n%s", want, stdout)
 		}
+	})
+
+	// Snapshot/teardown: freeze archives the workspace PVC; the teardown marker
+	// lists the ServiceSet's pods in Destroyed.Pods (the new field, back-compatible
+	// with Destroyed.Containers, which is empty for k8s-native -- there is no
+	// in-pod container engine to tear down). The k8s-native teardown is LIST-ONLY
+	// (reads the ServiceSet's Status.Entries, does NOT delete pods/PVCs), so the
+	// marker honestly reports the pods present at freeze. The marker is written
+	// by the snapshot freeze flow into <workspace>/.sandbox/last-freeze.json
+	// DURING Freezing (before archive); read it from the agent's workspace while
+	// the pod is still alive.
+	It("writes Destroyed.Pods and archives the workspace", func() {
+		class := h.CreateClass(ctx, WithEngine(sandboxv1alpha1.EngineTypeK8sNative))
+		// Apply services+runtimes so the ServiceSet has pods, then declare a
+		// 1h NotBefore wait to trigger Freezing. Keep running (sleep 300) so the
+		// workspace persists for the test to read the marker during Freezing.
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			`SCRIPT:sandbox-services-apply {"services":[{"name":"db","image":"postgres:17-alpine","ports":[5432],"env":{"POSTGRES_PASSWORD":"secret"}}],"runtimes":[{"name":"probe","image":"alpine:3","command":["sleep","infinity"]}]}`,
+			"SCRIPT:sleep 15",
+			`SCRIPT:sandbox-wait {"type":"NotBefore","reason":"e2e freeze","params":{"duration":"1h"}}`,
+			"SCRIPT:sleep 300",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseFreezing, h.Cfg.PhaseTimeout)
+
+		// The ServiceSet has the db + probe pods; their names == entry names.
+		// Asserting this before reading the marker guards that the entries the
+		// list-only teardown reads are populated.
+		entries := h.ServiceSetEntries(ctx, ns, env.Name)
+		Expect(entries).To(ContainElements("db", "probe"),
+			"ServiceSet should list db + probe entries before freeze, got %v", entries)
+
+		// The teardown marker is written during Freezing, before the workspace is
+		// archived. Read it from the agent container's workspace (polls for it).
+		marker := h.readTeardownMarker(ctx, ns, env.Name)
+		Expect(marker.Engine).To(Equal("k8s-native"),
+			"marker engine should be k8s-native, got %q", marker.Engine)
+		// Destroyed.Pods lists the ServiceSet's pods (db + probe), sorted.
+		Expect(marker.Destroyed.Pods).To(ConsistOf("db", "probe"),
+			"Destroyed.Pods should list db + probe, got %v", marker.Destroyed.Pods)
+		// Back-compatible: Containers is empty for k8s-native (no in-pod engine).
+		Expect(marker.Destroyed.Containers).To(BeEmpty(),
+			"Destroyed.Containers should be empty for k8s-native, got %v", marker.Destroyed.Containers)
 	})
 })
