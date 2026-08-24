@@ -290,4 +290,62 @@ runtimes:
 		Expect(err).NotTo(HaveOccurred(),
 			"agent container could not reach its own control API on loopback: %s", stderr)
 	})
+
+	// Compose: `sandboxctl services compose` emits a docker-compose.yml
+	// equivalent to the declaration (matching image/ports/env/depends_on).
+	// Compose's pure render is unit-tested (Plan 2 Task 3); this spec exercises
+	// the real binary path -- flag parsing, file read, stdout -- end-to-end.
+	// The sidecar is distroless (no shell), so the declaration is written to the
+	// shared workspace volume via the agent's shell and read by the sidecar CLI
+	// from the same mounted path (same technique as applyServices). The
+	// declaration omits healthcheck.tcp -- tcp has no compose equivalent
+	// (compose only translates healthcheck.exec), so it would not round-trip.
+	It("renders a docker-compose.yml equivalent to the declaration", func() {
+		class := h.CreateClass(ctx, WithEngine(sandboxv1alpha1.EngineTypeK8sNative))
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 300"))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseRunning, h.Cfg.PhaseTimeout)
+
+		servicesYAML := `services:
+  - name: db
+    image: postgres:17-alpine
+    ports: [5432]
+    env:
+      POSTGRES_PASSWORD: secret
+runtimes:
+  - name: app
+    image: python:3.11-alpine
+    command: ["sleep", "infinity"]
+    dependsOn: [db]
+`
+		podName := render.ChildNames(env.Name).Pod
+		path := render.WorkspaceMountPath + "/.e2e-compose.yaml"
+		// Write via the agent's shell to the shared workspace volume (the
+		// distroless sidecar has no shell/cat to receive a heredoc).
+		_, stderr, err := h.Exec(ctx, ns, podName, render.AgentContainerName, "sh", "-c",
+			"cat > "+path+" <<'E2E_YAML'\n"+servicesYAML+"\nE2E_YAML")
+		Expect(err).NotTo(HaveOccurred(), "writing compose.yaml into agent: %s", stderr)
+
+		// Run the pure renderer in the sidecar; it reads the file from the
+		// shared volume and writes docker-compose.yml to stdout.
+		stdout, stderr, err := h.Exec(ctx, ns, podName, render.SidecarContainerName,
+			"/sandboxctl", "services", "compose", path)
+		Expect(err).NotTo(HaveOccurred(),
+			"sandboxctl services compose failed: stderr=%q", stderr)
+
+		// Assert the equivalent fields round-trip through the real binary.
+		// Input uses dependsOn (camelCase); compose emits depends_on (snake).
+		for _, want := range []string{
+			"db:",                   // service name
+			"postgres:17-alpine",
+			"5432",
+			"POSTGRES_PASSWORD: secret",
+			"app:",                  // runtime name
+			"python:3.11-alpine",
+			"depends_on:",           // dependsOn -> depends_on
+		} {
+			Expect(stdout).To(ContainSubstring(want),
+				"compose output missing %q:\n%s", want, stdout)
+		}
+	})
 })
