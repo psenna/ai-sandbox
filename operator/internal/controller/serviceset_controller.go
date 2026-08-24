@@ -316,9 +316,19 @@ func pvcVolumeMode() *corev1.PersistentVolumeMode {
 
 func (r *ServiceSetReconciler) ensureService(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, s *sandboxv1alpha1.ServiceSpec, labels map[string]string) error {
 	// A Service with no ports has nothing to expose; skip creation (a portless
-	// ClusterIP Service is rejected by the API server anyway).
+	// ClusterIP Service is rejected by the API server anyway). If a Service
+	// exists from a prior spec that had ports, remove it now — pruneChildren
+	// won't, because the entry is still in the spec (labelEntry still in `want`).
+	// Tolerate IsNotFound.
 	if len(s.Ports) == 0 {
-		return nil
+		var existing corev1.Service
+		if err := r.Get(ctx, types.NamespacedName{Name: s.Name, Namespace: ss.Namespace}, &existing); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		return r.Delete(ctx, &existing)
 	}
 	var existing corev1.Service
 	key := types.NamespacedName{Name: s.Name, Namespace: ss.Namespace}

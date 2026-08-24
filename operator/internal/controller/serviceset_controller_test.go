@@ -428,3 +428,42 @@ func TestServiceSetReconciler_DiamondDependsOnNotACycle(t *testing.T) {
 		assertEntryReady(t, key, n, true)
 	}
 }
+
+func TestServiceSetReconciler_PortlessAfterPortsPrunesService(t *testing.T) {
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-stalesvc",
+		Services: []sandboxv1alpha1.ServiceSpec{
+			{Name: "web", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, Ports: []int32{8080}},
+		},
+	}}
+	ss.Name, ss.Namespace = "set-stalesvc", "default"
+	mustCreateServiceSet(t, ss)
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+	reconcileServiceSetOnce(t, r, key)
+
+	// Service exists (had ports).
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "web", Namespace: "default"}, &corev1.Service{}); err != nil {
+		t.Fatalf("web Service should exist: %v", err)
+	}
+
+	// Remove all ports and re-reconcile. Re-fetch first: the reconcile above
+	// wrote .status + ran pruneChildren, bumping ss.resourceVersion, so a
+	// stale-RV Update would 409-conflict.
+	if err := k8s.Get(ctx, key, ss); err != nil {
+		t.Fatal(err)
+	}
+	ss.Spec.Services[0].Ports = nil
+	if err := k8s.Update(ctx, ss); err != nil {
+		t.Fatal(err)
+	}
+	reconcileServiceSetOnce(t, r, key)
+
+	// Stale Service pruned; Pod still present (portless service still gets a Pod).
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "web", Namespace: "default"}, &corev1.Service{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("web Service should be pruned after ports removed, got err=%v", err)
+	}
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "web", Namespace: "default"}, &corev1.Pod{}); err != nil {
+		t.Fatalf("web Pod should remain: %v", err)
+	}
+}
