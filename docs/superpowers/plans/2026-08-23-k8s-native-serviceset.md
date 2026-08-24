@@ -714,6 +714,13 @@ func pvcVolumeMode() *corev1.PersistentVolumeMode {
 }
 
 func (r *ServiceSetReconciler) ensureService(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, s *sandboxv1alpha1.ServiceSpec, labels map[string]string) error {
+	// A Service with no ports has nothing to expose; skip creation (a portless
+	// ClusterIP Service is rejected by the API server: spec.ports: Required value).
+	// `Ports` is optional in the CRD (no validation marker), so a portless
+	// ServiceSpec is valid input — the Pod is still created by reconcileService.
+	if len(s.Ports) == 0 {
+		return nil
+	}
 	var existing corev1.Service
 	key := types.NamespacedName{Name: s.Name, Namespace: ss.Namespace}
 	err := r.Get(ctx, key, &existing)
