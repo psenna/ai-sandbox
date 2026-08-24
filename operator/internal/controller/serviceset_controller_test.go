@@ -281,3 +281,63 @@ func assertReadyCondition(t *testing.T, key types.NamespacedName, want metav1.Co
 		t.Fatalf("Ready condition = %s, want %s (reason=%s)", c.Status, want, c.Reason)
 	}
 }
+
+func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-recreate",
+		Services: []sandboxv1alpha1.ServiceSpec{{
+			Name: "python", Image: "python:3.11-slim",
+			Storage: &sandboxv1alpha1.ServiceStorageSpec{Size: "1Gi", MountPath: "/data"},
+		}},
+	}}
+	ss.Name, ss.Namespace = "set-rec", "default"
+	mustCreateServiceSet(t, ss)
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+	reconcileServiceSetOnce(t, r, key)
+
+	var podBefore corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "python", Namespace: "default"}, &podBefore); err != nil {
+		t.Fatal(err)
+	}
+	var pvcBefore corev1.PersistentVolumeClaim
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "python-data", Namespace: "default"}, &pvcBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change the image and re-reconcile. Re-fetch first: the reconcile above
+	// wrote .status (Task 5 writeStatus), bumping ss.resourceVersion, so an
+	// Update with the stale in-memory object would 409-conflict
+	// ("the object has been modified"). Get picks up the current RV.
+	if err := k8s.Get(ctx, key, ss); err != nil {
+		t.Fatal(err)
+	}
+	ss.Spec.Services[0].Image = "python:3.13-slim"
+	if err := k8s.Update(ctx, ss); err != nil {
+		t.Fatal(err)
+	}
+	reconcileServiceSetOnce(t, r, key)
+
+	var podAfter corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "python", Namespace: "default"}, &podAfter); err != nil {
+		t.Fatal(err)
+	}
+	if podAfter.UID == podBefore.UID {
+		t.Fatal("pod UID unchanged after image change; expected recreate")
+	}
+	if podAfter.Spec.Containers[0].Image != "python:3.13-slim" {
+		t.Fatalf("pod image = %q after recreate", podAfter.Spec.Containers[0].Image)
+	}
+	if len(podAfter.Annotations[specHashAnnotation]) == 0 {
+		t.Fatal("recreated pod missing spec-hash annotation")
+	}
+
+	// PVC retained: same UID as before.
+	var pvcAfter corev1.PersistentVolumeClaim
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "python-data", Namespace: "default"}, &pvcAfter); err != nil {
+		t.Fatal(err)
+	}
+	if pvcAfter.UID != pvcBefore.UID {
+		t.Fatal("data PVC UID changed across pod recreate; PVC must be retained")
+	}
+}
