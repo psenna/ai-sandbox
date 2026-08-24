@@ -555,6 +555,39 @@ func (h *Harness) ServiceSetEntries(ctx context.Context, ns, envName string) []s
 	return names
 }
 
+// applyServices writes servicesYAML into the env's shared workspace volume
+// (via the agent container, which has a shell) and runs the real
+// `sandboxctl services apply` CLI in the sidecar container against that file.
+// The sidecar image is distroless (no shell), so the YAML cannot be written
+// there directly; but both the agent and sidecar containers mount the workspace
+// PVC at render.WorkspaceMountPath, so a file the agent writes is readable by
+// the sidecar's sandboxctl binary. The CLI parses + validates client-side and
+// POSTs to its own loopback control API (127.0.0.1:9099, served by the same
+// sidecar), which upserts the ServiceSet named after the env. Fails the spec
+// on a non-zero CLI exit.
+func (h *Harness) applyServices(ctx context.Context, ns, envName, servicesYAML string) {
+	podName := render.ChildNames(envName).Pod
+	path := render.WorkspaceMountPath + "/.e2e-services.yaml"
+	// Write the declaration to the shared workspace volume from the agent
+	// container (alpine, has sh + cat). The heredoc delimiter is quoted so the
+	// YAML is written verbatim with no shell expansion.
+	_, stderr, err := h.Exec(ctx, ns, podName, render.AgentContainerName, "sh", "-c",
+		"cat > "+path+" <<'E2E_SERVICES_YAML'\n"+servicesYAML+"\nE2E_SERVICES_YAML")
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "writing services.yaml into agent: %s", stderr)
+	// Apply via the real CLI in the sidecar (reads the file from the shared
+	// workspace volume, then POSTs to the loopback control API it serves).
+	stdout, stderr, err := h.Exec(ctx, ns, podName, render.SidecarContainerName,
+		"/sandboxctl", "services", "apply", path)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"sandboxctl services apply failed: stdout=%q stderr=%q", stdout, stderr)
+}
+
+// brokerURL is the in-cluster platform-doubles broker -- the egress target for
+// the isolation specs (Restricted egress blocks it, Open egress allows it).
+func (h *Harness) brokerURL() string {
+	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8080", h.Cfg.ServicesNamespace)
+}
+
 // GetEnv fetches key's SandboxEnvironment, failing the spec if it cannot be
 // read.
 func (h *Harness) GetEnv(ctx context.Context, key client.ObjectKey) *sandboxv1alpha1.SandboxEnvironment {

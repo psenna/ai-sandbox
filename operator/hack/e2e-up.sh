@@ -101,6 +101,13 @@ fi
 echo "==> loading images into the cluster"
 kind load docker-image --name "$E2E_CLUSTER" "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$DOUBLES_IMAGE" "$MINIO_IMAGE"
 
+# Services e2e spec images (pull-free + deterministic in the cluster): the
+# k8s-native services/version-switch specs declare postgres + python pods.
+for img in postgres:17-alpine python:3.11-alpine python:3.13-alpine; do
+  docker pull "$img"
+  kind load docker-image "$img" --name "$E2E_CLUSTER"
+done
+
 echo "==> deploying operator + MinIO + platform doubles (E2E_DEPLOY=$E2E_DEPLOY)"
 if [ "$E2E_DEPLOY" = "helm" ]; then
   helm install ai-sandbox-operator deploy/helm/ai-sandbox-operator \
