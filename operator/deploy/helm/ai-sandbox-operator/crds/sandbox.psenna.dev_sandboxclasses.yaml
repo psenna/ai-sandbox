@@ -186,6 +186,7 @@ spec:
                     enum:
                     - rootless-podman
                     - none
+                    - k8s-native
                     type: string
                 type: object
               network:
