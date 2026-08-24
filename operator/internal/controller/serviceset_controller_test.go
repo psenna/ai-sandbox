@@ -341,3 +341,42 @@ func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
 		t.Fatal("data PVC UID changed across pod recreate; PVC must be retained")
 	}
 }
+
+func TestServiceSetReconciler_PrunesRemovedEntries(t *testing.T) {
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-prune",
+		Services: []sandboxv1alpha1.ServiceSpec{
+			{Name: "keep", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}},
+			{Name: "drop", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}},
+		},
+	}}
+	ss.Name, ss.Namespace = "set-prune", "default"
+	mustCreateServiceSet(t, ss)
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+	reconcileServiceSetOnce(t, r, key)
+
+	// Both pods exist now.
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "drop", Namespace: "default"}, &corev1.Pod{}); err != nil {
+		t.Fatalf("drop pod should exist: %v", err)
+	}
+
+	// Remove "drop" and re-reconcile. Re-fetch first: the reconcile above wrote
+	// .status (writeStatus) and ran pruneChildren, bumping ss.resourceVersion, so
+	// an Update with the stale in-memory object would 409-conflict.
+	if err := k8s.Get(ctx, key, ss); err != nil {
+		t.Fatal(err)
+	}
+	ss.Spec.Services = ss.Spec.Services[:1] // keep only "keep"
+	if err := k8s.Update(ctx, ss); err != nil {
+		t.Fatal(err)
+	}
+	reconcileServiceSetOnce(t, r, key)
+
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "drop", Namespace: "default"}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("drop pod should be pruned, got err=%v", err)
+	}
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "keep", Namespace: "default"}, &corev1.Pod{}); err != nil {
+		t.Fatalf("keep pod should remain: %v", err)
+	}
+}

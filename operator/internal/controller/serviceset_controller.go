@@ -14,6 +14,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -63,6 +64,9 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.writeStatus(ctx, &ss); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.pruneChildren(ctx, &ss); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -98,6 +102,70 @@ func (r *ServiceSetReconciler) writeStatus(ctx context.Context, ss *sandboxv1alp
 	apimeta.SetStatusCondition(&ss.Status.Conditions, cond)
 	ss.Status.Entries = entries
 	return r.Status().Patch(ctx, ss, client.MergeFrom(base))
+}
+
+// pruneChildren lists Pods/Services/PVCs in the namespace labeled
+// labelServiceset=<ss.Name> (i.e. owned by this ServiceSet) and deletes any
+// whose labelEntry name is not in the current services+runtimes set. Run last
+// in Reconcile so children belonging to entries removed from the spec are
+// garbage-collected. A data PVC carries its service's entry label (set via
+// entryLabels in ensurePVC), so it prunes alongside the service's Pod/Service.
+func (r *ServiceSetReconciler) pruneChildren(ctx context.Context, ss *sandboxv1alpha1.ServiceSet) error {
+	want := map[string]struct{}{}
+	for _, s := range ss.Spec.Services {
+		want[s.Name] = struct{}{}
+	}
+	for _, rt := range ss.Spec.Runtimes {
+		want[rt.Name] = struct{}{}
+	}
+	selector := k8slabels.SelectorFromSet(map[string]string{labelServiceset: ss.Name})
+
+	listOpts := []client.ListOption{client.InNamespace(ss.Namespace), client.MatchingLabelsSelector{Selector: selector}}
+
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, listOpts...); err != nil {
+		return err
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if _, ok := want[p.Labels[labelEntry]]; ok {
+			continue
+		}
+		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+
+	var svcs corev1.ServiceList
+	if err := r.List(ctx, &svcs, listOpts...); err != nil {
+		return err
+	}
+	for i := range svcs.Items {
+		s := &svcs.Items[i]
+		if _, ok := want[s.Labels[labelEntry]]; ok {
+			continue
+		}
+		if err := r.Delete(ctx, s); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := r.List(ctx, &pvcs, listOpts...); err != nil {
+		return err
+	}
+	for i := range pvcs.Items {
+		v := &pvcs.Items[i]
+		// A data PVC carries its service's entry label, so it prunes alongside
+		// the service's Pod/Service.
+		if _, ok := want[v.Labels[labelEntry]]; ok {
+			continue
+		}
+		if err := r.Delete(ctx, v); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // readyMap is a closure that resolves an entry's readiness (pod ready + deps ready).
