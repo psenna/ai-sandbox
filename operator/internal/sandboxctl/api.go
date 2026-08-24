@@ -136,3 +136,24 @@ type ServicesApplyResponse struct {
 	Runtimes    int    `json:"runtimes"`
 	Applied     bool   `json:"applied"`
 }
+
+// ExecRequest is the POST /v1/exec body: run cmd in the named runtime pod,
+// piping stdin (text) into the process. One-shot (no TTY/streaming).
+type ExecRequest struct {
+	Runtime string   `json:"runtime"`
+	Command []string `json:"command"`
+	Stdin   string   `json:"stdin,omitempty"`
+}
+
+// ExecResponse is the POST /v1/exec 200 body. stdout/stderr are the command's
+// captured output (text; binary output is out of scope). ExitCode is
+// best-effort: 0 on success, the command's exit code when extractable from the
+// SPDY error, else -1. Error is the transport/protocol error message, empty
+// when the command ran (regardless of its exit code).
+type ExecResponse struct {
+	Runtime  string `json:"runtime"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exitCode"`
+	Error    string `json:"error,omitempty"`
+}

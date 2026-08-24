@@ -196,3 +196,101 @@ func TestRunServicesCompose_WritesToFile(t *testing.T) {
 		t.Errorf("output file = %q, want it to contain the image", string(b))
 	}
 }
+
+// newExecCLITestServer returns an httptest server that responds to POST
+// /v1/exec with the given ExecResponse, capturing the posted request for
+// assertions (distinct from newExecTestServer in exec_test.go, which wires the
+// full control-API server for handler-level tests).
+func newExecCLITestServer(t *testing.T, resp ExecResponse) (*httptest.Server, *ExecRequest) {
+	t.Helper()
+	var got ExecRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/exec" || r.Method != http.MethodPost {
+			t.Errorf("request %s %s, want POST /v1/exec", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &got
+}
+
+func TestRunExec_HappyPath(t *testing.T) {
+	srv, got := newExecCLITestServer(t, ExecResponse{Stdout: "out\n", ExitCode: 0})
+	var stdout, stderr bytes.Buffer
+	code := RunExec([]string{"--listen", srv.Listener.Addr().String(), "python", "--", "echo", "hi"}, emptyGetenv, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if stdout.String() != "out\n" {
+		t.Errorf("stdout = %q, want %q", stdout.String(), "out\n")
+	}
+	if got.Runtime != "python" {
+		t.Errorf("posted runtime = %q, want python", got.Runtime)
+	}
+	if len(got.Command) != 2 || got.Command[0] != "echo" || got.Command[1] != "hi" {
+		t.Errorf("posted command = %v, want [echo hi]", got.Command)
+	}
+}
+
+func TestRunExec_NonZeroExitCodePropagates(t *testing.T) {
+	srv, _ := newExecCLITestServer(t, ExecResponse{Stdout: "boom\n", ExitCode: 3})
+	var stdout, stderr bytes.Buffer
+	code := RunExec([]string{"--listen", srv.Listener.Addr().String(), "python", "--", "false"}, emptyGetenv, strings.NewReader(""), &stdout, &stderr)
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
+	}
+	if stdout.String() != "boom\n" {
+		t.Errorf("stdout = %q, want %q", stdout.String(), "boom\n")
+	}
+}
+
+func TestRunExec_TransportErrorExits1(t *testing.T) {
+	srv, _ := newExecCLITestServer(t, ExecResponse{Error: "boom", ExitCode: -1})
+	var stdout, stderr bytes.Buffer
+	code := RunExec([]string{"--listen", srv.Listener.Addr().String(), "python", "--", "ls"}, emptyGetenv, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 for a transport failure", code)
+	}
+	if !strings.Contains(stderr.String(), "boom") {
+		t.Errorf("stderr = %q, want it to contain 'boom'", stderr.String())
+	}
+}
+
+func TestRunExec_NoCommandExits2(t *testing.T) {
+	srv, _ := newExecCLITestServer(t, ExecResponse{})
+	var stdout, stderr bytes.Buffer
+	code := RunExec([]string{"--listen", srv.Listener.Addr().String(), "python"}, emptyGetenv, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 for missing command", code)
+	}
+	if !strings.Contains(stderr.String(), "usage") {
+		t.Errorf("stderr = %q, want it to contain 'usage'", stderr.String())
+	}
+}
+
+func TestRunExec_PassesStdin(t *testing.T) {
+	srv, got := newExecCLITestServer(t, ExecResponse{ExitCode: 0})
+	var stdout, stderr bytes.Buffer
+	code := RunExec([]string{"--listen", srv.Listener.Addr().String(), "python", "--", "cat"}, emptyGetenv, strings.NewReader("pipe data"), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if got.Stdin != "pipe data" {
+		t.Errorf("posted stdin = %q, want %q", got.Stdin, "pipe data")
+	}
+}
+
+func TestRunExec_NonLoopbackListenRejected(t *testing.T) {
+	// No server needed: the --listen validation fails before any HTTP call.
+	var stdout, stderr bytes.Buffer
+	code := RunExec([]string{"--listen", "0.0.0.0:9099", "python", "--", "ls"}, emptyGetenv, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 for non-loopback --listen", code)
+	}
+	if !strings.Contains(stderr.String(), "invalid --listen") {
+		t.Errorf("stderr = %q, want it to contain 'invalid --listen'", stderr.String())
+	}
+}

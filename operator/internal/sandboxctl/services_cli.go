@@ -106,3 +106,64 @@ func RunServicesCompose(args []string, getenv func(string) string, out io.Writer
 func newFlagSet(name string) *flag.FlagSet {
 	return flag.NewFlagSet(name, flag.ContinueOnError)
 }
+
+// RunExec implements `sandboxctl exec [flags] <runtime> -- <cmd...>`.
+// Stdin is read from the passed stdin reader and sent as text. The command's
+// stdout/stderr are written to the respective writers; the process exit code is
+// mapped from the response's best-effort ExitCode (-1 -> 1, Error set -> 1).
+// All CLI diagnostics (usage, flag errors, transport failures) are written to
+// the passed stderr writer so tests can capture them without a global os.Stderr
+// swap (unlike RunServicesApply, which predates the stderr parameter).
+func RunExec(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := newFlagSet("sandboxctl exec")
+	listen := fs.String("listen", envOr(getenv, "LISTEN", "127.0.0.1:9099"), "control API address")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stderr, "invalid flags: "+err.Error())
+		return 2
+	}
+	if err := validateLoopbackListen(*listen); err != nil {
+		fmt.Fprintln(stderr, "invalid --listen: "+err.Error())
+		return 2
+	}
+	rest := fs.Args()
+	// Expect: <runtime> -- <cmd...>
+	if len(rest) < 1 {
+		fmt.Fprintln(stderr, "usage: sandboxctl exec <runtime> -- <cmd...>")
+		return 2
+	}
+	runtime := rest[0]
+	cmd := rest[1:]
+	// Drop a leading "--" separator if present.
+	if len(cmd) > 0 && cmd[0] == "--" {
+		cmd = cmd[1:]
+	}
+	if len(cmd) == 0 {
+		fmt.Fprintln(stderr, "usage: sandboxctl exec <runtime> -- <cmd...>")
+		return 2
+	}
+	// Read stdin fully when the caller provides a non-empty reader (the test
+	// passes a strings.NewReader; in real use os.Stdin is a pipe/file). A nil
+	// or empty stdin sends no stdin to the pod.
+	var stdinBytes []byte
+	if stdin != nil {
+		if b, err := io.ReadAll(stdin); err == nil {
+			stdinBytes = b
+		}
+	}
+	cli := NewControlClient(*listen)
+	resp, err := cli.Exec(context.Background(), ExecRequest{Runtime: runtime, Command: cmd, Stdin: string(stdinBytes)})
+	if err != nil {
+		fmt.Fprintln(stderr, "exec failed: "+err.Error())
+		return 1
+	}
+	_, _ = stdout.Write([]byte(resp.Stdout))
+	_, _ = stderr.Write([]byte(resp.Stderr))
+	if resp.Error != "" {
+		fmt.Fprintln(stderr, "exec error: "+resp.Error)
+		return 1
+	}
+	if resp.ExitCode < 0 {
+		return 1
+	}
+	return resp.ExitCode
+}

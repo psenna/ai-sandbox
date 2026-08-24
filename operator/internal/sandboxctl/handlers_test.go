@@ -83,7 +83,7 @@ func newTestServer(t *testing.T, store *fakeStore, poll *Poller) *httptest.Serve
 	}
 	env := EnvironmentRef{Name: "test-env", Namespace: "test-ns"}
 	cfg := Config{Listen: "127.0.0.1:0"}
-	srv := NewServer(cfg, store, poll, env, nil, time.Now, nil)
+	srv := NewServer(cfg, store, poll, env, nil, nil, time.Now, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts
@@ -364,7 +364,7 @@ func newServicesTestServer(t *testing.T, sets serviceSetApplier) *httptest.Serve
 	store := &fakeStore{}
 	poll := NewPoller(store, time.Second, nil, nil)
 	env := EnvironmentRef{Name: "env-1", Namespace: "ns-1"}
-	srv := NewServer(Config{Listen: "127.0.0.1:0"}, store, poll, env, sets, time.Now, nil)
+	srv := NewServer(Config{Listen: "127.0.0.1:0"}, store, poll, env, sets, nil, time.Now, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts

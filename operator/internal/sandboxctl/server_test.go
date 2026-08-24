@@ -9,7 +9,7 @@ func TestNewServer_HasNonZeroTimeouts(t *testing.T) {
 	store := &fakeStore{}
 	poll := NewPoller(store, time.Second, nil, nil)
 	env := EnvironmentRef{Name: "e", Namespace: "ns"}
-	srv := NewServer(Config{Listen: "127.0.0.1:0"}, store, poll, env, nil, time.Now, nil)
+	srv := NewServer(Config{Listen: "127.0.0.1:0"}, store, poll, env, nil, nil, time.Now, nil)
 
 	if srv.ReadHeaderTimeout == 0 {
 		t.Error("ReadHeaderTimeout is zero")

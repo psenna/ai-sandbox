@@ -21,16 +21,30 @@ func NewControlClient(addr string) *ControlClient {
 
 // ApplyServices POSTs a declaration to /v1/services and returns the response.
 func (c *ControlClient) ApplyServices(ctx context.Context, req ServicesApplyRequest) (ServicesApplyResponse, error) {
+	return doPostJSON[ServicesApplyResponse](ctx, c.http, c.addr, "/v1/services", req)
+}
+
+// Exec POSTs an ExecRequest to /v1/exec and returns the response.
+func (c *ControlClient) Exec(ctx context.Context, req ExecRequest) (ExecResponse, error) {
+	return doPostJSON[ExecResponse](ctx, c.http, c.addr, "/v1/exec", req)
+}
+
+// doPostJSON marshals req, POSTs it to addr/path as application/json, and
+// decodes either the success body into T or the ErrorEnvelope on a non-2xx. It
+// is the shared helper behind every ControlClient POST, eliminating the
+// per-method marshal/build/header boilerplate.
+func doPostJSON[T any](ctx context.Context, h *http.Client, addr, path string, req any) (T, error) {
+	var zero T
 	body, err := json.Marshal(req)
 	if err != nil {
-		return ServicesApplyResponse{}, err
+		return zero, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.addr+"/v1/services", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+path, bytes.NewReader(body))
 	if err != nil {
-		return ServicesApplyResponse{}, err
+		return zero, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	return doJSON[ServicesApplyResponse](c.http, httpReq)
+	return doJSON[T](h, httpReq)
 }
 
 // doJSON executes req and decodes either the success body into T or the

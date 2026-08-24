@@ -24,6 +24,11 @@
 //	             sidecar upserts a ServiceSet CR); `compose` renders the
 //	             equivalent docker-compose.yml client-side (#24, see
 //	             internal/sandboxctl/services_cli.go)
+//	exec         agent CLI for the k8s-native control model: POSTs
+//	             {runtime, command, stdin} to the loopback /v1/exec; the
+//	             sidecar SPDY-execs into the named runtime pod and returns
+//	             stdout/stderr + a best-effort exit code (one-shot, no TTY;
+//	             #24, see internal/sandboxctl/services_cli.go)
 //	probe-tcp    dial host:port and exit 0/1 (the CNI enforcement probe's
 //	             client; #31, see internal/sandboxctl/cniprobe.go)
 //	probe-listen  listen on :port forever (the CNI enforcement probe's server;
@@ -47,7 +52,7 @@ func main() {
 
 func run(args []string) int {
 	if len(args) < 2 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|services|probe-tcp|probe-listen> [flags]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|services|exec|probe-tcp|probe-listen> [flags]")
 		return 2
 	}
 
@@ -80,6 +85,8 @@ func run(args []string) int {
 			_, _ = fmt.Fprintf(os.Stderr, "unknown services subcommand %q; usage: sandboxctl services <apply|compose> [flags] [file]\n", args[2])
 			return 2
 		}
+	case "exec":
+		return sandboxctl.RunExec(args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr)
 	case "probe-tcp":
 		if len(args) < 3 {
 			_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl probe-tcp <host:port>")
@@ -101,7 +108,7 @@ func run(args []string) int {
 		}
 		return 0
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|services|probe-tcp|probe-listen> [flags]\n", args[1])
+		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|services|exec|probe-tcp|probe-listen> [flags]\n", args[1])
 		return 2
 	}
 }

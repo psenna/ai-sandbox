@@ -16,12 +16,13 @@ import (
 // snapshot), and an injected clock (never time.Now() directly, matching
 // this repo's convention elsewhere).
 type handlers struct {
-	store Store
-	poll  *Poller
-	env   EnvironmentRef
-	sets  serviceSetApplier // nil for non-k8s-native envs (services apply then 404s)
-	now   func() time.Time
-	log   func(format string, args ...any)
+	store  Store
+	poll   *Poller
+	env    EnvironmentRef
+	sets   serviceSetApplier // nil for non-k8s-native envs (services apply then 404s)
+	execer Execer            // nil for non-k8s-native envs (exec then 404s)
+	now    func() time.Time
+	log    func(format string, args ...any)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -236,6 +237,39 @@ func (h *handlers) handleServicesApply(w http.ResponseWriter, r *http.Request) {
 		Runtimes:    len(spec.Runtimes),
 		Applied:     true,
 	})
+}
+
+// handleExec handles POST /v1/exec. The agent POSTs {runtime, command, stdin};
+// the server one-shot execs into the named runtime pod (SPDY) and returns
+// stdout/stderr + a best-effort exit code. A non-zero command exit is NOT a
+// server error: stdout/stderr are returned with ExitCode set and Error empty.
+// A transport/protocol failure (pod gone, not authorized) returns 200 with
+// Error populated so the agent sees the failure message alongside any output.
+func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
+	if h.execer == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "exec is not enabled on this environment (requires the k8s-native engine)", "", nil)
+		return
+	}
+	var req ExecRequest
+	if err := decodeStrict(r.Body, &req); err != nil {
+		writeDecodeErr(w, err)
+		return
+	}
+	if req.Runtime == "" {
+		writeError(w, http.StatusBadRequest, CodeMissingParam, "runtime must not be empty", "runtime", nil)
+		return
+	}
+	if len(req.Command) == 0 {
+		writeError(w, http.StatusBadRequest, CodeMissingParam, "command must not be empty", "command", nil)
+		return
+	}
+	stdout, stderr, err := h.execer.Exec(r.Context(), req.Runtime, req.Command, []byte(req.Stdin))
+	resp := ExecResponse{Runtime: req.Runtime, Stdout: string(stdout), Stderr: string(stderr), ExitCode: extractExitCode(err)}
+	if err != nil && resp.ExitCode < 0 {
+		h.log("exec %s failed: %v", req.Runtime, err)
+		resp.Error = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeDecodeErr(w http.ResponseWriter, err error) {

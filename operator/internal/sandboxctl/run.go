@@ -80,7 +80,15 @@ func Run(ctx context.Context, cfg Config, log logr.Logger) error {
 
 	env := EnvironmentRef{Name: cfg.Environment, Namespace: cfg.Namespace}
 	sets := newServiceSetStore(c, env)
-	srv := NewServer(cfg, store, poll, env, sets, time.Now, logf)
+	// The execer needs a *rest.Config for the SPDY executor; buildClient
+	// discards its restCfg, so load one more InClusterConfig here (cheap, and
+	// keeps buildClient's surface unchanged for the other subcommands).
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("loading in-cluster config for execer: %w", err)
+	}
+	execer := newPodExecer(restCfg, cfg.Namespace)
+	srv := NewServer(cfg, store, poll, env, sets, execer, time.Now, logf)
 
 	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
