@@ -429,6 +429,82 @@ func TestServiceSetReconciler_DiamondDependsOnNotACycle(t *testing.T) {
 	}
 }
 
+func TestServiceSetReconcileDuplicateEntryName(t *testing.T) {
+	// Defense-in-depth guard for the #2 defect: a service and runtime sharing
+	// a name both target Pod/<name>, which would storm the reconciler (two
+	// ensurePod calls delete+recreate each other's pod). The guard detects the
+	// cross-list collision BEFORE reconciling children, writes Ready=False
+	// reason DuplicateEntryName, and returns nil -- no children, no storm.
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-1",
+		Services:        []sandboxv1alpha1.ServiceSpec{{Name: "shared", Image: "a"}},
+		Runtimes:        []sandboxv1alpha1.RuntimeSpec{{Name: "shared", Image: "b"}},
+	}}
+	ss.Name, ss.Namespace = "env-1", "default"
+	mustCreateServiceSet(t, ss)
+
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+
+	// First reconcile: guard refuses to create children, returns nil, no requeue.
+	res, err := reconcileServiceSetOnce(t, r, key)
+	if err != nil {
+		t.Fatalf("reconcile returned err=%v, want nil (collision is a bad spec, not a transient error)", err)
+	}
+	if res.Requeue {
+		t.Fatal("reconcile requeued; a colliding name must not requeue")
+	}
+
+	// No Pod/shared exists: the guard refused to create any child.
+	var pod corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "shared", Namespace: "default"}, &pod); !apierrors.IsNotFound(err) {
+		t.Fatalf("Pod/shared should not exist (guard refused), got err=%v", err)
+	}
+
+	// Status: Ready=False, reason DuplicateEntryName.
+	var got sandboxv1alpha1.ServiceSet
+	if err := k8s.Get(ctx, key, &got); err != nil {
+		t.Fatalf("re-fetch ServiceSet: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, "Ready")
+	if cond == nil {
+		t.Fatal("Ready condition missing")
+	}
+	if cond.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready status = %s, want False", cond.Status)
+	}
+	if cond.Reason != "DuplicateEntryName" {
+		t.Fatalf("Ready reason = %q, want DuplicateEntryName", cond.Reason)
+	}
+
+	// Entries: both the service and the runtime are marked Ready=false,
+	// Reason=DuplicateEntryName (writeDuplicateStatus populated them).
+	if len(got.Status.Entries) != 2 {
+		t.Fatalf("entries len = %d, want 2 (service+runtime)", len(got.Status.Entries))
+	}
+	for _, e := range got.Status.Entries {
+		if e.Ready {
+			t.Fatalf("entry %q Ready=true, want false", e.Name)
+		}
+		if e.Reason != "DuplicateEntryName" {
+			t.Fatalf("entry %q reason = %q, want DuplicateEntryName", e.Name, e.Reason)
+		}
+	}
+
+	// Second reconcile: idempotent -- still nil, still no Pod/shared (no storm).
+	res2, err2 := reconcileServiceSetOnce(t, r, key)
+	if err2 != nil {
+		t.Fatalf("second reconcile returned err=%v, want nil (idempotent)", err2)
+	}
+	if res2.Requeue {
+		t.Fatal("second reconcile requeued; must not requeue while collision persists")
+	}
+	var pod2 corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Name: "shared", Namespace: "default"}, &pod2); !apierrors.IsNotFound(err) {
+		t.Fatalf("Pod/shared should still not exist after second reconcile, got err=%v", err)
+	}
+}
+
 func TestServiceSetReconciler_PortlessAfterPortsPrunesService(t *testing.T) {
 	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
 		EnvironmentName: "env-stalesvc",

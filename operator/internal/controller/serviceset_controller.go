@@ -51,6 +51,24 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Get(ctx, req.NamespacedName, &ss); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// Defense-in-depth guard for the #2 defect: a service and runtime sharing
+	// a name both target Pod/<name>, which would storm the reconciler (two
+	// ensurePod calls delete+recreate each other's pod in a loop). Admission
+	// (Task 2/5) rejects this at the control API, but a hand-crafted CR that
+	// bypasses admission must still fail safe. Detect the collision BEFORE
+	// reconciling children, write Ready=False reason DuplicateEntryName, and
+	// return nil -- no children created, no storm. The user fixes the spec; the
+	// next reconcile proceeds.
+	if dup := duplicateEntryName(&ss); dup != "" {
+		if err := r.writeDuplicateStatus(ctx, &ss, dup); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil // no child reconcile: a colliding name would
+		// storm (two ensurePod calls targeting the same Pod/<name>), so we
+		// refuse to create children and wait for the spec to be fixed. Stale
+		// children from before the collision are owned by the env and GC'd on
+		// env deletion; the next reconcile after the fix prunes + reconciles.
+	}
 	for i := range ss.Spec.Services {
 		if err := r.reconcileService(ctx, &ss, &ss.Spec.Services[i]); err != nil {
 			return ctrl.Result{}, err
@@ -100,6 +118,48 @@ func (r *ServiceSetReconciler) writeStatus(ctx context.Context, ss *sandboxv1alp
 		cond.Reason = "EntriesNotReady"
 	}
 	apimeta.SetStatusCondition(&ss.Status.Conditions, cond)
+	ss.Status.Entries = entries
+	return r.Status().Patch(ctx, ss, client.MergeFrom(base))
+}
+
+// duplicateEntryName returns the first entry name that appears more than once
+// across services+runtimes (the #2 defect: the CRD pins uniqueness within each
+// list only, so a service+runtime sharing a name passes the API server but would
+// storm the reconciler). "" means no collision.
+func duplicateEntryName(ss *sandboxv1alpha1.ServiceSet) string {
+	count := map[string]int{}
+	for _, s := range ss.Spec.Services {
+		count[s.Name]++
+	}
+	for _, rt := range ss.Spec.Runtimes {
+		count[rt.Name]++
+	}
+	for name, n := range count {
+		if n > 1 {
+			return name
+		}
+	}
+	return ""
+}
+
+// writeDuplicateStatus marks every entry NotReady and the ServiceSet Ready=False
+// with reason DuplicateEntryName, without reconciling any children. It is the
+// defense-in-depth counterpart to admission's ValidateServiceSet: a hand-crafted
+// CR that bypasses admission still fails safe rather than storming.
+func (r *ServiceSetReconciler) writeDuplicateStatus(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, dup string) error {
+	base := ss.DeepCopy()
+	entries := make([]sandboxv1alpha1.EntryStatus, 0, len(ss.Spec.Services)+len(ss.Spec.Runtimes))
+	for _, s := range ss.Spec.Services {
+		entries = append(entries, sandboxv1alpha1.EntryStatus{Name: s.Name, Kind: "service", Ready: false, Reason: "DuplicateEntryName"})
+	}
+	for _, rt := range ss.Spec.Runtimes {
+		entries = append(entries, sandboxv1alpha1.EntryStatus{Name: rt.Name, Kind: "runtime", Ready: false, Reason: "DuplicateEntryName"})
+	}
+	apimeta.SetStatusCondition(&ss.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionFalse, Reason: "DuplicateEntryName",
+		Message:            fmt.Sprintf("entry name %q is duplicated across services+runtimes", dup),
+		LastTransitionTime: metav1.Now(), ObservedGeneration: ss.Generation,
+	})
 	ss.Status.Entries = entries
 	return r.Status().Patch(ctx, ss, client.MergeFrom(base))
 }
