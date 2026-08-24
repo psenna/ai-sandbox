@@ -1372,7 +1372,12 @@ func TestServiceSetReconciler_PrunesRemovedEntries(t *testing.T) {
 		t.Fatalf("drop pod should exist: %v", err)
 	}
 
-	// Remove "drop" and re-reconcile.
+	// Remove "drop" and re-reconcile. Re-fetch first: the reconcile above wrote
+	// .status (writeStatus) and ran pruneChildren, bumping ss.resourceVersion, so
+	// an Update with the stale in-memory object would 409-conflict.
+	if err := k8s.Get(ctx, key, ss); err != nil {
+		t.Fatal(err)
+	}
 	ss.Spec.Services = ss.Spec.Services[:1] // keep only "keep"
 	if err := k8s.Update(ctx, ss); err != nil {
 		t.Fatal(err)
@@ -1412,7 +1417,7 @@ func (r *ServiceSetReconciler) pruneChildren(ctx context.Context, ss *sandboxv1a
 	for _, rt := range ss.Spec.Runtimes {
 		want[rt.Name] = struct{}{}
 	}
-	selector := labels.SelectorFromSet(map[string]string{labelServiceset: ss.Name})
+	selector := k8slabels.SelectorFromSet(map[string]string{labelServiceset: ss.Name})
 
 	listOpts := []client.ListOption{client.InNamespace(ss.Namespace), client.MatchingLabelsSelector{Selector: selector}}
 
