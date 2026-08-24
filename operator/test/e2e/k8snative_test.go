@@ -238,4 +238,56 @@ services:
 		key := client.ObjectKey{Namespace: ns, Name: env.Name}
 		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
 	})
+
+	// Control-plane isolation: a runtime pod (separate pod, own netns) cannot
+	// reach the agent's control API on the agent pod's loopback 127.0.0.1:9099.
+	// The sidecar binds loopback only and is not exposed as a Service, so the
+	// agent pod's IP:9099 is closed from any other pod. This replaces the podman
+	// approach's "DEFAULT-network container denied the pod loopback" property;
+	// under k8s-native it is true by pod separation, asserted end-to-end here.
+	It("does not expose the control API to other pods", func() {
+		class := h.CreateClass(ctx, WithEngine(sandboxv1alpha1.EngineTypeK8sNative))
+		// Keep the env Running so the sidecar is up for the test to drive apply.
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript("SCRIPT:sleep 600"))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseRunning, h.Cfg.PhaseTimeout)
+
+		// Apply a runtime named "probe" (alpine:3) so a separate pod exists.
+		h.applyServices(ctx, ns, env.Name, `
+runtimes:
+  - name: probe
+    image: alpine:3
+    command: ["sleep", "infinity"]
+`)
+		// Wait for the probe pod to be running.
+		Eventually(func() corev1.PodPhase {
+			var pod corev1.Pod
+			if err := h.Client.Get(ctx, client.ObjectKey{Name: "probe", Namespace: ns}, &pod); err != nil {
+				return ""
+			}
+			return pod.Status.Phase
+		}, h.Cfg.PodTimeout, h.Cfg.Poll).Should(Equal(corev1.PodRunning), "probe runtime pod never Running")
+
+		// The agent pod's IP: the control API is loopback-bound, so reaching it
+		// from the probe pod via the agent pod's IP must FAIL. alpine:3 ships
+		// busybox wget (no bash /dev/tcp here, unlike the agent image); a refused
+		// TCP connect (loopback-only bind -- nothing listens on the pod IP)
+		// makes wget exit non-zero, which Exec surfaces as err.
+		agentPod := h.GetAgentPod(ctx, key)
+		agentIP := agentPod.Status.PodIP
+		Expect(agentIP).NotTo(BeEmpty(), "agent pod has no IP")
+
+		_, _, err := h.Exec(ctx, ns, "probe", "probe",
+			"wget", "-T", "5", "-q", "-O", "/dev/null",
+			"http://"+agentIP+":9099/healthz")
+		Expect(err).To(HaveOccurred(),
+			"runtime pod reached the agent control API at %s:9099 -- it is not loopback-isolated", agentIP)
+
+		// Sanity: the control API IS reachable from the agent's OWN container
+		// (loopback), proving it is up, not just absent.
+		_, stderr, err := h.Exec(ctx, ns, render.ChildNames(env.Name).Pod, render.AgentContainerName,
+			"curl", "-fsS", "--max-time", "5", "http://localhost:9099/healthz")
+		Expect(err).NotTo(HaveOccurred(),
+			"agent container could not reach its own control API on loopback: %s", stderr)
+	})
 })
