@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	sandboxv1alpha1 "github.com/psenna/ai-sandbox/operator/api/v1alpha1"
+	"github.com/psenna/ai-sandbox/operator/internal/render"
 )
 
 // +kubebuilder:rbac:groups=sandbox.psenna.dev,resources=servicesets,verbs=get;list;watch;create;update;patch;delete
@@ -329,9 +330,10 @@ func (r *ServiceSetReconciler) reconcileService(ctx context.Context, ss *sandbox
 
 func entryLabels(ss *sandboxv1alpha1.ServiceSet, name, kind string) map[string]string {
 	return map[string]string{
-		labelServiceset: ss.Name,
-		labelEntry:      name,
-		labelKind:       kind,
+		labelServiceset:                  ss.Name,
+		labelEntry:                       name,
+		labelKind:                        kind,
+		"sandbox.psenna.dev/environment": render.EnvironmentLabelValue(ss.Spec.EnvironmentName),
 	}
 }
 
@@ -467,6 +469,9 @@ func (r *ServiceSetReconciler) ensurePod(ctx context.Context, ss *sandboxv1alpha
 			Volumes: podVolumes(mounts),
 		},
 	}
+	// The dep/runtime pods hold no credential -- mirror the agent pod's
+	// invariant and explicitly disable service-account token automount.
+	pod.Spec.AutomountServiceAccountToken = ptr.To(false)
 	applySecurityContext(pod, runAsUser)
 	return r.Create(ctx, pod)
 }
