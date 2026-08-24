@@ -534,7 +534,7 @@ func TestServiceSetReconciler_CreatesServicePodAndPVC(t *testing.T) {
 	if pod.Annotations["ai-sandbox.io/spec-hash"] == "" {
 		t.Fatal("pod missing ai-sandbox.io/spec-hash annotation")
 	}
-	if !ownedBy(pod, ss) {
+	if !ownedBy(&pod, ss) {
 		t.Fatal("pod not owned by ServiceSet")
 	}
 
@@ -546,7 +546,7 @@ func TestServiceSetReconciler_CreatesServicePodAndPVC(t *testing.T) {
 	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 5432 {
 		t.Fatalf("svc ports = %+v", svc.Spec.Ports)
 	}
-	if !ownedBy(svc, ss) {
+	if !ownedBy(&svc, ss) {
 		t.Fatal("svc not owned by ServiceSet")
 	}
 
@@ -561,7 +561,7 @@ func TestServiceSetReconciler_CreatesServicePodAndPVC(t *testing.T) {
 	if pvc.Spec.Resources.Requests.Storage().String() != "1Gi" {
 		t.Fatalf("pvc size = %q", pvc.Spec.Resources.Requests.Storage())
 	}
-	if !ownedBy(pvc, ss) {
+	if !ownedBy(&pvc, ss) {
 		t.Fatal("pvc not owned by ServiceSet")
 	}
 }
@@ -956,7 +956,7 @@ func TestServiceSetReconciler_CreatesRuntimePodWithWorkspace(t *testing.T) {
 	if len(pod.Spec.Containers[0].Command) == 0 || pod.Spec.Containers[0].Command[0] != "sleep" {
 		t.Fatalf("runtime command = %+v", pod.Spec.Containers[0].Command)
 	}
-	if !ownedBy(pod, ss) {
+	if !ownedBy(&pod, ss) {
 		t.Fatal("runtime pod not owned by ServiceSet")
 	}
 }
