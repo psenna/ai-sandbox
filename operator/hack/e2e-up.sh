@@ -103,7 +103,7 @@ kind load docker-image --name "$E2E_CLUSTER" "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$
 
 # Services e2e spec images (pull-free + deterministic in the cluster): the
 # k8s-native services/version-switch specs declare postgres + python pods.
-for img in postgres:17-alpine python:3.11-alpine python:3.13-alpine; do
+for img in postgres:17-alpine python:3.11-alpine python:3.13-alpine alpine:3; do
   docker pull "$img"
   kind load docker-image "$img" --name "$E2E_CLUSTER"
 done

@@ -195,4 +195,47 @@ services:
 		}, 10*time.Second, h.Cfg.Poll).Should(Equal(dbUIDv1),
 			"db pod should NOT be recreated when only py changed")
 	})
+
+	// Isolation: declare an alpine runtime and exec a wget against the
+	// platform-doubles broker from inside it. Restricted -> egress BLOCKED
+	// (wget fails -> expect-fail passes); Open -> egress ALLOWED (wget
+	// succeeds -> plain exec passes). The probe hits the broker's
+	// /healthz (200 {"status":"ok"}) -- the root path has no handler and
+	// returns 404, which would make wget exit non-zero even when egress is
+	// allowed and break the Open assertion. alpine:3 ships busybox wget.
+	It("blocks egress to the broker under Restricted", func() {
+		class := h.CreateClass(ctx,
+			WithEngine(sandboxv1alpha1.EngineTypeK8sNative),
+			WithNetworkIsolation(sandboxv1alpha1.NetworkIsolationRestricted),
+		)
+		broker := h.brokerURL()
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			`SCRIPT:sandbox-services-apply {"runtimes":[{"name":"probe","image":"alpine:3","command":["sleep","infinity"]}]}`,
+			"SCRIPT:sleep 10",
+			`SCRIPT:sandbox-exec-expect-fail probe wget -T 3 -qO- `+broker+`/healthz`,
+			"SCRIPT:sandbox-done success restricted-egress-blocked",
+			"SCRIPT:sleep 2",
+			"SCRIPT:exit 0",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+	})
+
+	It("allows egress to the broker under Open", func() {
+		class := h.CreateClass(ctx,
+			WithEngine(sandboxv1alpha1.EngineTypeK8sNative),
+			WithNetworkIsolation(sandboxv1alpha1.NetworkIsolationOpen),
+		)
+		broker := h.brokerURL()
+		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
+			`SCRIPT:sandbox-services-apply {"runtimes":[{"name":"probe","image":"alpine:3","command":["sleep","infinity"]}]}`,
+			"SCRIPT:sleep 10",
+			`SCRIPT:sandbox-exec probe wget -T 3 -qO- `+broker+`/healthz`,
+			"SCRIPT:sandbox-done success open-egress-allowed",
+			"SCRIPT:sleep 2",
+			"SCRIPT:exit 0",
+		))
+		key := client.ObjectKey{Namespace: ns, Name: env.Name}
+		h.WaitForPhase(ctx, key, sandboxv1alpha1.PhaseDone, h.Cfg.PhaseTimeout)
+	})
 })
