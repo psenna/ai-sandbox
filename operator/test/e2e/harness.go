@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -532,6 +533,26 @@ func (h *Harness) ExpectAgentExitCode(ctx context.Context, key client.ObjectKey,
 		}
 		ginkgo.Fail(fmt.Sprintf("pod %s/%s has no %q container status", pod.Namespace, pod.Name, render.AgentContainerName))
 	}, h.Cfg.PodTimeout, h.Cfg.Poll).Should(gomega.Succeed())
+}
+
+// ServiceSetEntries returns the sorted entry names from the env's ServiceSet
+// (named envName in ns), or nil if the ServiceSet does not exist yet (the
+// agent has not applied services). Pod name == entry name, so this is also the
+// list of the env's ServiceSet pod names without a pods/list RBAC dependency.
+func (h *Harness) ServiceSetEntries(ctx context.Context, ns, envName string) []string {
+	var ss sandboxv1alpha1.ServiceSet
+	if err := h.Client.Get(ctx, client.ObjectKey{Name: envName, Namespace: ns}, &ss); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "getting ServiceSet %s/%s", ns, envName)
+	}
+	names := make([]string, 0, len(ss.Status.Entries))
+	for _, e := range ss.Status.Entries {
+		names = append(names, e.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // GetEnv fetches key's SandboxEnvironment, failing the spec if it cannot be
