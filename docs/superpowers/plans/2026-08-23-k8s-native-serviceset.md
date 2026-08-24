@@ -1267,7 +1267,13 @@ func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Change the image and re-reconcile.
+	// Change the image and re-reconcile. Re-fetch first: the reconcile above
+	// wrote .status (Task 5 writeStatus), bumping ss.resourceVersion, so an
+	// Update with the stale in-memory object would 409-conflict
+	// ("the object has been modified"). Get picks up the current RV.
+	if err := k8s.Get(ctx, key, ss); err != nil {
+		t.Fatal(err)
+	}
 	ss.Spec.Services[0].Image = "python:3.13-slim"
 	if err := k8s.Update(ctx, ss); err != nil {
 		t.Fatal(err)
@@ -1299,13 +1305,25 @@ func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the test to verify it passes**
 
-Expected: FAIL — with Task 3's `ensurePod`, the pod UID is unchanged because... verify: Task 3's `ensurePod` DOES delete+create on hash mismatch, so this may already PASS. If it passes, this test confirms the behavior (keep it). If it fails (e.g. `Update` of `ss.Spec` does not trigger reconcile because the controller is not watching spec changes in envtest's no-manager mode — recall envtest calls `Reconcile` manually), the test's explicit second `reconcileServiceSetOnce` is what drives it, so it should pass given Task 3's logic. Run and confirm PASS.
+This is a test-only task: Task 3's `ensurePod` already deletes+recreates the Pod on
+`spec-hash` mismatch and retains the (separately-owned) data PVC, so no controller
+change is expected. The re-fetch before `k8s.Update` (in the test above) is required:
+the first reconcile writes `.status` (Task 5 `writeStatus`), bumping
+`ss.resourceVersion`, so an Update with the stale in-memory object 409-conflicts.
+This was verified empirically (envtest): with the re-fetch, the Pod UID changes
+(recreate), the image updates to `python:3.13-slim`, and the data PVC UID is unchanged
+(retained). Run and confirm PASS.
 
-- [ ] **Step 3: If failing, fix ensurePod**
+- [ ] **Step 3: (No controller change expected)**
 
-If the pod is not recreated, the likely cause is that `r.Get` of the existing pod returns it but the hash comparison is wrong. Re-check `podSpecHash` includes the `image` argument and that `ensurePod` is called with the new image. The most common bug: `ensurePod`'s hash uses the *existing* pod's values instead of the *desired* ones — confirm `hash := podSpecHash(image, ...)` uses the function parameters (desired), not `existing`. Fix and rerun.
+If the test fails, do NOT change `ensurePod`/`podSpecHash` without first confirming the
+failure cause via the test output. The verified-correct path is: re-fetch before Update
+(already in the test) → Pod recreated, PVC retained. If the Pod is NOT recreated, the
+likely cause is a hash bug in `ensurePod` (it hashes the *existing* pod's values instead
+of the *desired* parameters) — confirm `podSpecHash(image, ...)` uses the function
+parameters, not `existing`. But this is NOT expected: Task 3's logic was verified working.
 
 - [ ] **Step 4: Run the full controller suite**
 
