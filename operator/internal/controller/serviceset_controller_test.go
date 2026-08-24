@@ -5,6 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -194,5 +195,89 @@ func TestServiceSetReconciler_CreatesRuntimePodWithWorkspace(t *testing.T) {
 	}
 	if !ownedBy(&pod, ss) {
 		t.Fatal("runtime pod not owned by ServiceSet")
+	}
+}
+
+func TestServiceSetReconciler_ReadyGatedByDependsOn(t *testing.T) {
+	// A depends on B; B depends on nothing. Mark only B's pod Ready first.
+	ss := &sandboxv1alpha1.ServiceSet{Spec: sandboxv1alpha1.ServiceSetSpec{
+		EnvironmentName: "env-deps",
+		Services: []sandboxv1alpha1.ServiceSpec{
+			{Name: "b", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}},
+			{Name: "a", Image: "alpine:3.21", Command: []string{"sleep", "infinity"}, DependsOn: []string{"b"}},
+		},
+	}}
+	ss.Name, ss.Namespace = "set-deps", "default"
+	mustCreateServiceSet(t, ss)
+	r := newServiceSetReconciler(t)
+	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
+	reconcileServiceSetOnce(t, r, key)
+
+	// Nothing ready yet: A not ready (pod not ready AND dep b not ready).
+	if _, err := reconcileServiceSetOnce(t, r, key); err != nil {
+		t.Fatal(err)
+	}
+	assertEntryReady(t, key, "a", false)
+	assertEntryReady(t, key, "b", false)
+	assertReadyCondition(t, key, metav1.ConditionFalse)
+
+	// Mark B's pod Ready: B becomes ready, A still not ready (its own pod not ready).
+	markPodReady(t, "b", "default")
+	if _, err := reconcileServiceSetOnce(t, r, key); err != nil {
+		t.Fatal(err)
+	}
+	assertEntryReady(t, key, "b", true)
+	assertEntryReady(t, key, "a", false)
+
+	// Mark A's pod Ready too: now A ready (dep b ready AND own pod ready), aggregate Ready=True.
+	markPodReady(t, "a", "default")
+	if _, err := reconcileServiceSetOnce(t, r, key); err != nil {
+		t.Fatal(err)
+	}
+	assertEntryReady(t, key, "a", true)
+	assertReadyCondition(t, key, metav1.ConditionTrue)
+}
+
+func markPodReady(t *testing.T, name, ns string) {
+	t.Helper()
+	var pod corev1.Pod
+	if err := k8s.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &pod); err != nil {
+		t.Fatalf("get pod %s: %v", name, err)
+	}
+	pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
+		Type: corev1.PodReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Now(),
+	})
+	if err := k8s.Status().Update(ctx, &pod); err != nil {
+		t.Fatalf("status update pod %s: %v", name, err)
+	}
+}
+func assertEntryReady(t *testing.T, key types.NamespacedName, name string, want bool) {
+	t.Helper()
+	var ss sandboxv1alpha1.ServiceSet
+	if err := k8s.Get(ctx, key, &ss); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ss.Status.Entries {
+		if e.Name == name {
+			if e.Ready != want {
+				t.Fatalf("entry %s ready = %v, want %v", name, e.Ready, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("entry %s not found in status", name)
+}
+func assertReadyCondition(t *testing.T, key types.NamespacedName, want metav1.ConditionStatus) {
+	t.Helper()
+	var ss sandboxv1alpha1.ServiceSet
+	if err := k8s.Get(ctx, key, &ss); err != nil {
+		t.Fatal(err)
+	}
+	c := apimeta.FindStatusCondition(ss.Status.Conditions, "Ready")
+	if c == nil {
+		t.Fatal("Ready condition missing")
+	}
+	if c.Status != want {
+		t.Fatalf("Ready condition = %s, want %s (reason=%s)", c.Status, want, c.Reason)
 	}
 }

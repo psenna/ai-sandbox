@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -59,7 +60,91 @@ func (r *ServiceSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 	}
+	if err := r.writeStatus(ctx, &ss); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
+}
+
+func (r *ServiceSetReconciler) writeStatus(ctx context.Context, ss *sandboxv1alpha1.ServiceSet) error {
+	// Capture the live object's status before mutation so the patch sends only
+	// the status diff (not spec/metadata), avoiding resourceVersion churn.
+	base := ss.DeepCopy()
+	ready := r.computeReady(ctx, ss)
+	entries := make([]sandboxv1alpha1.EntryStatus, 0, len(ss.Spec.Services)+len(ss.Spec.Runtimes))
+	allReady := true
+	for _, s := range ss.Spec.Services {
+		ok, reason := ready(s.Name)
+		entries = append(entries, sandboxv1alpha1.EntryStatus{Name: s.Name, Kind: "service", Ready: ok, Reason: reason})
+		if !ok {
+			allReady = false
+		}
+	}
+	for _, rt := range ss.Spec.Runtimes {
+		ok, reason := ready(rt.Name)
+		entries = append(entries, sandboxv1alpha1.EntryStatus{Name: rt.Name, Kind: "runtime", Ready: ok, Reason: reason})
+		if !ok {
+			allReady = false
+		}
+	}
+	cond := metav1.Condition{Type: "Ready", LastTransitionTime: metav1.Now(), ObservedGeneration: ss.Generation}
+	if allReady {
+		cond.Status = metav1.ConditionTrue
+		cond.Reason = "AllEntriesReady"
+	} else {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "EntriesNotReady"
+	}
+	apimeta.SetStatusCondition(&ss.Status.Conditions, cond)
+	ss.Status.Entries = entries
+	return r.Status().Patch(ctx, ss, client.MergeFrom(base))
+}
+
+// readyMap is a closure that resolves an entry's readiness (pod ready + deps ready).
+type readyMap func(name string) (bool, string)
+
+func (r *ServiceSetReconciler) computeReady(ctx context.Context, ss *sandboxv1alpha1.ServiceSet) readyMap {
+	// first pass: pod readiness by name (independent of deps)
+	podReady := map[string]bool{}
+	for _, s := range ss.Spec.Services {
+		podReady[s.Name] = r.isPodReady(ctx, ss.Namespace, s.Name)
+	}
+	for _, rt := range ss.Spec.Runtimes {
+		podReady[rt.Name] = r.isPodReady(ctx, ss.Namespace, rt.Name)
+	}
+	depMap := map[string][]string{}
+	for _, s := range ss.Spec.Services {
+		depMap[s.Name] = s.DependsOn
+	}
+	for _, rt := range ss.Spec.Runtimes {
+		depMap[rt.Name] = rt.DependsOn
+	}
+	var resolve readyMap
+	resolve = func(name string) (bool, string) {
+		if !podReady[name] {
+			return false, "PodNotReady"
+		}
+		for _, dep := range depMap[name] {
+			if ok, _ := resolve(dep); !ok {
+				return false, "DependenciesNotReady"
+			}
+		}
+		return true, ""
+	}
+	return resolve
+}
+
+func (r *ServiceSetReconciler) isPodReady(ctx context.Context, ns, name string) bool {
+	var pod corev1.Pod
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, &pod); err != nil {
+		return false
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *ServiceSetReconciler) reconcileRuntime(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, rt *sandboxv1alpha1.RuntimeSpec) error {
@@ -145,6 +230,11 @@ func pvcVolumeMode() *corev1.PersistentVolumeMode {
 }
 
 func (r *ServiceSetReconciler) ensureService(ctx context.Context, ss *sandboxv1alpha1.ServiceSet, s *sandboxv1alpha1.ServiceSpec, labels map[string]string) error {
+	// A Service with no ports has nothing to expose; skip creation (a portless
+	// ClusterIP Service is rejected by the API server anyway).
+	if len(s.Ports) == 0 {
+		return nil
+	}
 	var existing corev1.Service
 	key := types.NamespacedName{Name: s.Name, Namespace: ss.Namespace}
 	err := r.Get(ctx, key, &existing)
