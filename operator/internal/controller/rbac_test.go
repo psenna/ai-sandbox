@@ -300,6 +300,82 @@ func TestOperatorRBACIsSufficient_CatchesMissingMarker(t *testing.T) {
 	}
 }
 
+// TestSidecarServiceAccountAuthorization_K8sNative is the k8s-native engine's
+// counterpart to TestSidecarServiceAccountAuthorization: it renders the widened
+// sidecar Role (servicesets + pods/exec) by reconciling a real k8s-native env
+// in envtest, then asserts against envtest's REAL RBAC authorizer -- via both
+// SubjectAccessReview and an impersonated client.Create -- that the sidecar
+// ServiceAccount can actually upsert its own ServiceSet and one-shot exec into
+// runtime pods.
+//
+// The crux is the create verb. Kubernetes RBAC does NOT honor resourceNames
+// for create: on a POST the object name is in the request body, not the URL,
+// so the authorizer evaluates the create with an empty resource name and a
+// resourceNames-pinned rule matches NO real create (the env's own included).
+// A render that grants servicesets create WITH resourceNames=[env.Name]
+// therefore authorizes nothing -- the sidecar's services-apply is Forbidden,
+// which is exactly the e2e failure this test guards against. The render must
+// grant servicesets create WITHOUT resourceNames (namespace-scoped only,
+// mirroring the pods/exec rule); get/update keep the resourceNames pin, which
+// IS honored for those verbs and still proves environment-scoping.
+func TestSidecarServiceAccountAuthorization_K8sNative(t *testing.T) {
+	mustCreateClassWithEngine(t, sandboxv1alpha1.EngineTypeK8sNative)
+	env := mustCreateEnv(t, "sidecar-authz-k8snative")
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Name}
+
+	r := newResourceReconciler(t, newFakeClock(fixedStart))
+	reconcileOnce(t, r, key)
+
+	names := render.ChildNames(env.Name)
+	user := "system:serviceaccount:" + env.Namespace + ":" + names.ServiceAccount
+	groups := serviceAccountGroups(env.Namespace)
+
+	// SubjectAccessReview cases. The load-bearing one is "servicesets create,
+	// no name": it must be allowed, which is only true once the render grants
+	// create WITHOUT resourceNames. A name is deliberately OMITTED from the
+	// create case to mirror the real POST (whose name the authorizer does not
+	// see) -- asserting create WITH name would pass even under the broken
+	// render and mask the bug.
+	cases := []struct {
+		name        string
+		attrs       authorizationv1.ResourceAttributes
+		wantAllowed bool
+	}{
+		{"servicesets create (no name -- mirrors real POST)", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "create", Group: "sandbox.psenna.dev", Resource: "servicesets"}, true},
+		{"own serviceset get", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "get", Group: "sandbox.psenna.dev", Resource: "servicesets", Name: env.Name}, true},
+		{"own serviceset update", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "update", Group: "sandbox.psenna.dev", Resource: "servicesets", Name: env.Name}, true},
+		{"other serviceset get is forbidden (name-pin)", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "get", Group: "sandbox.psenna.dev", Resource: "servicesets", Name: env.Name + "-other"}, false},
+		{"other serviceset update is forbidden (name-pin)", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "update", Group: "sandbox.psenna.dev", Resource: "servicesets", Name: env.Name + "-other"}, false},
+		{"servicesets list is forbidden", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "list", Group: "sandbox.psenna.dev", Resource: "servicesets"}, false},
+		{"servicesets delete is forbidden", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "delete", Group: "sandbox.psenna.dev", Resource: "servicesets", Name: env.Name}, false},
+		{"pods/exec create (no name -- dynamic runtime pod names)", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "create", Group: "", Resource: "pods", Subresource: "exec"}, true},
+		{"pods create is forbidden", authorizationv1.ResourceAttributes{Namespace: env.Namespace, Verb: "create", Group: "", Resource: "pods"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mustSubjectAccessReview(t, user, groups, tc.attrs)
+			if got != tc.wantAllowed {
+				t.Errorf("SubjectAccessReview(%+v) allowed=%v, want %v", tc.attrs, got, tc.wantAllowed)
+			}
+		})
+	}
+
+	// The end-to-end guard: a real impersonated Create of the env's own
+	// ServiceSet (the exact operation sandboxctl's services-apply performs)
+	// must succeed, not come back Forbidden. This is the operation the e2e
+	// caught; asserting it here keeps a regression from reaching e2e again.
+	imp := impersonatingClient(t, user, groups)
+	ss := &sandboxv1alpha1.ServiceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: env.Name, Namespace: env.Namespace},
+		Spec:       sandboxv1alpha1.ServiceSetSpec{EnvironmentName: env.Name},
+	}
+	if err := imp.Create(ctx, ss); err != nil {
+		t.Errorf("impersonated Create of own ServiceSet %s: err = %v, want nil (the sidecar must be able to upsert its ServiceSet)", key, err)
+	} else {
+		t.Cleanup(func() { _ = k8s.Delete(ctx, ss) })
+	}
+}
+
 // loadOperatorClusterRole reads and parses the real, generated
 // config/rbac/role.yaml into a rbacv1.ClusterRole.
 func loadOperatorClusterRole(t *testing.T) *rbacv1.ClusterRole {
