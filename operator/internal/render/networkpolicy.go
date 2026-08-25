@@ -38,11 +38,25 @@ import (
 //     namespaceSelector+podSelector peer; Ports become the port list
 //     (defaulting to TCP when a port's protocol is empty).
 //
-// The ingress rules are: if in.Network.OperatorIngress is non-nil, one rule
-// allowing the operator's own pods (namespaceSelector on the operator's
-// namespace + the operator's pod selector) to reach the sandbox pod on any
-// port. If it is nil, no ingress rules are emitted -- an empty Ingress list
-// with policyTypes: [Ingress] is default-deny ingress.
+// The ingress rules are:
+//
+//  1. A base intra-env rule allowing env-labeled pods in this namespace to
+//     reach each other on any port. This policy's podSelector IS the env
+//     label, so it selects not just the agent pod but also the ServiceSet's
+//     dep/runtime pods (serviceset_controller.entryLabels stamps the same env
+//     label on them). Without a matching ingress rule those pods' ingress is
+//     default-denied: the agent's egress to them is allowed by
+//     envPodEgressRule but dropped at the destination, so the connection hangs
+//     (the e2e "reaches a declared service via Service DNS" failure this
+//     fixes). The rule is the symmetric counterpart to envPodEgressRule --
+//     podSelector-only (no namespaceSelector => this namespace), no ports.
+//  2. If in.Network.OperatorIngress is non-nil, one rule allowing the
+//     operator's own pods (namespaceSelector on the operator's namespace +
+//     the operator's pod selector) to reach the sandbox pod on any port.
+//
+// The base intra-env rule is always present under Restricted (like the DNS
+// egress rule); the operator rule is conditional. With no operator ingress
+// the ingress list is the single intra-env rule, not empty.
 func RenderNetworkPolicy(in Inputs) (*anetworkingv1.NetworkPolicyApplyConfiguration, error) {
 	if err := validateInputs(in); err != nil {
 		return nil, err
@@ -77,8 +91,10 @@ func RenderNetworkPolicy(in Inputs) (*anetworkingv1.NetworkPolicyApplyConfigurat
 		egress = append(egress, peerEgressRule(p))
 	}
 
-	// Ingress: operator-only, or default-deny (empty list).
-	var ingress []*anetworkingv1.NetworkPolicyIngressRuleApplyConfiguration
+	// Ingress: a base intra-env rule (env-labeled pods reach each other --
+	// see the doc comment above) plus the operator rule if configured. The
+	// intra-env rule is first so the ordering is deterministic.
+	ingress := []*anetworkingv1.NetworkPolicyIngressRuleApplyConfiguration{envPodIngressRule(in.Env.Name)}
 	if in.Network.OperatorIngress != nil {
 		ingress = append(ingress, operatorIngressRule(in.Network.OperatorIngress))
 	}
@@ -118,6 +134,22 @@ func dnsEgressRule() *anetworkingv1.NetworkPolicyEgressRuleApplyConfiguration {
 func envPodEgressRule(envName string) *anetworkingv1.NetworkPolicyEgressRuleApplyConfiguration {
 	return anetworkingv1.NetworkPolicyEgressRule().
 		WithTo(anetworkingv1.NetworkPolicyPeer().
+			WithPodSelector(metav1ac.LabelSelector().WithMatchLabels(map[string]string{
+				"sandbox.psenna.dev/environment": EnvironmentLabelValue(envName),
+			})))
+}
+
+// envPodIngressRule is the ingress counterpart to envPodEgressRule: it allows
+// pods in this namespace carrying the environment label to reach the pods this
+// policy selects. The policy's podSelector IS the env label, so it selects the
+// ServiceSet's dep/runtime pods too -- without this rule their ingress is
+// default-denied and the agent's egress to them (allowed by envPodEgressRule)
+// is dropped at the destination, hanging the connection (the e2e failure this
+// fixes). A podSelector-only peer (no namespaceSelector) selects pods in THIS
+// NetworkPolicy's namespace; no ports means all ports.
+func envPodIngressRule(envName string) *anetworkingv1.NetworkPolicyIngressRuleApplyConfiguration {
+	return anetworkingv1.NetworkPolicyIngressRule().
+		WithFrom(anetworkingv1.NetworkPolicyPeer().
 			WithPodSelector(metav1ac.LabelSelector().WithMatchLabels(map[string]string{
 				"sandbox.psenna.dev/environment": EnvironmentLabelValue(envName),
 			})))

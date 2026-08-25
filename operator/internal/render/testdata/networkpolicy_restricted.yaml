@@ -51,6 +51,10 @@ spec:
           app: git-proxy
   ingress:
   - from:
+    - podSelector:
+        matchLabels:
+          sandbox.psenna.dev/environment: restricted-env
+  - from:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ai-sandbox-operator-system
