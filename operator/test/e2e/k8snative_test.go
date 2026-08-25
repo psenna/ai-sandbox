@@ -48,19 +48,37 @@ var _ = Describe("k8s-native engine", func() {
 		h.WaitForCondition(ctx, key, "EngineSecurityRelaxed", metav1.ConditionFalse, "NoRelaxation", h.Cfg.PhaseTimeout)
 
 		// The agent pod exists (the engine rendered it -- unlike the not-implemented
-		// rootless-podman posture, which never creates a pod).
+		// rootless-podman posture, which never creates a pod). The pod is created at
+		// the Ready->Restoring transition, AFTER the SlotScheduler admits the env --
+		// which is after EngineSecurityRelaxed is first set at Pending->Ready -- so a
+		// direct Get here would race pod creation and 404. Wait for the pod to exist
+		// first; every sibling k8s-native spec below waits for PhaseRunning before
+		// touching the pod for the same reason.
+		Eventually(func() *corev1.Pod {
+			return h.getAgentPodOrNil(ctx, key)
+		}, h.Cfg.PodTimeout, h.Cfg.Poll).ShouldNot(BeNil(),
+			"agent pod should be created by the k8s-native engine")
 		pod := h.GetAgentPod(ctx, key)
 		var names []string
 		for _, c := range pod.Spec.Containers {
 			names = append(names, c.Name)
 		}
 		sort.Strings(names)
-		// Exactly the always-present containers: agent + sandboxctl. No
-		// engine-specific sidecar (a rootless-podman engine would add a podman
-		// sidecar; k8s-native does not). Restore is an init container, excluded
-		// from Spec.Containers.
-		Expect(names).To(Equal([]string{"agent", "sandboxctl"}),
-			"thin agent pod should have only agent+sandboxctl containers, got %v", names)
+		// The agent is the ONLY app container: k8s-native contributes no
+		// engine-specific sidecar (a rootless-podman engine would add a "podman"
+		// container here). The always-present sandboxctl control-channel sidecar
+		// is a NATIVE sidecar (restartPolicy: Always) in initContainers, not a
+		// regular container -- see render/pod.go's sidecarContainer and
+		// pod_restore_test.go's init[0]==sandboxctl pin. Restore is also an init
+		// container. Both are excluded from Spec.Containers.
+		Expect(names).To(Equal([]string{"agent"}),
+			"thin agent pod should have only the agent app container, got %v", names)
+		var initNames []string
+		for _, c := range pod.Spec.InitContainers {
+			initNames = append(initNames, c.Name)
+		}
+		Expect(initNames).To(ContainElement("sandboxctl"),
+			"agent pod should include the sandboxctl control-channel sidecar in initContainers, got %v", initNames)
 
 		// The agent holds no Kubernetes credential (headline invariant, re-asserted
 		// for the k8s-native engine -- the spec reaches Done through the loopback
