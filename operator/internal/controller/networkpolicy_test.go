@@ -148,14 +148,42 @@ func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) {
 		t.Errorf("api-server rule Ports = %+v, want [443]", api.Ports)
 	}
 
-	// Ingress: exactly one rule, the operator selector (in the reconciler's
-	// ClassSecretNamespace, "default" in this suite).
-	if len(np.Spec.Ingress) != 1 {
-		t.Fatalf("Ingress has %d rules, want 1 (operator)", len(np.Spec.Ingress))
+	// Ingress: two rules -- the base intra-env rule (env-labeled pods reach
+	// each other; the policy's podSelector IS the env label so it selects the
+	// ServiceSet's dep/runtime pods, which would otherwise be ingress-denied)
+	// and the operator selector (in the reconciler's ClassSecretNamespace,
+	// "default" in this suite). Both are found by peer characteristics, not
+	// index, so ordering does not break the assertion.
+	if len(np.Spec.Ingress) != 2 {
+		t.Fatalf("Ingress has %d rules, want 2 (env-pod + operator)", len(np.Spec.Ingress))
 	}
-	op := np.Spec.Ingress[0]
-	if len(op.From) != 1 || op.From[0].NamespaceSelector == nil || op.From[0].PodSelector == nil {
-		t.Fatalf("operator ingress From = %+v, want namespaceSelector+podSelector", op.From)
+	var envIngress *networkingv1.NetworkPolicyIngressRule
+	for i := range np.Spec.Ingress {
+		rule := &np.Spec.Ingress[i]
+		if len(rule.From) != 1 || rule.From[0].PodSelector == nil || rule.From[0].NamespaceSelector != nil {
+			continue
+		}
+		if rule.From[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] == render.EnvironmentLabelValue(env.Name) {
+			envIngress = rule
+			break
+		}
+	}
+	if envIngress == nil {
+		t.Errorf("no intra-env ingress rule with podSelector{sandbox.psenna.dev/environment=%q} (no namespaceSelector) in ingress %+v", render.EnvironmentLabelValue(env.Name), np.Spec.Ingress)
+	} else if len(envIngress.Ports) != 0 {
+		t.Errorf("intra-env ingress rule has %d ports, want 0 (all ports)", len(envIngress.Ports))
+	}
+	var op *networkingv1.NetworkPolicyIngressRule
+	for i := range np.Spec.Ingress {
+		rule := &np.Spec.Ingress[i]
+		if len(rule.From) != 1 || rule.From[0].NamespaceSelector == nil || rule.From[0].PodSelector == nil {
+			continue
+		}
+		op = rule
+		break
+	}
+	if op == nil {
+		t.Fatalf("no operator ingress rule in ingress %+v", np.Spec.Ingress)
 	}
 	if op.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "default" {
 		t.Errorf("operator ingress namespaceSelector = %+v, want default (ClassSecretNamespace)", op.From[0].NamespaceSelector)

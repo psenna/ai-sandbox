@@ -2,8 +2,11 @@ package sandboxctl
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -79,5 +82,51 @@ func TestWriteMarkers_WritesBothRootsAndSkipsEmptyAgentHome(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws2, ".sandbox", "last-freeze.json")); err != nil {
 		t.Errorf("expected workspace marker to exist: %v", err)
+	}
+}
+
+func TestTeardownMarker_PodsRoundTripAndMarkdown(t *testing.T) {
+	marker := TeardownMarker{
+		SchemaVersion: 1,
+		Seq:           7,
+		Engine:        "k8s-native",
+		Destroyed: Destroyed{
+			// Containers is left nil: k8s-native populates Pods, not Containers,
+			// and a nil []string marshals to `null` (the production form -- a
+			// consumer must tolerate null, not assume []).
+			Pods:            []string{"db", "python"},
+			ImageLayerCache: true,
+			Notes:           []string{"k8s-native: 2 pod(s) present at freeze"},
+		},
+	}
+
+	raw, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Back-compatible: the existing `containers` key is still present. For the
+	// k8s-native path Containers is nil, which marshals to `null` (the real
+	// production form -- snapshot.go sets Containers: report.Containers, nil
+	// for k8s-native). Asserting `null` here matches what consumers will see.
+	if !bytes.Contains(raw, []byte(`"containers":null`)) {
+		t.Errorf("expected containers:null for the k8s-native path, got %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"pods":["db","python"]`)) {
+		t.Errorf("expected pods list in JSON, got %s", raw)
+	}
+
+	var got TeardownMarker
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got.Destroyed.Pods, marker.Destroyed.Pods) {
+		t.Errorf("Pods round-trip = %v, want %v", got.Destroyed.Pods, marker.Destroyed.Pods)
+	}
+
+	md := marker.RenderMarkdown()
+	for _, want := range []string{"Pods:", "db", "python"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("RenderMarkdown missing %q in:\n%s", want, md)
+		}
 	}
 }

@@ -26,7 +26,7 @@ func RunFreezeOnce(ctx context.Context, cfg Config, log logr.Logger) error {
 	}
 	snap := store.Snapshot()
 
-	hook, err := buildFreezeHook(store, cfg, log)
+	hook, err := buildFreezeHook(store, cfg, c, log)
 	if err != nil {
 		return err
 	}

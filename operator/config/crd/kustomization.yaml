@@ -1,3 +1,4 @@
 resources:
 - bases/sandbox.psenna.dev_sandboxclasses.yaml
 - bases/sandbox.psenna.dev_sandboxenvironments.yaml
+- bases/sandbox.psenna.dev_servicesets.yaml

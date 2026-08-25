@@ -99,7 +99,30 @@ if [ "$E2E_CNI" = "calico" ]; then
 fi
 
 echo "==> loading images into the cluster"
-kind load docker-image --name "$E2E_CLUSTER" "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$DOUBLES_IMAGE" "$MINIO_IMAGE"
+# load_image <image...>: import images into the kind node's containerd.
+# `kind load docker-image` (kind v0.30.0) runs `ctr images import --all-platforms
+# --digests`, which FAILS on multi-arch manifest lists (pulled images such as
+# minio, postgres, python, alpine) with `ctr: content digest ... not found` --
+# it demands every platform's blobs, but a single-arch `docker pull` only
+# fetched the host platform, so the others are absent. Import directly with
+# `ctr images import` and NO --all-platforms, which imports exactly the
+# platforms present in the saved tarball. Works for single-platform
+# locally-built images too (a subset), so it is used uniformly for every image.
+load_image() {
+  for img in "$@"; do
+    echo "  loading $img"
+    docker save "$img" | docker exec --privileged -i "$E2E_CLUSTER-control-plane" \
+      ctr --namespace=k8s.io images import --snapshotter=overlayfs -
+  done
+}
+load_image "$OPERATOR_IMAGE" "$AGENT_IMAGE" "$DOUBLES_IMAGE" "$MINIO_IMAGE"
+
+# Services e2e spec images (pull-free + deterministic in the cluster): the
+# k8s-native services/version-switch specs declare postgres + python pods.
+for img in postgres:17-alpine python:3.11-alpine python:3.13-alpine alpine:3; do
+  docker pull "$img"
+  load_image "$img"
+done
 
 echo "==> deploying operator + MinIO + platform doubles (E2E_DEPLOY=$E2E_DEPLOY)"
 if [ "$E2E_DEPLOY" = "helm" ]; then

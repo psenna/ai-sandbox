@@ -161,6 +161,7 @@ func (h *SnapshotHook) Freeze(ctx context.Context, s Snapshot) error {
 		Engine:        report.Engine,
 		Destroyed: Destroyed{
 			Containers:      report.Containers,
+			Pods:            report.Pods,
 			ImageLayerCache: true,
 			Notes:           nonEmptyNotes(report.Note),
 		},

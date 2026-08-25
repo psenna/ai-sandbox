@@ -40,7 +40,7 @@ func buildClient() (client.Client, error) {
 // configured, otherwise the real SnapshotHook. cfg.Snapshot.Backend=="pvc"
 // intentionally builds a SnapshotHook with a nil Backend -- Freeze fails
 // closed on that case before ever touching it (see snapshot.go).
-func buildFreezeHook(store Store, cfg Config, log logr.Logger) (FreezeHook, error) {
+func buildFreezeHook(store Store, cfg Config, c client.Client, log logr.Logger) (FreezeHook, error) {
 	if cfg.Snapshot.Backend == "" {
 		return NewNoopFreezeHook(log), nil
 	}
@@ -52,7 +52,7 @@ func buildFreezeHook(store Store, cfg Config, log logr.Logger) (FreezeHook, erro
 			return nil, fmt.Errorf("building snapshot backend: %w", err)
 		}
 	}
-	return NewSnapshotHook(store, be, NewEngineTeardown(cfg.Snapshot.Engine), cfg.Snapshot, log), nil
+	return NewSnapshotHook(store, be, NewEngineTeardown(cfg.Snapshot.Engine, c, cfg.Namespace, cfg.Environment), cfg.Snapshot, log), nil
 }
 
 // Run wires together the direct Kubernetes client, the Store, the Poller,
@@ -71,7 +71,7 @@ func Run(ctx context.Context, cfg Config, log logr.Logger) error {
 
 	store := NewStore(c, cfg.Namespace, cfg.Environment)
 
-	hook, err := buildFreezeHook(store, cfg, log)
+	hook, err := buildFreezeHook(store, cfg, c, log)
 	if err != nil {
 		return err
 	}

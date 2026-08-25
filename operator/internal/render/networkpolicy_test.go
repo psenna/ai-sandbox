@@ -164,18 +164,49 @@ func assertNPEgress(t *testing.T, egress []anetworkingv1.NetworkPolicyEgressRule
 	}
 }
 
-// assertNPIngress checks the single operator ingress rule.
+// assertNPIngress checks the two ingress rules: the base intra-env rule
+// (env-labeled pods reach each other) and the operator rule. Both are found by
+// their peer characteristics, not by index, so ingress ordering does not break
+// the assertion.
 func assertNPIngress(t *testing.T, ingress []anetworkingv1.NetworkPolicyIngressRuleApplyConfiguration) {
 	t.Helper()
-	if len(ingress) != 1 {
-		t.Fatalf("Ingress has %d rules, want 1 (operator)", len(ingress))
+	if len(ingress) != 2 {
+		t.Fatalf("Ingress has %d rules, want 2 (env-pod + operator)", len(ingress))
 	}
-	op := ingress[0]
-	if len(op.From) != 1 || op.From[0].NamespaceSelector == nil || op.From[0].PodSelector == nil {
-		t.Fatalf("operator ingress From = %+v, want namespaceSelector+podSelector", op.From)
+
+	// The intra-env rule: a podSelector-only peer (no namespaceSelector) on the
+	// env label, no ports (all ports).
+	var envRule *anetworkingv1.NetworkPolicyIngressRuleApplyConfiguration
+	for i := range ingress {
+		rule := &ingress[i]
+		if len(rule.From) != 1 || rule.From[0].PodSelector == nil || rule.From[0].NamespaceSelector != nil {
+			continue
+		}
+		if rule.From[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] == EnvironmentLabelValue("restricted-env") {
+			envRule = rule
+			break
+		}
 	}
-	if op.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "ai-sandbox-operator-system" {
-		t.Errorf("operator ingress namespaceSelector = %+v, want ai-sandbox-operator-system", op.From[0].NamespaceSelector)
+	if envRule == nil {
+		t.Errorf("no intra-env ingress rule with podSelector{sandbox.psenna.dev/environment=%q} (no namespaceSelector) in ingress %+v", EnvironmentLabelValue("restricted-env"), ingress)
+	} else if len(envRule.Ports) != 0 {
+		t.Errorf("intra-env ingress rule has %d ports, want 0 (all ports)", len(envRule.Ports))
+	}
+
+	// The operator rule: namespaceSelector+podSelector peer.
+	var op *anetworkingv1.NetworkPolicyIngressRuleApplyConfiguration
+	for i := range ingress {
+		rule := &ingress[i]
+		if len(rule.From) != 1 || rule.From[0].NamespaceSelector == nil || rule.From[0].PodSelector == nil {
+			continue
+		}
+		if rule.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "ai-sandbox-operator-system" {
+			op = rule
+			break
+		}
+	}
+	if op == nil {
+		t.Fatalf("no operator ingress rule in ingress %+v", ingress)
 	}
 	if op.From[0].PodSelector.MatchLabels["control-plane"] != "controller-manager" {
 		t.Errorf("operator ingress podSelector = %+v, want control-plane=controller-manager", op.From[0].PodSelector)
@@ -232,11 +263,22 @@ func TestRenderNetworkPolicy_NoOperatorIngress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderNetworkPolicy: %v", err)
 	}
-	if len(np.Spec.Ingress) != 0 {
-		t.Errorf("Ingress = %+v, want empty (default-deny ingress)", np.Spec.Ingress)
+	// The base intra-env ingress rule is always present under Restricted (the
+	// agent must reach the ServiceSet's dep/runtime pods); only the operator
+	// rule is conditional on OperatorIngress. So with no operator ingress the
+	// list is the single intra-env rule, not empty.
+	if len(np.Spec.Ingress) != 1 {
+		t.Fatalf("Ingress has %d rules, want 1 (intra-env only; no operator)", len(np.Spec.Ingress))
+	}
+	rule := &np.Spec.Ingress[0]
+	if len(rule.From) != 1 || rule.From[0].PodSelector == nil || rule.From[0].NamespaceSelector != nil {
+		t.Fatalf("intra-env ingress From = %+v, want podSelector-only (no namespaceSelector)", rule.From)
+	}
+	if rule.From[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] != EnvironmentLabelValue(in.Env.Name) {
+		t.Errorf("intra-env ingress podSelector = %+v, want sandbox.psenna.dev/environment=%q", rule.From[0].PodSelector, EnvironmentLabelValue(in.Env.Name))
 	}
 	if len(np.Spec.PolicyTypes) != 2 {
-		t.Errorf("PolicyTypes = %v, want [Ingress Egress] (empty Ingress + Ingress type = default-deny)", np.Spec.PolicyTypes)
+		t.Errorf("PolicyTypes = %v, want [Ingress Egress]", np.Spec.PolicyTypes)
 	}
 }
 
@@ -324,5 +366,46 @@ func TestNetworkPolicyEnvEgress(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no env-egress rule with podSelector{sandbox.psenna.dev/environment=%q} (no namespaceSelector, no ports) in egress %+v", wantLabel, np.Spec.Egress)
+	}
+}
+
+// TestNetworkPolicyEnvIngress asserts the Restricted NetworkPolicy carries an
+// intra-env ingress rule -- the symmetric counterpart to the env-egress rule.
+// The policy's podSelector IS the env label, so it selects the ServiceSet's
+// dep/runtime pods too; without a matching ingress rule their ingress is
+// default-denied and the agent's egress to them (allowed by the env-egress
+// rule) is dropped at the destination, hanging the connection (the e2e
+// "reaches a declared service via Service DNS" failure this guards). The rule
+// is a podSelector-only peer (no namespaceSelector => this namespace) with no
+// ports (all ports). It is found by its podSelector matchLabels, not by index,
+// so ingress ordering does not break the assertion.
+func TestNetworkPolicyEnvIngress(t *testing.T) {
+	in := restrictedInputs()
+	np, err := RenderNetworkPolicy(in)
+	if err != nil {
+		t.Fatalf("RenderNetworkPolicy: %v", err)
+	}
+	if np == nil || np.Spec == nil {
+		t.Fatal("Restricted isolation: got nil NetworkPolicy/Spec")
+	}
+
+	wantLabel := EnvironmentLabelValue(in.Env.Name)
+	var found bool
+	for i := range np.Spec.Ingress {
+		rule := &np.Spec.Ingress[i]
+		if len(rule.Ports) != 0 {
+			continue // the env rule is all-ports
+		}
+		if len(rule.From) != 1 || rule.From[0].PodSelector == nil {
+			continue
+		}
+		if rule.From[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] == wantLabel &&
+			rule.From[0].NamespaceSelector == nil {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no intra-env ingress rule with podSelector{sandbox.psenna.dev/environment=%q} (no namespaceSelector, no ports) in ingress %+v", wantLabel, np.Spec.Ingress)
 	}
 }

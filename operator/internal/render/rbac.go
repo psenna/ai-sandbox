@@ -26,12 +26,31 @@ import (
 // never patch a DIFFERENT environment's status at all.
 //
 // When the class engine is k8s-native (#24, Plan 2), the Role is widened with
-// two extra rules gated on engine==k8s-native for least-privilege: none and
+// three extra rules gated on engine==k8s-native for least-privilege: none and
 // rootless-podman envs get NO servicesets/pods-exec rules. k8s-native adds
 // the ServiceSet control model: the sidecar upserts one ServiceSet CR named
-// after the environment (resourceNames pins it -- the CR name == env.Name),
-// and one-shot execs into declared runtime pods (POST /v1/exec -> SPDY
-// pods/exec). pods/exec cannot be name-pinned: runtime pod names are dynamic
+// after the environment (the CR name == env.Name), and one-shot execs into
+// declared runtime pods (POST /v1/exec -> SPDY pods/exec).
+//
+// The servicesets grant is split across two rules because Kubernetes RBAC
+// does NOT honor resourceNames for the create verb: on a POST the object
+// name lives in the request body, not the URL, so the authorizer evaluates a
+// create with an empty resource name and a resourceNames-pinned rule matches
+// NO real create -- the env's own included. Granting servicesets create WITH
+// resourceNames=[env.Name] therefore authorizes nothing, and the sidecar's
+// services-apply is Forbidden (the e2e failure this split fixes, guarded by
+// controller/rbac_test.go's TestSidecarServiceAccountAuthorization_K8sNative
+// via a real SubjectAccessReview and an impersonated Create). So:
+//   - get/update keep resourceNames=[env.Name]: those verbs read the name
+//     from the URL, resourceNames IS honored, and the pin scopes them to the
+//     env's own ServiceSet -- this is what proves environment-scoping.
+//   - create is granted WITHOUT resourceNames (namespace-scoped only), the
+//     same treatment pods/exec gets below. The sidecar's code creates exactly
+//     one ServiceSet named env.Name (internal/sandboxctl/serviceset_store.go),
+//     so the unpinned create is inert in practice; the get/update name-pin
+//     still proves environment-scoping for the verbs that can be pinned.
+//
+// pods/exec likewise cannot be name-pinned: runtime pod names are dynamic
 // (declared in services.yaml at runtime), so it is namespace-scoped only --
 // the same per-subresource-not-per-field honesty as the status rule above.
 // No list/watch on servicesets: the sidecar upserts by name, never lists.
@@ -51,11 +70,21 @@ func renderRole(in Inputs) *acrbacv1.RoleApplyConfiguration {
 	}
 	if in.Class != nil && in.Class.Spec.Engine.Type == v1alpha1.EngineTypeK8sNative {
 		rules = append(rules,
+			// servicesets get/update: name-pinned to the env's own ServiceSet
+			// (resourceNames IS honored for get/update -- the name is in the URL).
 			acrbacv1.PolicyRule().
 				WithAPIGroups("sandbox.psenna.dev").
 				WithResources("servicesets").
 				WithResourceNames(in.Env.Name).
-				WithVerbs("get", "create", "update"),
+				WithVerbs("get", "update"),
+			// servicesets create: NOT name-pinned -- Kubernetes RBAC ignores
+			// resourceNames for create (see the doc comment above). Namespace-
+			// scoped only; the sidecar creates exactly one ServiceSet named
+			// env.Name, so this is inert in practice.
+			acrbacv1.PolicyRule().
+				WithAPIGroups("sandbox.psenna.dev").
+				WithResources("servicesets").
+				WithVerbs("create"),
 			acrbacv1.PolicyRule().
 				WithAPIGroups("").
 				WithResources("pods/exec").
