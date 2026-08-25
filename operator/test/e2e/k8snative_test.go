@@ -135,6 +135,17 @@ var _ = Describe("k8s-native engine", func() {
 		// postgres:17-alpine is pre-loaded (e2e-up.sh). It listens on 5432 with
 		// POSTGRES_PASSWORD set; the assertion is DNS resolve + TCP connect,
 		// not a real SQL handshake.
+		//
+		// The TCP healthcheck on 5432 is load-bearing for the connect probe
+		// below: without a healthcheck the ServiceSet pod has no readinessProbe,
+		// so PodReady flips the moment the container starts -- before postgres
+		// binds 5432 -- and waitServiceSetReady returns while the port is still
+		// refusing (connect -> "Connection refused", a readiness race, not a
+		// network-policy deny). The healthcheck makes PodReady mean "postgres is
+		// accepting on 5432", so the probe runs only once the service is actually
+		// connectable. This is the product's healthcheck opt-in doing its job,
+		// not a workaround: a user who wants Ready to mean "reachable" declares a
+		// probe, exactly as here.
 		h.applyServices(ctx, ns, env.Name, `
 services:
   - name: db
@@ -142,6 +153,9 @@ services:
     ports: [5432]
     env:
       POSTGRES_PASSWORD: secret
+    healthcheck:
+      tcp:
+        port: 5432
 `)
 		waitServiceSetReady(ctx, ns, env.Name, []string{"db"}, h.Cfg.PodTimeout)
 
