@@ -212,7 +212,7 @@ func TestServiceSetReconciler_ReadyGatedByDependsOn(t *testing.T) {
 	mustCreateServiceSet(t, ss)
 	r := newServiceSetReconciler(t)
 	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	// Nothing ready yet: A not ready (pod not ready AND dep b not ready).
 	if _, err := reconcileServiceSetOnce(t, r, key); err != nil {
@@ -295,7 +295,7 @@ func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
 	mustCreateServiceSet(t, ss)
 	r := newServiceSetReconciler(t)
 	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	var podBefore corev1.Pod
 	if err := k8s.Get(ctx, types.NamespacedName{Name: "python", Namespace: "default"}, &podBefore); err != nil {
@@ -317,7 +317,7 @@ func TestServiceSetReconciler_ImageChangeRecreatesPodRetainsPVC(t *testing.T) {
 	if err := k8s.Update(ctx, ss); err != nil {
 		t.Fatal(err)
 	}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	var podAfter corev1.Pod
 	if err := k8s.Get(ctx, types.NamespacedName{Name: "python", Namespace: "default"}, &podAfter); err != nil {
@@ -355,7 +355,7 @@ func TestServiceSetReconciler_PrunesRemovedEntries(t *testing.T) {
 	mustCreateServiceSet(t, ss)
 	r := newServiceSetReconciler(t)
 	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	// Both pods exist now.
 	if err := k8s.Get(ctx, types.NamespacedName{Name: "drop", Namespace: "default"}, &corev1.Pod{}); err != nil {
@@ -372,7 +372,7 @@ func TestServiceSetReconciler_PrunesRemovedEntries(t *testing.T) {
 	if err := k8s.Update(ctx, ss); err != nil {
 		t.Fatal(err)
 	}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	if err := k8s.Get(ctx, types.NamespacedName{Name: "drop", Namespace: "default"}, &corev1.Pod{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("drop pod should be pruned, got err=%v", err)
@@ -394,11 +394,11 @@ func TestServiceSetReconciler_CyclicDependsOnTerminatesNotReady(t *testing.T) {
 	mustCreateServiceSet(t, ss)
 	r := newServiceSetReconciler(t)
 	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
-	reconcileServiceSetOnce(t, r, key) // must not hang or crash
+	_, _ = reconcileServiceSetOnce(t, r, key) // must not hang or crash
 
 	markPodReady(t, "a", "default")
 	markPodReady(t, "b", "default")
-	reconcileServiceSetOnce(t, r, key) // cycle now reachable: must still terminate
+	_, _ = reconcileServiceSetOnce(t, r, key) // cycle now reachable: must still terminate
 
 	assertReadyCondition(t, key, metav1.ConditionFalse)
 	assertEntryReady(t, key, "a", false)
@@ -419,11 +419,11 @@ func TestServiceSetReconciler_DiamondDependsOnNotACycle(t *testing.T) {
 	mustCreateServiceSet(t, ss)
 	r := newServiceSetReconciler(t)
 	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 	for _, n := range []string{"a", "b", "c", "d"} {
 		markPodReady(t, n, "default")
 	}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 	assertReadyCondition(t, key, metav1.ConditionTrue)
 	for _, n := range []string{"a", "b", "c", "d"} {
 		assertEntryReady(t, key, n, true)
@@ -452,7 +452,7 @@ func TestServiceSetReconcileDuplicateEntryName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile returned err=%v, want nil (collision is a bad spec, not a transient error)", err)
 	}
-	if res.Requeue {
+	if !res.IsZero() {
 		t.Fatal("reconcile requeued; a colliding name must not requeue")
 	}
 
@@ -497,7 +497,7 @@ func TestServiceSetReconcileDuplicateEntryName(t *testing.T) {
 	if err2 != nil {
 		t.Fatalf("second reconcile returned err=%v, want nil (idempotent)", err2)
 	}
-	if res2.Requeue {
+	if !res2.IsZero() {
 		t.Fatal("second reconcile requeued; must not requeue while collision persists")
 	}
 	var pod2 corev1.Pod
@@ -517,7 +517,7 @@ func TestServiceSetReconciler_PortlessAfterPortsPrunesService(t *testing.T) {
 	mustCreateServiceSet(t, ss)
 	r := newServiceSetReconciler(t)
 	key := types.NamespacedName{Name: ss.Name, Namespace: ss.Namespace}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	// Service exists (had ports).
 	if err := k8s.Get(ctx, types.NamespacedName{Name: "web", Namespace: "default"}, &corev1.Service{}); err != nil {
@@ -534,7 +534,7 @@ func TestServiceSetReconciler_PortlessAfterPortsPrunesService(t *testing.T) {
 	if err := k8s.Update(ctx, ss); err != nil {
 		t.Fatal(err)
 	}
-	reconcileServiceSetOnce(t, r, key)
+	_, _ = reconcileServiceSetOnce(t, r, key)
 
 	// Stale Service pruned; Pod still present (portless service still gets a Pod).
 	if err := k8s.Get(ctx, types.NamespacedName{Name: "web", Namespace: "default"}, &corev1.Service{}); !apierrors.IsNotFound(err) {

@@ -80,7 +80,7 @@ func mustCreateNetworkClass(t *testing.T, name string, isolation sandboxv1alpha1
 // a NetworkPolicy owned by the environment, default-denying ingress and egress
 // except for the kube-dns rule, the API-server ipBlock peer, the extraEgress
 // CIDR peer, and the operator ingress rule.
-func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) {
+func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) { //nolint:gocyclo // a single rendered NetworkPolicy is asserted field-by-field; the branch count is one `if` per assertion, not real logic, and splitting it would scatter one policy's contract across several tests
 	mustCreateNetworkClass(t, "restricted-np", sandboxv1alpha1.NetworkIsolationRestricted,
 		[]sandboxv1alpha1.EgressPeer{{CIDR: "0.0.0.0/0"}})
 	env := mustCreateEnvForClass(t, "restricted-np-env", "restricted-np")

@@ -17,11 +17,11 @@ func RunServicesApply(args []string, getenv func(string) string, out io.Writer) 
 	listen := fs.String("listen", envOr(getenv, "LISTEN", "127.0.0.1:9099"), "control API address")
 	file := fs.String("file", "", "path to services.yaml (default ./services.yaml)")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "invalid flags: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "invalid flags: "+err.Error())
 		return 2
 	}
 	if err := validateLoopbackListen(*listen); err != nil {
-		fmt.Fprintln(os.Stderr, "invalid --listen: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "invalid --listen: "+err.Error())
 		return 2
 	}
 	path := *file
@@ -32,28 +32,28 @@ func RunServicesApply(args []string, getenv func(string) string, out io.Writer) 
 			path = "services.yaml"
 		}
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the user's own --file flag or positional arg (default services.yaml); reading the file the operator names is this command's entire purpose
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "reading "+path+": "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "reading "+path+": "+err.Error())
 		return 2
 	}
 	spec, err := ParseServicesYAML(data)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "parsing "+path+": "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "parsing "+path+": "+err.Error())
 		return 2
 	}
 	spec.EnvironmentName = "local" // client-side pre-check placeholder; server overrides
 	if err := ValidateServiceSet(spec); err != nil {
-		fmt.Fprintln(os.Stderr, "invalid declaration: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "invalid declaration: "+err.Error())
 		return 2
 	}
 	cli := NewControlClient(*listen)
 	resp, err := cli.ApplyServices(context.Background(), ServicesApplyRequest{Services: spec.Services, Runtimes: spec.Runtimes})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "services apply failed: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "services apply failed: "+err.Error())
 		return 1
 	}
-	fmt.Fprintf(out, "applied environment=%s services=%d runtimes=%d\n", resp.Environment, resp.Services, resp.Runtimes)
+	_, _ = fmt.Fprintf(out, "applied environment=%s services=%d runtimes=%d\n", resp.Environment, resp.Services, resp.Runtimes)
 	return 0
 }
 
@@ -64,7 +64,7 @@ func RunServicesCompose(args []string, getenv func(string) string, out io.Writer
 	file := fs.String("file", "", "path to services.yaml (default ./services.yaml)")
 	output := fs.String("o", "", "write to file instead of stdout")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "invalid flags: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "invalid flags: "+err.Error())
 		return 2
 	}
 	path := *file
@@ -75,19 +75,19 @@ func RunServicesCompose(args []string, getenv func(string) string, out io.Writer
 			path = "services.yaml"
 		}
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the user's own --file flag or positional arg (default services.yaml); reading the file the operator names is this command's entire purpose
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "reading "+path+": "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "reading "+path+": "+err.Error())
 		return 2
 	}
 	spec, err := ParseServicesYAML(data)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "parsing "+path+": "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "parsing "+path+": "+err.Error())
 		return 2
 	}
 	rendered, err := Compose(spec)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "rendering compose: "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "rendering compose: "+err.Error())
 		return 1
 	}
 	if *output == "" {
@@ -95,7 +95,7 @@ func RunServicesCompose(args []string, getenv func(string) string, out io.Writer
 		return 0
 	}
 	if err := os.WriteFile(*output, rendered, 0o644); err != nil { //nolint:gosec // G306: compose YAML, non-secret
-		fmt.Fprintln(os.Stderr, "writing "+*output+": "+err.Error())
+		_, _ = fmt.Fprintln(os.Stderr, "writing "+*output+": "+err.Error())
 		return 1
 	}
 	return 0
@@ -118,17 +118,17 @@ func RunExec(args []string, getenv func(string) string, stdin io.Reader, stdout,
 	fs := newFlagSet("sandboxctl exec")
 	listen := fs.String("listen", envOr(getenv, "LISTEN", "127.0.0.1:9099"), "control API address")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "invalid flags: "+err.Error())
+		_, _ = fmt.Fprintln(stderr, "invalid flags: "+err.Error())
 		return 2
 	}
 	if err := validateLoopbackListen(*listen); err != nil {
-		fmt.Fprintln(stderr, "invalid --listen: "+err.Error())
+		_, _ = fmt.Fprintln(stderr, "invalid --listen: "+err.Error())
 		return 2
 	}
 	rest := fs.Args()
 	// Expect: <runtime> -- <cmd...>
 	if len(rest) < 1 {
-		fmt.Fprintln(stderr, "usage: sandboxctl exec <runtime> -- <cmd...>")
+		_, _ = fmt.Fprintln(stderr, "usage: sandboxctl exec <runtime> -- <cmd...>")
 		return 2
 	}
 	runtime := rest[0]
@@ -138,7 +138,7 @@ func RunExec(args []string, getenv func(string) string, stdin io.Reader, stdout,
 		cmd = cmd[1:]
 	}
 	if len(cmd) == 0 {
-		fmt.Fprintln(stderr, "usage: sandboxctl exec <runtime> -- <cmd...>")
+		_, _ = fmt.Fprintln(stderr, "usage: sandboxctl exec <runtime> -- <cmd...>")
 		return 2
 	}
 	// Read stdin fully when the caller provides a non-empty reader (the test
@@ -153,13 +153,13 @@ func RunExec(args []string, getenv func(string) string, stdin io.Reader, stdout,
 	cli := NewControlClient(*listen)
 	resp, err := cli.Exec(context.Background(), ExecRequest{Runtime: runtime, Command: cmd, Stdin: string(stdinBytes)})
 	if err != nil {
-		fmt.Fprintln(stderr, "exec failed: "+err.Error())
+		_, _ = fmt.Fprintln(stderr, "exec failed: "+err.Error())
 		return 1
 	}
 	_, _ = stdout.Write([]byte(resp.Stdout))
 	_, _ = stderr.Write([]byte(resp.Stderr))
 	if resp.Error != "" {
-		fmt.Fprintln(stderr, "exec error: "+resp.Error)
+		_, _ = fmt.Fprintln(stderr, "exec error: "+resp.Error)
 		return 1
 	}
 	if resp.ExitCode < 0 {

@@ -55,7 +55,7 @@ func doJSON[T any](h *http.Client, req *http.Request) (T, error) {
 	if err != nil {
 		return zero, fmt.Errorf("control API %s %s: %w", req.Method, req.URL.Path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		var out T
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

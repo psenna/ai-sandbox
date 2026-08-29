@@ -83,7 +83,7 @@ func TestRole_OnlyAllowedVerbs(t *testing.T) {
 // pods/exec create is namespace-scoped only (runtime pod names are dynamic and
 // cannot be name-pinned). For the none engine, NO rule may reference
 // servicesets or pods/exec -- least-privilege gating.
-func TestRole_K8sNativeWide(t *testing.T) {
+func TestRole_K8sNativeWide(t *testing.T) { //nolint:gocyclo // asserts every rule of the k8s-native Role field-by-field; the branch count is one `if` per assertion, not real logic
 	in := Inputs{Env: baseEnv("e"), Class: withEngine(minimalClass(), v1alpha1.EngineTypeK8sNative)}
 	objs, err := Render(in)
 	if err != nil {

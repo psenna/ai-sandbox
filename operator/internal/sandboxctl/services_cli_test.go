@@ -188,7 +188,7 @@ func TestRunServicesCompose_WritesToFile(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("stdout = %q, want empty when -o is set", stdout.String())
 	}
-	b, err := os.ReadFile(out)
+	b, err := os.ReadFile(out) //nolint:gosec // G304: out is a t.TempDir() path built by this test
 	if err != nil {
 		t.Fatalf("read output file: %v", err)
 	}

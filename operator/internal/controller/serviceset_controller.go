@@ -248,8 +248,7 @@ func (r *ServiceSetReconciler) computeReady(ctx context.Context, ss *sandboxv1al
 	for _, rt := range ss.Spec.Runtimes {
 		depMap[rt.Name] = rt.DependsOn
 	}
-	var resolve readyMap
-	resolve = func(name string) (bool, string) {
+	resolve := func(name string) (bool, string) {
 		// Path-based cycle guard: seen tracks the names on the CURRENT DFS path,
 		// not all-ever-visited. Backtracking (delete after the dep loop) keeps a
 		// diamond (a→b→d, a→c→d) from false-positiving as a cycle: once d resolves

@@ -49,7 +49,7 @@ SandboxClass is a cluster-scoped, reusable template describing the agent image, 
 | `spec.engine` | object | no | `{}` | — | Engine selects and configures the container engine sandboxes use to run workloads. |
 | `spec.engine.image` | string | no | — | — | Image overrides the container image used to run the engine itself (for example, the rootless-podman sidecar image). If unset, the controller's built-in default for the selected engine type is used. |
 | `spec.engine.storageDriver` | string | no | `"auto"` | enum: auto, overlay, vfs | StorageDriver selects the storage driver used by the nested container engine. |
-| `spec.engine.type` | string | no | `"rootless-podman"` | enum: rootless-podman, none | Type selects the container engine implementation. |
+| `spec.engine.type` | string | no | `"rootless-podman"` | enum: rootless-podman, none, k8s-native | Type selects the container engine implementation. |
 | `spec.network` | object | no | `{}` | — | Network configures the network isolation policy applied to sandbox pods. |
 | `spec.network.extraEgress` | array<object> | no | — | — | ExtraEgress lists additional egress destinations (for example an external host's CIDR, or an in-cluster pod selector) sandbox pods may reach beyond the shared service endpoints declared in spec.services. Only consulted when isolation is "Restricted". |
 | `spec.network.extraEgress[]` | object | no | — | — | EgressPeer is one additional egress destination a Restricted sandbox may reach beyond the shared service endpoints. Exactly one of CIDR or Selector must be set. |
