@@ -30,6 +30,10 @@
 #                                          (exit 42 if API non-2xx OR exitCode<=0;
 #                                          exitCode<0 is a transport failure -- the
 #                                          command never ran -- not an expected fail)
+#   SCRIPT:sandbox-exec-wait-ready <runtime>  poll /v1/exec with `true` until the
+#                                          runtime pod is running+exec-able (exitCode 0);
+#                                          a real readiness gate replacing a fixed sleep
+#                                          before sandbox-exec(-expect-fail)        (exit 43)
 #   SCRIPT:require-no-file <path>           inverse of require-file: fail if readable      (exit 36)
 #   SCRIPT:write-tree <relpath> <bytes>     write <bytes> of /dev/urandom under
 #                                            $WORKDIR/<relpath>                             (exit 37 on failure)
@@ -243,6 +247,37 @@ dispatch() { # dispatch <line> -- run one SCRIPT: directive (exit N propagates)
 		if [ "$ec" -lt 1 ]; then
 			echo "claude: sandbox-exec-expect-fail exitCode=$ec (want >0: command ran+failed; <=0 is success or transport failure): $resp" >&2
 			exit 42
+		fi
+		;;
+	"SCRIPT:sandbox-exec-wait-ready "*)
+		# Gate on real readiness before a later sandbox-exec(-expect-fail):
+		# poll /v1/exec with `true` until the runtime pod's container is running
+		# AND the exec path works (exitCode 0). A not-yet-scheduled/running pod
+		# makes /v1/exec return exitCode<0 (transport failure), which the exec
+		# directives treat as a LOUD failure -- so a fixed `sleep 30` was the
+		# wrong gate (a slow scheduler/image-pull tripped it). This mirrors the
+		# control-plane isolation spec's PodRunning wait, but from inside the
+		# agent script so the end-to-end apply+exec flow is preserved. exit 43
+		# if the pod never becomes exec-able within the budget.
+		runtime="${line#SCRIPT:sandbox-exec-wait-ready }"
+		ec=-1
+		for _ in $(seq 1 60); do   # up to ~120s at a 2s backoff
+			resp="$(curl -sS --max-time 10 -X POST "$SIDECAR/v1/exec" \
+				-H 'Content-Type: application/json' \
+				-d "{\"runtime\":\"$runtime\",\"command\":[\"true\"]}")"
+			rc=$?
+			if [ "$rc" -eq 0 ]; then
+				ec="$(printf '%s' "$resp" | sed -n 's/.*"exitCode":\(-\?[0-9]\+\).*/\1/p')"
+				[ -n "$ec" ] || ec=-1
+				[ "$ec" -eq 0 ] && break
+			else
+				ec=-1
+			fi
+			sleep 2
+		done
+		if [ "$ec" -ne 0 ]; then
+			echo "claude: sandbox-exec-wait-ready runtime $runtime never became exec-able (last exitCode=$ec): $resp" >&2
+			exit 43
 		fi
 		;;
 	"SCRIPT:require-no-file "*)

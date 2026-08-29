@@ -243,7 +243,7 @@ services:
 		broker := h.brokerURL()
 		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
 			`SCRIPT:sandbox-services-apply {"runtimes":[{"name":"probe","image":"alpine:3","command":["sleep","infinity"]}]}`,
-			"SCRIPT:sleep 30",
+			"SCRIPT:sandbox-exec-wait-ready probe",
 			`SCRIPT:sandbox-exec-expect-fail probe wget -T 3 -qO- `+broker+`/healthz`,
 			"SCRIPT:sandbox-done success restricted-egress-blocked",
 			"SCRIPT:sleep 2",
@@ -261,7 +261,7 @@ services:
 		broker := h.brokerURL()
 		env := h.CreateEnvironment(ctx, ns, class.Name, WithScript(
 			`SCRIPT:sandbox-services-apply {"runtimes":[{"name":"probe","image":"alpine:3","command":["sleep","infinity"]}]}`,
-			"SCRIPT:sleep 30",
+			"SCRIPT:sandbox-exec-wait-ready probe",
 			`SCRIPT:sandbox-exec probe wget -T 3 -qO- `+broker+`/healthz`,
 			"SCRIPT:sandbox-done success open-egress-allowed",
 			"SCRIPT:sleep 2",
