@@ -80,7 +80,7 @@ func mustCreateNetworkClass(t *testing.T, name string, isolation sandboxv1alpha1
 // a NetworkPolicy owned by the environment, default-denying ingress and egress
 // except for the kube-dns rule, the API-server ipBlock peer, the extraEgress
 // CIDR peer, and the operator ingress rule.
-func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) {
+func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) { //nolint:gocyclo // a single rendered NetworkPolicy is asserted field-by-field; the branch count is one `if` per assertion, not real logic, and splitting it would scatter one policy's contract across several tests
 	mustCreateNetworkClass(t, "restricted-np", sandboxv1alpha1.NetworkIsolationRestricted,
 		[]sandboxv1alpha1.EgressPeer{{CIDR: "0.0.0.0/0"}})
 	env := mustCreateEnvForClass(t, "restricted-np-env", "restricted-np")
@@ -107,22 +107,33 @@ func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) {
 		t.Errorf("PolicyTypes = %v, want [Ingress Egress]", np.Spec.PolicyTypes)
 	}
 
-	// Egress: rule 0 = kube-dns, then the two CIDR peers sorted by CIDR
-	// (0.0.0.0/0 before 10.0.0.1/32 -- the external S3 endpoint is covered by
-	// the extraEgress CIDR, so it contributes no selector peer of its own).
-	if len(np.Spec.Egress) != 3 {
-		t.Fatalf("Egress has %d rules, want 3 (kube-dns + api-server + extraEgress)", len(np.Spec.Egress))
+	// Egress: rule 0 = kube-dns, rule 1 = env-pods (agent -> env-labeled pods),
+	// then the two CIDR peers sorted by CIDR (0.0.0.0/0 before 10.0.0.1/32 --
+	// the external S3 endpoint is covered by the extraEgress CIDR, so it
+	// contributes no selector peer of its own).
+	if len(np.Spec.Egress) != 4 {
+		t.Fatalf("Egress has %d rules, want 4 (kube-dns + env-pods + api-server + extraEgress)", len(np.Spec.Egress))
 	}
 	dns := np.Spec.Egress[0]
 	if len(dns.To) != 1 || dns.To[0].NamespaceSelector == nil ||
 		dns.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "kube-system" {
 		t.Errorf("kube-dns rule To = %+v, want namespaceSelector kube-system", dns.To)
 	}
-	extra := np.Spec.Egress[1]
+	envRule := np.Spec.Egress[1]
+	if len(envRule.To) != 1 || envRule.To[0].PodSelector == nil || envRule.To[0].NamespaceSelector != nil {
+		t.Errorf("env-pod rule To = %+v, want podSelector-only (no namespaceSelector)", envRule.To)
+	}
+	if envRule.To[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] != render.EnvironmentLabelValue(env.Name) {
+		t.Errorf("env-pod rule podSelector = %+v, want sandbox.psenna.dev/environment=%s", envRule.To[0].PodSelector, render.EnvironmentLabelValue(env.Name))
+	}
+	if len(envRule.Ports) != 0 {
+		t.Errorf("env-pod rule has %d ports, want 0 (all ports)", len(envRule.Ports))
+	}
+	extra := np.Spec.Egress[2]
 	if len(extra.To) != 1 || extra.To[0].IPBlock == nil || extra.To[0].IPBlock.CIDR != "0.0.0.0/0" {
 		t.Errorf("extraEgress rule To = %+v, want ipBlock 0.0.0.0/0", extra.To)
 	}
-	api := np.Spec.Egress[2]
+	api := np.Spec.Egress[3]
 	if len(api.To) != 1 || api.To[0].IPBlock == nil {
 		t.Fatalf("api-server rule To = %+v, want ipBlock", api.To)
 	}
@@ -137,14 +148,42 @@ func TestNetworkPolicy_RestrictedCreatesPolicy(t *testing.T) {
 		t.Errorf("api-server rule Ports = %+v, want [443]", api.Ports)
 	}
 
-	// Ingress: exactly one rule, the operator selector (in the reconciler's
-	// ClassSecretNamespace, "default" in this suite).
-	if len(np.Spec.Ingress) != 1 {
-		t.Fatalf("Ingress has %d rules, want 1 (operator)", len(np.Spec.Ingress))
+	// Ingress: two rules -- the base intra-env rule (env-labeled pods reach
+	// each other; the policy's podSelector IS the env label so it selects the
+	// ServiceSet's dep/runtime pods, which would otherwise be ingress-denied)
+	// and the operator selector (in the reconciler's ClassSecretNamespace,
+	// "default" in this suite). Both are found by peer characteristics, not
+	// index, so ordering does not break the assertion.
+	if len(np.Spec.Ingress) != 2 {
+		t.Fatalf("Ingress has %d rules, want 2 (env-pod + operator)", len(np.Spec.Ingress))
 	}
-	op := np.Spec.Ingress[0]
-	if len(op.From) != 1 || op.From[0].NamespaceSelector == nil || op.From[0].PodSelector == nil {
-		t.Fatalf("operator ingress From = %+v, want namespaceSelector+podSelector", op.From)
+	var envIngress *networkingv1.NetworkPolicyIngressRule
+	for i := range np.Spec.Ingress {
+		rule := &np.Spec.Ingress[i]
+		if len(rule.From) != 1 || rule.From[0].PodSelector == nil || rule.From[0].NamespaceSelector != nil {
+			continue
+		}
+		if rule.From[0].PodSelector.MatchLabels["sandbox.psenna.dev/environment"] == render.EnvironmentLabelValue(env.Name) {
+			envIngress = rule
+			break
+		}
+	}
+	if envIngress == nil {
+		t.Errorf("no intra-env ingress rule with podSelector{sandbox.psenna.dev/environment=%q} (no namespaceSelector) in ingress %+v", render.EnvironmentLabelValue(env.Name), np.Spec.Ingress)
+	} else if len(envIngress.Ports) != 0 {
+		t.Errorf("intra-env ingress rule has %d ports, want 0 (all ports)", len(envIngress.Ports))
+	}
+	var op *networkingv1.NetworkPolicyIngressRule
+	for i := range np.Spec.Ingress {
+		rule := &np.Spec.Ingress[i]
+		if len(rule.From) != 1 || rule.From[0].NamespaceSelector == nil || rule.From[0].PodSelector == nil {
+			continue
+		}
+		op = rule
+		break
+	}
+	if op == nil {
+		t.Fatalf("no operator ingress rule in ingress %+v", np.Spec.Ingress)
 	}
 	if op.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "default" {
 		t.Errorf("operator ingress namespaceSelector = %+v, want default (ClassSecretNamespace)", op.From[0].NamespaceSelector)

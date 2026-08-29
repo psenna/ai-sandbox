@@ -32,6 +32,10 @@ spec:
       podSelector:
         matchLabels:
           k8s-app: kube-dns
+  - to:
+    - podSelector:
+        matchLabels:
+          sandbox.psenna.dev/environment: restricted-env
   - ports:
     - port: 443
       protocol: TCP
@@ -46,6 +50,10 @@ spec:
         matchLabels:
           app: git-proxy
   ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          sandbox.psenna.dev/environment: restricted-env
   - from:
     - namespaceSelector:
         matchLabels:

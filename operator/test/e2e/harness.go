@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -532,6 +534,98 @@ func (h *Harness) ExpectAgentExitCode(ctx context.Context, key client.ObjectKey,
 		}
 		ginkgo.Fail(fmt.Sprintf("pod %s/%s has no %q container status", pod.Namespace, pod.Name, render.AgentContainerName))
 	}, h.Cfg.PodTimeout, h.Cfg.Poll).Should(gomega.Succeed())
+}
+
+// ServiceSetEntries returns the sorted entry names from the env's ServiceSet
+// (named envName in ns), or nil if the ServiceSet does not exist yet (the
+// agent has not applied services). Pod name == entry name, so this is also the
+// list of the env's ServiceSet pod names without a pods/list RBAC dependency.
+func (h *Harness) ServiceSetEntries(ctx context.Context, ns, envName string) []string {
+	var ss sandboxv1alpha1.ServiceSet
+	if err := h.Client.Get(ctx, client.ObjectKey{Name: envName, Namespace: ns}, &ss); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "getting ServiceSet %s/%s", ns, envName)
+	}
+	names := make([]string, 0, len(ss.Status.Entries))
+	for _, e := range ss.Status.Entries {
+		names = append(names, e.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// applyServices writes servicesYAML into the env's shared workspace volume
+// (via the agent container, which has a shell) and runs the real
+// `sandboxctl services apply` CLI in the sidecar container against that file.
+// The sidecar image is distroless (no shell), so the YAML cannot be written
+// there directly; but both the agent and sidecar containers mount the workspace
+// PVC at render.WorkspaceMountPath, so a file the agent writes is readable by
+// the sidecar's sandboxctl binary. The CLI parses + validates client-side and
+// POSTs to its own loopback control API (127.0.0.1:9099, served by the same
+// sidecar), which upserts the ServiceSet named after the env. Fails the spec
+// on a non-zero CLI exit.
+func (h *Harness) applyServices(ctx context.Context, ns, envName, servicesYAML string) {
+	podName := render.ChildNames(envName).Pod
+	path := render.WorkspaceMountPath + "/.e2e-services.yaml"
+	// Write the declaration to the shared workspace volume from the agent
+	// container (alpine, has sh + cat). The heredoc delimiter is quoted so the
+	// YAML is written verbatim with no shell expansion.
+	_, stderr, err := h.Exec(ctx, ns, podName, render.AgentContainerName, "sh", "-c",
+		"cat > "+path+" <<'E2E_SERVICES_YAML'\n"+servicesYAML+"\nE2E_SERVICES_YAML")
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "writing services.yaml into agent: %s", stderr)
+	// Apply via the real CLI in the sidecar (reads the file from the shared
+	// workspace volume, then POSTs to the loopback control API it serves).
+	stdout, stderr, err := h.Exec(ctx, ns, podName, render.SidecarContainerName,
+		"/sandboxctl", "services", "apply", path)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"sandboxctl services apply failed: stdout=%q stderr=%q", stdout, stderr)
+}
+
+// brokerURL is the in-cluster platform-doubles broker -- the egress target for
+// the isolation specs (Restricted egress blocks it, Open egress allows it).
+func (h *Harness) brokerURL() string {
+	return fmt.Sprintf("http://platform-doubles.%s.svc.cluster.local:8080", h.Cfg.ServicesNamespace)
+}
+
+// readTeardownMarker reads the env's teardown marker JSON from the agent
+// container's workspace. The marker is written by the snapshot freeze flow
+// (sandboxctl snapshot.go -> WriteMarkers) into <workspace>/.sandbox/
+// last-freeze.json DURING Freezing, before the workspace is archived. The agent
+// pod is alive throughout Freezing, so the marker is readable once written; the
+// write races the test's read, so poll (Eventually) rather than reading once.
+// Returns the parsed marker; fails the spec if it never appears or is unparseable.
+func (h *Harness) readTeardownMarker(ctx context.Context, ns, envName string) TeardownMarkerJSON {
+	podName := render.ChildNames(envName).Pod
+	path := render.WorkspaceMountPath + "/.sandbox/last-freeze.json"
+	var marker TeardownMarkerJSON
+	gomega.Eventually(func() error {
+		stdout, _, err := h.Exec(ctx, ns, podName, render.AgentContainerName, "cat", path)
+		if err != nil {
+			return err // marker not written yet (or pod gone) -- keep polling
+		}
+		if err := json.Unmarshal([]byte(stdout), &marker); err != nil {
+			return fmt.Errorf("parsing teardown marker JSON: %w", err)
+		}
+		return nil
+	}, h.Cfg.PodTimeout, h.Cfg.Poll).Should(gomega.Succeed(),
+		"teardown marker %s never appeared in the agent workspace", path)
+	return marker
+}
+
+// TeardownMarkerJSON is the e2e-side mirror of sandboxctl.TeardownMarker's
+// JSON shape, capturing only the fields the specs assert. Defined here -- not
+// imported from internal/sandboxctl -- so the e2e module has no dependency on
+// the sidecar's internal package. json.Unmarshal ignores the extra fields
+// (schemaVersion, seq, frozenAt, trigger, reason, preserved, snapshotURI,
+// destroyed.imageLayerCache, destroyed.notes).
+type TeardownMarkerJSON struct {
+	Engine    string `json:"engine"`
+	Destroyed struct {
+		Containers []string `json:"containers"`
+		Pods       []string `json:"pods"`
+	} `json:"destroyed"`
 }
 
 // GetEnv fetches key's SandboxEnvironment, failing the spec if it cannot be

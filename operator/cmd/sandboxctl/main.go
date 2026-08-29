@@ -19,6 +19,16 @@
 //	archive      assemble run.json + archive/context.tar.zst and exit (the
 //	             terminal-archive Job's entire program; #32, see
 //	             internal/sandboxctl/archive.go)
+//	services     agent CLI for the k8s-native control model: `apply` POSTs a
+//	             services.yaml declaration to the loopback control API (the
+//	             sidecar upserts a ServiceSet CR); `compose` renders the
+//	             equivalent docker-compose.yml client-side (#24, see
+//	             internal/sandboxctl/services_cli.go)
+//	exec         agent CLI for the k8s-native control model: POSTs
+//	             {runtime, command, stdin} to the loopback /v1/exec; the
+//	             sidecar SPDY-execs into the named runtime pod and returns
+//	             stdout/stderr + a best-effort exit code (one-shot, no TTY;
+//	             #24, see internal/sandboxctl/services_cli.go)
 //	probe-tcp    dial host:port and exit 0/1 (the CNI enforcement probe's
 //	             client; #31, see internal/sandboxctl/cniprobe.go)
 //	probe-listen  listen on :port forever (the CNI enforcement probe's server;
@@ -42,7 +52,7 @@ func main() {
 
 func run(args []string) int {
 	if len(args) < 2 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|probe-tcp|probe-listen> [flags]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|services|exec|probe-tcp|probe-listen> [flags]")
 		return 2
 	}
 
@@ -61,6 +71,22 @@ func run(args []string) int {
 		return runRestore(args[2:])
 	case "archive":
 		return runArchive(args[2:])
+	case "services":
+		if len(args) < 3 {
+			_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl services <apply|compose> [flags] [file]")
+			return 2
+		}
+		switch args[2] {
+		case "apply":
+			return sandboxctl.RunServicesApply(args[3:], os.Getenv, os.Stdout)
+		case "compose":
+			return sandboxctl.RunServicesCompose(args[3:], os.Getenv, os.Stdout)
+		default:
+			_, _ = fmt.Fprintf(os.Stderr, "unknown services subcommand %q; usage: sandboxctl services <apply|compose> [flags] [file]\n", args[2])
+			return 2
+		}
+	case "exec":
+		return sandboxctl.RunExec(args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr)
 	case "probe-tcp":
 		if len(args) < 3 {
 			_, _ = fmt.Fprintln(os.Stderr, "usage: sandboxctl probe-tcp <host:port>")
@@ -82,7 +108,7 @@ func run(args []string) int {
 		}
 		return 0
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|probe-tcp|probe-listen> [flags]\n", args[1])
+		_, _ = fmt.Fprintf(os.Stderr, "unknown subcommand %q; usage: sandboxctl <serve|healthcheck|freeze-once|restore|archive|services|exec|probe-tcp|probe-listen> [flags]\n", args[1])
 		return 2
 	}
 }

@@ -16,11 +16,13 @@ import (
 // snapshot), and an injected clock (never time.Now() directly, matching
 // this repo's convention elsewhere).
 type handlers struct {
-	store Store
-	poll  *Poller
-	env   EnvironmentRef
-	now   func() time.Time
-	log   func(format string, args ...any)
+	store  Store
+	poll   *Poller
+	env    EnvironmentRef
+	sets   serviceSetApplier // nil for non-k8s-native envs (services apply then 404s)
+	execer Execer            // nil for non-k8s-native envs (exec then 404s)
+	now    func() time.Time
+	log    func(format string, args ...any)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -192,6 +194,82 @@ func (h *handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 // the kubelet does not kill the container mid-freeze.
 func (h *handlers) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, HealthzResponse{Status: "ok"})
+}
+
+// handleServicesApply handles POST /v1/services. The agent POSTs a declaration
+// (services + runtimes, no environmentName); the server validates it, stamps
+// EnvironmentName from its own identity, and upserts the ServiceSet CR owned by
+// the environment. The ServiceSetReconciler then reconciles it to Pods.
+func (h *handlers) handleServicesApply(w http.ResponseWriter, r *http.Request) {
+	if h.sets == nil {
+		// Not a k8s-native environment: the sidecar Role grants no servicesets
+		// RBAC, so upsert would 403. Surface it as a clean 404 rather than a
+		// confusing 502 RBAC message.
+		writeError(w, http.StatusNotFound, CodeNotFound, "services are not enabled on this environment (requires the k8s-native engine)", "", nil)
+		return
+	}
+	var req ServicesApplyRequest
+	if err := decodeStrict(r.Body, &req); err != nil {
+		writeDecodeErr(w, err)
+		return
+	}
+	spec := v1alpha1.ServiceSetSpec{EnvironmentName: h.env.Name, Services: req.Services, Runtimes: req.Runtimes}
+	if err := ValidateServiceSet(spec); err != nil {
+		var ve *ValidationError
+		if errors.As(err, &ve) {
+			writeValidationError(w, http.StatusUnprocessableEntity, ve)
+			return
+		}
+		writeError(w, http.StatusBadRequest, CodeInvalidDeclaration, err.Error(), "", nil)
+		return
+	}
+	if err := h.sets.Upsert(r.Context(), spec); err != nil {
+		h.log("services apply failed: %v", err)
+		// All upsert failures (RBAC forbidden, invalid CR, env-not-found, or a
+		// transport error) surface as 502: the sidecar could not apply the
+		// ServiceSet on the agent's behalf. The error message carries the cause.
+		writeError(w, http.StatusBadGateway, CodeServiceSetUpsertFailed, err.Error(), "", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, ServicesApplyResponse{
+		Environment: h.env.Name,
+		Services:    len(spec.Services),
+		Runtimes:    len(spec.Runtimes),
+		Applied:     true,
+	})
+}
+
+// handleExec handles POST /v1/exec. The agent POSTs {runtime, command, stdin};
+// the server one-shot execs into the named runtime pod (SPDY) and returns
+// stdout/stderr + a best-effort exit code. A non-zero command exit is NOT a
+// server error: stdout/stderr are returned with ExitCode set and Error empty.
+// A transport/protocol failure (pod gone, not authorized) returns 200 with
+// Error populated so the agent sees the failure message alongside any output.
+func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
+	if h.execer == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "exec is not enabled on this environment (requires the k8s-native engine)", "", nil)
+		return
+	}
+	var req ExecRequest
+	if err := decodeStrict(r.Body, &req); err != nil {
+		writeDecodeErr(w, err)
+		return
+	}
+	if req.Runtime == "" {
+		writeError(w, http.StatusBadRequest, CodeMissingParam, "runtime must not be empty", "runtime", nil)
+		return
+	}
+	if len(req.Command) == 0 {
+		writeError(w, http.StatusBadRequest, CodeMissingParam, "command must not be empty", "command", nil)
+		return
+	}
+	stdout, stderr, err := h.execer.Exec(r.Context(), req.Runtime, req.Command, []byte(req.Stdin))
+	resp := ExecResponse{Runtime: req.Runtime, Stdout: string(stdout), Stderr: string(stderr), ExitCode: extractExitCode(err)}
+	if err != nil && resp.ExitCode < 0 {
+		h.log("exec %s failed: %v", req.Runtime, err)
+		resp.Error = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeDecodeErr(w http.ResponseWriter, err error) {

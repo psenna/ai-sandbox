@@ -30,6 +30,7 @@ type TeardownMarker struct {
 // Destroyed enumerates what teardown actually removed.
 type Destroyed struct {
 	Containers      []string `json:"containers"`
+	Pods            []string `json:"pods"`
 	ImageLayerCache bool     `json:"imageLayerCache"` // always true: excluded by design
 	Notes           []string `json:"notes"`
 }
@@ -67,6 +68,12 @@ func (m TeardownMarker) RenderMarkdown() string {
 	} else {
 		for _, c := range m.Destroyed.Containers {
 			fmt.Fprintf(&b, "- Container %q was stopped and removed.\n", c)
+		}
+	}
+	if len(m.Destroyed.Pods) > 0 {
+		b.WriteString("Pods:\n")
+		for _, p := range m.Destroyed.Pods {
+			fmt.Fprintf(&b, "  - %s\n", p)
 		}
 	}
 	if m.Destroyed.ImageLayerCache {

@@ -20,6 +20,13 @@ const (
 	// EngineTypeNone runs the agent directly in the sandbox pod with no
 	// nested container engine.
 	EngineTypeNone EngineType = "none"
+
+	// EngineTypeK8sNative runs declared dependency services and dev-tool
+	// runtimes as native Kubernetes Pods/Services in the sandbox namespace
+	// (reconciled by the ServiceSet CRD), instead of a nested container
+	// runtime. The agent pod is a thin dispatcher; deps/runtimes are isolated
+	// peers governed by the namespace's NetworkPolicy. See issue #24.
+	EngineTypeK8sNative EngineType = "k8s-native"
 )
 
 // StorageBackendType selects where sandbox workspace snapshots and archives
@@ -139,7 +146,7 @@ type ModelSpec struct {
 // run workloads.
 type EngineSpec struct {
 	// Type selects the container engine implementation.
-	// +kubebuilder:validation:Enum=rootless-podman;none
+	// +kubebuilder:validation:Enum=rootless-podman;none;k8s-native
 	// +kubebuilder:default=rootless-podman
 	// +optional
 	Type EngineType `json:"type,omitempty"`
