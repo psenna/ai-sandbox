@@ -78,8 +78,15 @@ broker:
   listen: "0.0.0.0:8090"
   # allowed_agents / allowed_ops omitted -> allow all authenticated agents all ops.
   # Tighten for a real deployment (e.g. allowed_ops: [pr.create, pr.get, pr.list,
-  # pr.merge, pr.comment, ci.status]) — example only.
+  # pr.merge, pr.comment, ci.status, ci.log]) — example only.
   merge_method: squash
+  # Expose GET /{repo}/checks/log?ref=&check_name= (op ci.log): raw CI job-log
+  # text so the agent can diagnose a red pipeline without a human relaying it.
+  # Off by default because a build step can echo secrets into its log; the
+  # sandbox proxy is on isolated internal networks and the agent is already
+  # trusted, so the trade-off favours enabling it here.
+  allow_check_logs: true
+  max_check_log_bytes: 262144   # 256 KiB; response keeps the log's TAIL when larger
 
 audit:
   file: /tmp/git-proxy/audit.jsonl   # append-only JSONL; omit to disable

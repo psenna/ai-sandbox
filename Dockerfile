@@ -30,6 +30,7 @@ RUN apk add --no-cache git ca-certificates bash curl docker-cli && rm -rf /var/c
 # /workspace/.claude/skills/ and /workspace/CLAUDE.md at startup.
 COPY claude-code/use-git-proxy/SKILL.md /opt/skills/use-git-proxy/SKILL.md
 COPY claude-code/use-docker/SKILL.md    /opt/skills/use-docker/SKILL.md
+COPY claude-code/use-dependaproxy/SKILL.md /opt/skills/use-dependaproxy/SKILL.md
 COPY claude-code/use-sandbox/SKILL.md   /opt/skills/use-sandbox/SKILL.md
 COPY claude-code/freeze/SKILL.md        /opt/skills/freeze/SKILL.md
 COPY claude-code/unfreeze/SKILL.md      /opt/skills/unfreeze/SKILL.md

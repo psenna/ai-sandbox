@@ -11,8 +11,9 @@ stack. You have TWO execution surfaces:
   inside disposable Docker containers launched against the DinD daemon.
 - **Dependencies (npm / pip / Go modules)**: always through DependaProxy
   (`http://dependaproxy:8080/{npm,pypi,goproxy}`), never the public registries —
-  see the `use-docker` skill for the exact mount/flag to use in workload
-  containers. The public npm/pypi/Go registries are network-blocked by the
+  see the `use-dependaproxy` skill (validation gates / what a 403 means /
+  installing a committed lockfile) and `use-docker` (the mount/flag for workload
+  containers). The public npm/pypi/Go registries are network-blocked by the
   sandbox; do not try to bypass the block. DependaProxy auth is disabled in this
   stack, so the generated `/workspace/.npmrc`, `/workspace/pip.env`, and
   `/workspace/go.env` carry no token.
