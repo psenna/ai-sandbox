@@ -29,13 +29,20 @@
 #
 # Prerequisites:
 #   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
-#   - ghcr.io/psenna/git-proxy:v0.0.7 published (v0.0.7 fixes the unknown-haves
-#     502 for stale client refs and forwards the PR body on create. Or uncomment
-#     the build: block below to build from a sibling ../git-proxy checkout).
-#   - ghcr.io/psenna/dependaproxy:v0.0.3 published (v0.0.3 adds the embedded
-#     web UI / admin dashboard served at /, the cve-check min_severity threshold,
-#     and the npm public-tarball-filename fix; v0.0.2 added HTTP Basic auth so pip
-#     and Go's module client can authenticate with the shared token).
+#   - ghcr.io/psenna/git-proxy:v0.0.10 published (v0.0.10 lands the security
+#     review: read-protection bypasses via malformed/tree wants, ref-update
+#     object-id validation, per-agent repo authorization, stray-object smuggling,
+#     and fail-closed auth when auth.tokens is unset; v0.0.8 added secret_scan
+#     ignore_strings. Do NOT pin v0.0.9 — its release pipeline failed and it
+#     published no image. Or uncomment the build: block below to build from a
+#     sibling ../git-proxy checkout).
+#   - ghcr.io/psenna/dependaproxy:v0.0.7 published (v0.0.6/v0.0.7 land the
+#     security review: PyPI file-version binding, per-project validated-artifact
+#     trust store with deny-list re-check on cache hits, provenance bound to the
+#     served digest, project-key validation, and middleware params pinned to
+#     operator config; v0.0.5 added the persistent PostgreSQL cve-check cache.
+#     The v0.0.3 web UI / admin dashboard at / and HTTP Basic auth for pip and
+#     Go's module client are unchanged).
 
 services:
   ollama:
@@ -73,7 +80,7 @@ services:
     #   build:
     #     context: ../git-proxy
     #     dockerfile: Dockerfile
-    image: ghcr.io/psenna/git-proxy:v0.0.7
+    image: ghcr.io/psenna/git-proxy:v0.0.10
     container_name: ai-sandbox-gitproxy
     # Run as the image's non-root gitproxy user (uid 1000). The bind-mounted
     # data/ dirs must be writable by uid 1000 — see README.md if your host uid
@@ -126,7 +133,7 @@ services:
   # 65532:65532 data/dependaproxy-cache). No healthcheck: the image is FROM scratch
   # and has no healthcheck binary; claude depends on it with service_started.
   dependaproxy:
-    image: ghcr.io/psenna/dependaproxy:v0.0.3
+    image: ghcr.io/psenna/dependaproxy:v0.0.7
     container_name: ai-sandbox-dependaproxy
     depends_on:
       postgres:
