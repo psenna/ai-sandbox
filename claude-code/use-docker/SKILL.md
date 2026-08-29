@@ -117,6 +117,14 @@ A package blocked by DependaProxy's validation (default: published less than 7 d
 ago) returns a 403 — read the error and pick a different version; the block is
 intentional.
 
+**Installing a committed lockfile** (`uv.lock`, `pdm.lock`, `package-lock.json`)
+whose artifact URLs point at the public registry needs one extra step —
+`uv sync --frozen` fetches the baked-in URL and ignores the index. For `uv` it is
+a reversible one-line rewrite of `files.pythonhosted.org` → the proxy's
+`/pypi/upstream/` alias; npm just needs `npm config set replace-registry-host always`;
+Go and pip hash-pinning need nothing. The **`use-dependaproxy`** skill has the
+recipe, the `.gitattributes` clean/smudge filter, and what each `403` class means.
+
 ## File ownership (run as uid 1000, not root)
 
 Workload images (node, python, go) default to running as **root**. Files they

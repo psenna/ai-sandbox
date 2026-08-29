@@ -204,10 +204,13 @@ docker compose exec claude claude -p "Clone the repo, add hello.txt on feat/test
 
 The `claude` entrypoint sets `git insteadOf` so every `https://github.com/<x>` URL
 is rewritten to `http://git-proxy:8080/<x>` with the agent Bearer attached, and
-drops the `use-git-proxy` + `use-docker` skills and `CLAUDE.md` into
-`/workspace/.claude/`. So ordinary `git clone`/`push`/`fetch` flow through the
-proxy with no extra flags, and PRs/CI/issues go through the broker via the
-`use-git-proxy` skill (no `gh` CLI). The entrypoint also writes the registry
+drops the `use-git-proxy` + `use-docker` + `use-dependaproxy` skills and
+`CLAUDE.md` into `/workspace/.claude/`. So ordinary `git clone`/`push`/`fetch`
+flow through the proxy with no extra flags, and PRs / CI status / **CI job logs**
+(`broker.allow_check_logs` is on in `config.yaml`) / issues go through the broker
+via the `use-git-proxy` skill (no `gh` CLI); `use-dependaproxy` covers installing
+dependencies — including a committed lockfile — when the only route to a registry
+is the proxy. The entrypoint also writes the registry
 configs from env: `.npmrc` (`registry=http://dependaproxy:8080/npm`) to
 `/home/node/.npmrc` and a shared copy at `/workspace/.npmrc`, plus
 `/workspace/pip.env` (`PIP_INDEX_URL` + `PIP_TRUSTED_HOST`) and

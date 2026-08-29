@@ -4,9 +4,10 @@
 # 1. Route every github.com clone/fetch/push through git-proxy and attach the
 #    agent Bearer. Claude Code shells out to `git`, so `insteadOf` + `extraHeader`
 #    catch every git operation transparently — no need to teach the model a wrapper.
-# 2. Drop the use-git-proxy + use-docker skills and the always-loaded CLAUDE.md
-#    into /workspace so the agent knows its two execution surfaces (git via the
-#    proxy, code via the rootless DinD daemon) and the no-direct-GitHub / no-PAT
+# 2. Drop the use-git-proxy / use-docker / use-dependaproxy skills and the
+#    always-loaded CLAUDE.md into /workspace so the agent knows its two execution
+#    surfaces (git via the proxy, code via the rootless DinD daemon), how to get
+#    dependencies (only via DependaProxy), and the no-direct-GitHub / no-PAT
 #    rules.
 # 3. Hand control to the compose `command` / `docker compose exec` args. With no
 #    args (the default CMD is `bash`) the container idles so the operator can
@@ -34,6 +35,13 @@ cp /opt/skills/use-git-proxy/SKILL.md /workspace/.claude/skills/use-git-proxy/SK
 cp /opt/agent-context/CLAUDE.md /workspace/CLAUDE.md
 mkdir -p /workspace/.claude/skills/use-docker
 cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
+
+# use-dependaproxy: installing language deps (incl. a committed lockfile) when
+# the only route to a registry is the DependaProxy instance -- the validation
+# gates, per-ecosystem client config, and the reversible /pypi/upstream/ lock
+# rewrite for `uv sync --frozen`. On-demand.
+mkdir -p /workspace/.claude/skills/use-dependaproxy
+cp /opt/skills/use-dependaproxy/SKILL.md /workspace/.claude/skills/use-dependaproxy/SKILL.md
 
 # use-sandbox: the ai-sandbox operator's sidecar control API (declare a
 # wait, report a result, leave a progress breadcrumb) -- only relevant when
