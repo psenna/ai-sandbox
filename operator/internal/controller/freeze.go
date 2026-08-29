@@ -60,13 +60,39 @@ func (r *Reconciler) freezePod(ctx context.Context, env *v1alpha1.SandboxEnviron
 	var pod corev1.Pod
 	err := r.Get(ctx, client.ObjectKey{Namespace: env.Namespace, Name: render.ChildNames(env.Name).Pod}, &pod)
 	switch {
-	case err == nil && ownedByEnv(&pod, env):
+	case err == nil && ownedByEnv(&pod, env) && !podTerminated(&pod):
 		return nil // the sidecar in that pod is taking the snapshot
 	case err != nil && !apierrors.IsNotFound(err):
 		return err
 	}
 
 	return r.ensureSnapshotJob(ctx, env, class)
+}
+
+// podTerminated reports whether every container in pod has exited -- the
+// sandboxctl sidecar that performs the freeze included. A terminated pod is,
+// for snapshot purposes, exactly as unavailable as a deleted one: the freeze
+// SIGNAL is the status.phase write that the sidecar polls (see freezePod's
+// comment and internal/sandboxctl/poller.go), and a sidecar that has exited
+// will never observe it.
+//
+// This is what makes the freeze detour recoverable. terminal()'s detour is
+// gated on observing the pod as Running (pod.go's PodAliveForArchive), but
+// the agent and the sidecar exit within the same second (both e2e artifact
+// collections show exactly that), so a detour decided against a Running
+// observation can land phase=Freezing after the sidecar is already gone.
+// Without this check nothing recovers: nextFreezing only waits on
+// SnapshotComplete, so the environment parks in Freezing forever, holding
+// its slot and never archiving.
+//
+// The recovery Job cannot capture the agent-home emptyDir (snapshotjob.go
+// documents that limitation -- it passes --agent-home-path=""), so the
+// transcripts of a run that loses this race are still lost. That is
+// unavoidable once both containers have exited: nothing can read another
+// pod's emptyDir. A workspace-only snapshot that unsticks the environment
+// strictly beats an environment wedged in Freezing.
+func podTerminated(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 }
 
 // ensureSnapshotJob renders and applies the recovery snapshot Job (#28,
