@@ -76,7 +76,7 @@ Five services on three isolated bridge networks (see `docker-compose.yaml`):
 | Service | Image | Networks | Purpose |
 |---|---|---|---|
 | `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
-| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.10` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
+| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.11` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `postgres` | `postgres:18` | dbnet | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
 | `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.7` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`, plus an embedded web UI / admin dashboard at `/`. Static dinernet IP `172.23.0.10`. |
 | `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks egress to the public npm/pypi/Go registries (`scripts/dind-init.sh`). |
@@ -113,12 +113,15 @@ blocked).
    This installs Docker Engine 28.x + containerd 1.7.x (pinned + held) and
    sysbox-ce 0.7.0, and verifies `docker run --runtime=sysbox-runc --rm alpine echo ok`.
 
-2. **`ghcr.io/psenna/git-proxy:v0.0.10`** published (the git-proxy repo's `release`
-   workflow builds and pushes the image to GHCR on every GitHub release). v0.0.10
-   lands the security review: read-protection bypasses via malformed/tree wants,
-   ref-update object-id validation before objects reach a git subprocess,
-   per-agent repo authorization, stray-object smuggling, and fail-closed auth
-   when `auth.tokens` is unset. v0.0.8 added `secret_scan` `ignore_strings`.
+2. **`ghcr.io/psenna/git-proxy:v0.0.11`** published (the git-proxy repo's `release`
+   workflow builds and pushes the image to GHCR on every GitHub release). v0.0.11
+   adds `ci.status` / `ci.log` graceful degradation when the PAT can read Actions
+   but not Checks, plus a warn-only startup permission preflight (additive;
+   `preflight.enabled` defaults true). v0.0.10 landed the security review:
+   read-protection bypasses via malformed/tree wants, ref-update object-id
+   validation before objects reach a git subprocess, per-agent repo
+   authorization, stray-object smuggling, and fail-closed auth when
+   `auth.tokens` is unset. v0.0.8 added `secret_scan` `ignore_strings`.
    **Do not pin v0.0.9** — its release pipeline failed and it published no image.
    If a newer tag is out, bump the `git-proxy` `image:` line in
    `docker-compose.yaml`. To run a local build instead, comment out the `image:`

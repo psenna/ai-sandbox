@@ -29,13 +29,16 @@
 #
 # Prerequisites:
 #   - Ubuntu 24.04 host with sysbox-ce installed (run ./setup-ubuntu-host.sh).
-#   - ghcr.io/psenna/git-proxy:v0.0.10 published (v0.0.10 lands the security
-#     review: read-protection bypasses via malformed/tree wants, ref-update
-#     object-id validation, per-agent repo authorization, stray-object smuggling,
-#     and fail-closed auth when auth.tokens is unset; v0.0.8 added secret_scan
-#     ignore_strings. Do NOT pin v0.0.9 — its release pipeline failed and it
-#     published no image. Or uncomment the build: block below to build from a
-#     sibling ../git-proxy checkout).
+#   - ghcr.io/psenna/git-proxy:v0.0.11 published (v0.0.11 adds ci.status/ci.log
+#     graceful degradation when the PAT lacks Checks:Read, and a warn-only
+#     startup permission preflight — additive, preflight.enabled defaults true.
+#     v0.0.10 landed the security review: read-protection bypasses via
+#     malformed/tree wants, ref-update object-id validation, per-agent repo
+#     authorization, stray-object smuggling, and fail-closed auth when
+#     auth.tokens is unset; v0.0.8 added secret_scan ignore_strings. Do NOT pin
+#     v0.0.9 — its release pipeline failed and it published no image. Or
+#     uncomment the build: block below to build from a sibling ../git-proxy
+#     checkout).
 #   - ghcr.io/psenna/dependaproxy:v0.0.7 published (v0.0.6/v0.0.7 land the
 #     security review: PyPI file-version binding, per-project validated-artifact
 #     trust store with deny-list re-check on cache hits, provenance bound to the
@@ -80,7 +83,7 @@ services:
     #   build:
     #     context: ../git-proxy
     #     dockerfile: Dockerfile
-    image: ghcr.io/psenna/git-proxy:v0.0.10
+    image: ghcr.io/psenna/git-proxy:v0.0.11
     container_name: ai-sandbox-gitproxy
     # Run as the image's non-root gitproxy user (uid 1000). The bind-mounted
     # data/ dirs must be writable by uid 1000 — see README.md if your host uid

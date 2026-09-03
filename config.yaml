@@ -88,5 +88,15 @@ broker:
   allow_check_logs: true
   max_check_log_bytes: 262144   # 256 KiB; response keeps the log's TAIL when larger
 
+# Startup permission preflight (git-proxy >= v0.0.11). Warn-only: at boot the
+# proxy probes each credential profile's token against the upstream API families
+# the enabled ops need (Checks, Actions, Contents, Pull requests, ...) for the
+# repos in that profile's list, and logs a WARNING per gap. Never blocks startup,
+# never affects a policy decision. Left enabled here so a missing PAT scope
+# (e.g. Checks:Read, which ci.status/ci.log fall back from) is visible in the
+# git-proxy logs. Set enabled: false on a rate-limited or air-gapped host.
+preflight:
+  enabled: true
+
 audit:
   file: /tmp/git-proxy/audit.jsonl   # append-only JSONL; omit to disable
