@@ -193,6 +193,29 @@ least one run failed) | `"success"` (all completed passing) | `"unknown"` (a run
 a state the roll-up can't classify). Precedence is failure > pending > success
 > unknown.
 
+**`checks_unavailable`** (git-proxy ≥ v0.0.11): the GitHub Checks API and Actions
+API are gated on **different** fine-grained-PAT permissions. When the proxy's PAT
+can read Actions but not Checks (`Checks: Read` missing — a common state for a
+PAT you don't own), older git-proxy returned a hard `403 upstream denied` for
+every ref. v0.0.11 instead rolls up from the **Actions workflow runs alone** and
+sets `"checks_unavailable": true` — `overall` / `workflows[]` are still usable,
+`checks[]` is just empty. If the PAT can read *neither* family the route still
+`403`s (a genuinely unreadable ref is unchanged). The startup **preflight**
+(`preflight.enabled`, default on) logs a `WARNING` at boot naming any profile
+whose token is missing a permission the enabled ops need.
+
+This fallback is **transparent** — no flag, no opt-in. You make the same
+`checks/<ref>` (and `checks/log`) call; the proxy tries the Checks API, catches
+the `403`, and switches to the Actions API on its own. The only things you do
+differently: read `checks_unavailable` if you care whether the roll-up is
+Actions-only, and pass a real commit SHA (below).
+
+**Use a real commit SHA, not a branch name or a PR merge-commit**, when
+`checks_unavailable` is in play: the Actions fallback keys runs by `head_sha`, so
+a branch ref or the auto-generated `refs/pull/N/merge` SHA returns `overall:
+"none"` with an empty `workflows[]` even when CI ran. Resolve the branch tip
+first (`git rev-parse`, or `git ls-remote origin <branch>`).
+
 ### CI logs
 
 When `checks/<ref>` shows a failing check, fetch its raw job log text instead of
@@ -214,6 +237,12 @@ curl -s -G "$GIT_PROXY_BROKER_URL/$REPO/checks/log" -H "$AUTH" \
 `check_name` must match a check-run's `name` from the `checks/<ref>` response
 exactly. A check not backed by a GitHub Actions job (a third-party check app) has
 no fetchable log and returns 404, same as an unknown `check_name`.
+
+When the `checks/<ref>` roll-up came back with `checks_unavailable: true`, there
+are no check-run names to match — pass the **Actions job name** instead (v0.0.11
+resolves `check_name` against Actions job names in that case, transparently).
+Job names show up in the Actions run UI; for a single-job workflow the job name
+is often the workflow's `jobs.<id>` key (e.g. `test`, `build`, `lint`).
 
 **Do not dump a large log into your context.** Save it and grep for the lines
 that matter:
