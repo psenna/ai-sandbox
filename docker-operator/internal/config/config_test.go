@@ -70,6 +70,12 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		DependaproxyPyPIURL:    "http://dependaproxy:8080/pypi",
 		DependaproxyGoproxyURL: "http://dependaproxy:8080/goproxy",
 		DockerRuntime:          "sysbox-runc",
+		OllamaURL:              "http://ollama:11434",
+		AnthropicAuthToken:     Secret("ollama"),
+		AnthropicAPIKey:        Secret(""),
+		AgentModel:             "glm-5.2:cloud",
+		AgentFastModel:         "deepseek-v4-flash:0731-cloud",
+		DependaproxyContainer:  "docker-operator-dependaproxy",
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -119,6 +125,18 @@ var fieldCases = []struct {
 		func(c Config) string { return c.DependaproxyGoproxyURL }},
 	{"DockerRuntime", "DOCKER_RUNTIME", "docker-runtime", "env-runc", "flag-runc",
 		func(c Config) string { return c.DockerRuntime }},
+	{"OllamaURL", "OLLAMA_URL", "ollama-url", "http://env-ollama:11434", "http://flag-ollama:11434",
+		func(c Config) string { return c.OllamaURL }},
+	{"AnthropicAuthToken", "ANTHROPIC_AUTH_TOKEN", "anthropic-auth-token", "env-auth", "flag-auth",
+		func(c Config) string { return c.AnthropicAuthToken.Reveal() }},
+	{"AnthropicAPIKey", "ANTHROPIC_API_KEY", "anthropic-api-key", "env-key", "flag-key",
+		func(c Config) string { return c.AnthropicAPIKey.Reveal() }},
+	{"AgentModel", "AGENT_MODEL", "agent-model", "env-model", "flag-model",
+		func(c Config) string { return c.AgentModel }},
+	{"AgentFastModel", "AGENT_FAST_MODEL", "agent-fast-model", "env-fast-model", "flag-fast-model",
+		func(c Config) string { return c.AgentFastModel }},
+	{"DependaproxyContainer", "DEPENDAPROXY_CONTAINER", "dependaproxy-container", "env-dependaproxy", "flag-dependaproxy",
+		func(c Config) string { return c.DependaproxyContainer }},
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -237,6 +255,12 @@ func TestValidate_Errors(t *testing.T) {
 		{name: "dependaproxy-url wrong scheme", args: []string{"--dependaproxy-url=ftp://dependaproxy:8080/npm"}, want: "dependaproxy-url"},
 		{name: "dependaproxy-pypi-url empty", args: []string{"--dependaproxy-pypi-url="}, want: "dependaproxy-pypi-url"},
 		{name: "dependaproxy-goproxy-url no host", args: []string{"--dependaproxy-goproxy-url=http://"}, want: "dependaproxy-goproxy-url"},
+
+		{name: "ollama-url wrong scheme", args: []string{"--ollama-url=ftp://ollama:11434"}, want: "ollama-url"},
+		{name: "ollama-url no host", args: []string{"--ollama-url=http://"}, want: "ollama-url"},
+		{name: "agent-model empty while ollama-url is set", args: []string{"--agent-model="}, want: "agent-model"},
+		{name: "agent-fast-model empty while ollama-url is set", args: []string{"--agent-fast-model="}, want: "agent-fast-model"},
+		{name: "dependaproxy-container empty", args: []string{"--dependaproxy-container="}, want: "dependaproxy-container"},
 	}
 
 	for _, tc := range cases {
@@ -272,6 +296,9 @@ func TestValidate_AcceptsBoundaryValues(t *testing.T) {
 		{"https service URL", []string{"--git-proxy-url=https://git-proxy.internal"}},
 		{"relative state db path", []string{"--state-db-path=state.db"}},
 		{"network name with dots and underscores", []string{"--proxynet-name=a.b_c-1"}},
+		{"empty ollama-url is the escape hatch, even with agent-model/agent-fast-model empty too",
+			[]string{"--ollama-url=", "--agent-model=", "--agent-fast-model="}},
+		{"https ollama-url", []string{"--ollama-url=https://ollama.internal:11434"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -299,6 +326,8 @@ func TestLoadValidate_NeverPanics(t *testing.T) {
 		"PROXYNET_NAME", "DBNET_NAME", "GITHUB_REPO", "AGENT_TOKEN",
 		"GIT_PROXY_URL", "GIT_PROXY_BROKER_URL", "DEPENDAPROXY_URL",
 		"DEPENDAPROXY_PYPI_URL", "DEPENDAPROXY_GOPROXY_URL", "DOCKER_RUNTIME",
+		"OLLAMA_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+		"AGENT_MODEL", "AGENT_FAST_MODEL", "DEPENDAPROXY_CONTAINER",
 	}
 
 	for _, name := range names {

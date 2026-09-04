@@ -52,6 +52,15 @@ COPY claude-code/agent-context/CLAUDE.md               /opt/agent-context/CLAUDE
 COPY claude-code/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# tmux-boot.sh: the script the operator overrides the container's Cmd to at
+# create time (internal/agent). Baked into the image rather than bind-mounted
+# so the image is self-contained and the operator needs no host path -- a bind
+# source is resolved by the DAEMON on the host, which a containerised operator
+# cannot know. It is still only a Cmd override, so CMD ["bash"] below is
+# untouched and a plain `docker run` of this image is unaffected.
+COPY docker-operator/agent/tmux-boot.sh /usr/local/bin/tmux-boot.sh
+RUN chmod +x /usr/local/bin/tmux-boot.sh
+
 # Pre-create /workspace as node BEFORE switching USER: WORKDIR creates a
 # missing directory as root regardless of the active USER (a known
 # Docker/BuildKit quirk -- verified against this exact image: without this

@@ -57,6 +57,8 @@ const (
 	OpExecResize        Op = "ExecResize"
 	OpExecInspect       Op = "ExecInspect"
 	OpEvents            Op = "Events"
+	OpImageInspect      Op = "ImageInspect"
+	OpImagePull         Op = "ImagePull"
 )
 
 // Call is one recorded invocation of a Fake method. Target is the object the
@@ -152,6 +154,7 @@ type Fake struct {
 	networks   map[string]*networkRecord
 	containers map[string]*containerRecord
 	execs      map[string]*execRecord
+	images     map[string]struct{}
 
 	calls []Call
 
@@ -168,6 +171,20 @@ type Fake struct {
 	// output has been fully read, keyed the same way as ExecOutput. A
 	// command with no entry exits 0.
 	ExecExit map[string]int
+
+	// AutoHealthy makes ContainerStart immediately set a container's health
+	// to HealthHealthy when its spec declares a Healthcheck, instead of the
+	// real daemon's created -> starting -> healthy progression. Off by
+	// default, for tests that want to hand-drive health transitions via
+	// SetHealth.
+	AutoHealthy bool
+
+	// RequireImages makes ContainerCreate fail with a clear error when the
+	// container's spec.Image is not a known image (seeded via AddImage or
+	// ImagePull). Off by default so existing tests that never seed an image
+	// keep working; a test that wants to prove ensureImages runs before any
+	// container is created sets this to true.
+	RequireImages bool
 }
 
 var _ dockerclient.Client = (*Fake)(nil)
@@ -179,6 +196,7 @@ func New() *Fake {
 		networks:   map[string]*networkRecord{},
 		containers: map[string]*containerRecord{},
 		execs:      map[string]*execRecord{},
+		images:     map[string]struct{}{},
 		ExecOutput: map[string][]byte{},
 		ExecExit:   map[string]int{},
 	}
@@ -253,6 +271,29 @@ func (f *Fake) Containers() []dockerclient.Container {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// AddImage seeds ref as present on the daemon, as if it had already been
+// pulled or built locally. ImageInspect(ref) succeeds and ContainerCreate
+// accepts ref as Image once RequireImages is enabled.
+func (f *Fake) AddImage(ref string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.images[ref] = struct{}{}
+}
+
+// SetHealth forces the health status of an existing container, found by ID
+// or name. It exists so a test can drive a health transition explicitly (to
+// HealthUnhealthy, say) or simulate a timeout by never calling it.
+func (f *Fake) SetHealth(idOrName string, h dockerclient.HealthStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(idOrName)
+	if !ok {
+		return fmt.Errorf("container %q: %w", idOrName, dockerclient.ErrNotFound)
+	}
+	c.health = h
+	return nil
 }
 
 // ExecInput returns everything written to the given exec's stdin so far.
@@ -461,7 +502,7 @@ func (f *Fake) NetworkConnect(ctx context.Context, networkName, containerID stri
 	if !ok {
 		return netip.Addr{}, fmt.Errorf("network %q: %w", networkName, dockerclient.ErrNotFound)
 	}
-	c, ok := f.containers[containerID]
+	c, ok := f.resolveContainer(containerID)
 	if !ok {
 		return netip.Addr{}, fmt.Errorf("container %q: %w", containerID, dockerclient.ErrNotFound)
 	}
@@ -485,7 +526,7 @@ func (f *Fake) NetworkDisconnect(ctx context.Context, networkName, containerID s
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c, ok := f.containers[containerID]
+	c, ok := f.resolveContainer(containerID)
 	if !ok {
 		return nil
 	}
@@ -504,6 +545,11 @@ func (f *Fake) ContainerCreate(ctx context.Context, spec dockerclient.ContainerS
 	for _, c := range f.containers {
 		if c.name == spec.Name {
 			return "", fmt.Errorf("container %q: %w", spec.Name, errConflict)
+		}
+	}
+	if f.RequireImages {
+		if _, ok := f.images[spec.Image]; !ok {
+			return "", fmt.Errorf("container %q: image %q is not present on the (fake) daemon; ensureImages must inspect/pull it first", spec.Name, spec.Image)
 		}
 	}
 	id := f.nextID()
@@ -534,6 +580,13 @@ func (f *Fake) ContainerStart(ctx context.Context, id string) error {
 		return fmt.Errorf("container %q: %w", id, dockerclient.ErrNotFound)
 	}
 	c.state = dockerclient.StateRunning
+	if c.spec.Healthcheck != nil {
+		if f.AutoHealthy {
+			c.health = dockerclient.HealthHealthy
+		} else {
+			c.health = dockerclient.HealthStarting
+		}
+	}
 	for _, na := range c.spec.Networks {
 		if _, already := c.networks[na.Name]; already {
 			continue
@@ -558,7 +611,7 @@ func (f *Fake) ContainerStop(ctx context.Context, id string, timeout time.Durati
 		return err
 	}
 	f.mu.Lock()
-	c, ok := f.containers[id]
+	c, ok := f.resolveContainer(id)
 	if !ok {
 		f.mu.Unlock()
 		return nil
@@ -578,12 +631,12 @@ func (f *Fake) ContainerRemove(ctx context.Context, id string) error {
 		return err
 	}
 	f.mu.Lock()
-	c, ok := f.containers[id]
+	c, ok := f.resolveContainer(id)
 	if !ok {
 		f.mu.Unlock()
 		return nil
 	}
-	delete(f.containers, id)
+	delete(f.containers, c.id)
 	labels := copyLabels(c.labels)
 	f.mu.Unlock()
 	f.Emit(dockerclient.Event{Type: dockerclient.EventTypeContainer, Action: dockerclient.ActionDestroy, ActorID: id, Attributes: labels, Time: time.Now()})
@@ -708,6 +761,34 @@ func (f *Fake) ExecInspect(ctx context.Context, execID string) (dockerclient.Exe
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return dockerclient.ExecStatus{Running: e.running, ExitCode: e.exitCode}, nil
+}
+
+// ImageInspect returns an image by reference, or an error satisfying
+// dockerclient.IsNotFound for a ref that was never seeded via AddImage or
+// ImagePull.
+func (f *Fake) ImageInspect(ctx context.Context, ref string) (dockerclient.Image, error) {
+	if err := f.call(OpImageInspect, ref); err != nil {
+		return dockerclient.Image{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.images[ref]; !ok {
+		return dockerclient.Image{}, fmt.Errorf("image %q: %w", ref, dockerclient.ErrNotFound)
+	}
+	return dockerclient.Image{ID: "sha256:" + ref, RepoTags: []string{ref}}, nil
+}
+
+// ImagePull seeds ref as present on the daemon, matching the real client's
+// "pulling an already-present image is a cheap no-op" behaviour by simply
+// being idempotent.
+func (f *Fake) ImagePull(ctx context.Context, ref string) error {
+	if err := f.call(OpImagePull, ref); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.images[ref] = struct{}{}
+	return nil
 }
 
 // Events streams events matching filter to a fresh subscriber. One goroutine
