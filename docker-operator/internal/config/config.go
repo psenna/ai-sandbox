@@ -36,6 +36,12 @@ const (
 	defaultDependaproxyGoproxyURL = "http://dependaproxy:8080/goproxy"
 
 	defaultDockerRuntime = "sysbox-runc"
+
+	defaultOllamaURL             = "http://ollama:11434"
+	defaultAnthropicAuth         = "ollama" // NOT defaultAnthropicAuthToken -- gosec G101 pattern-matches "token" in identifier names
+	defaultAgentModel            = "glm-5.2:cloud"
+	defaultAgentFastModel        = "deepseek-v4-flash:0731-cloud"
+	defaultDependaproxyContainer = "docker-operator-dependaproxy"
 )
 
 // redacted is what every stringification path of Secret emits in place of
@@ -156,6 +162,37 @@ type Config struct {
 	// makes an unprivileged inner daemon possible; overriding it to runc
 	// would require --privileged and is not a supported configuration.
 	DockerRuntime string
+
+	// OllamaURL is the shared Ollama daemon's Anthropic-compatible endpoint,
+	// templated into each agent as ANTHROPIC_BASE_URL. Empty is an explicit
+	// escape hatch: omit the whole Ollama/model-routing block and let Claude
+	// Code talk to the real Anthropic API using only AnthropicAPIKey.
+	OllamaURL string
+
+	// AnthropicAuthToken is the fixed placeholder token Claude Code sends to
+	// the local Ollama daemon (not a real secret, but kept as a Secret for
+	// consistency and because it's templated the same way AgentToken is).
+	// Only used when OllamaURL is non-empty.
+	AnthropicAuthToken Secret
+
+	// AnthropicAPIKey is passed through as ANTHROPIC_API_KEY. Empty (the
+	// default) is what stops Claude Code falling back to the Anthropic cloud
+	// when a local backend (OllamaURL) is configured.
+	AnthropicAPIKey Secret
+
+	// AgentModel is the model every agent's default and "opus" tier resolves
+	// to when OllamaURL is set.
+	AgentModel string
+
+	// AgentFastModel is the model every agent's "sonnet" and "haiku" tiers
+	// resolve to when OllamaURL is set. Without mapping every tier, Task/
+	// Explore subagents fail with "model may not exist" against a
+	// non-Anthropic backend -- a documented gotcha in the root README.
+	AgentFastModel string
+
+	// DependaproxyContainer is the name of the shared DependaProxy container
+	// the create flow connects to each new agent's private dinernet.
+	DependaproxyContainer string
 }
 
 // Load parses args (typically os.Args[1:]) into a Config, falling back to
@@ -171,6 +208,8 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	// flag.StringVar cannot target a Secret, so the token is parsed into a
 	// plain string and converted after Parse.
 	var agentToken string
+	var anthropicAuthToken string
+	var anthropicAPIKey string
 
 	maxAgents, err := envInt(getenv, "MAX_AGENTS", defaultMaxAgents)
 	if err != nil {
@@ -221,12 +260,32 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.DockerRuntime, "docker-runtime",
 		envOr(getenv, "DOCKER_RUNTIME", defaultDockerRuntime),
 		"container runtime for each agent's Docker-in-Docker sidecar (env DOCKER_RUNTIME)")
+	fs.StringVar(&c.OllamaURL, "ollama-url",
+		envOr(getenv, "OLLAMA_URL", defaultOllamaURL),
+		"shared Ollama daemon's Anthropic-compatible endpoint, templated into each agent as ANTHROPIC_BASE_URL; empty omits the whole model-routing block (env OLLAMA_URL)")
+	fs.StringVar(&anthropicAuthToken, "anthropic-auth-token",
+		envOr(getenv, "ANTHROPIC_AUTH_TOKEN", defaultAnthropicAuth),
+		"placeholder token Claude Code sends to the local Ollama daemon; only used when ollama-url is non-empty (env ANTHROPIC_AUTH_TOKEN)")
+	fs.StringVar(&anthropicAPIKey, "anthropic-api-key",
+		envOr(getenv, "ANTHROPIC_API_KEY", ""),
+		"passed through as ANTHROPIC_API_KEY; leave empty when ollama-url is set, so Claude Code cannot fall back to the Anthropic cloud (env ANTHROPIC_API_KEY)")
+	fs.StringVar(&c.AgentModel, "agent-model",
+		envOr(getenv, "AGENT_MODEL", defaultAgentModel),
+		"model every agent's default and \"opus\" tier resolves to when ollama-url is set (env AGENT_MODEL)")
+	fs.StringVar(&c.AgentFastModel, "agent-fast-model",
+		envOr(getenv, "AGENT_FAST_MODEL", defaultAgentFastModel),
+		"model every agent's \"sonnet\" and \"haiku\" tiers resolve to when ollama-url is set (env AGENT_FAST_MODEL)")
+	fs.StringVar(&c.DependaproxyContainer, "dependaproxy-container",
+		envOr(getenv, "DEPENDAPROXY_CONTAINER", defaultDependaproxyContainer),
+		"name of the shared DependaProxy container the create flow connects to each new agent's private dinernet (env DEPENDAPROXY_CONTAINER)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
 	}
 
 	c.AgentToken = Secret(agentToken)
+	c.AnthropicAuthToken = Secret(anthropicAuthToken)
+	c.AnthropicAPIKey = Secret(anthropicAPIKey)
 
 	return c, nil
 }
@@ -249,7 +308,10 @@ func (c Config) Validate() error {
 	if err := c.validateNetworks(); err != nil {
 		return err
 	}
-	return c.validateURLs()
+	if err := c.validateURLs(); err != nil {
+		return err
+	}
+	return c.validateModelRouting()
 }
 
 // validateRequired covers the two values that have no default and must be
@@ -283,6 +345,9 @@ func (c Config) validateLimitsAndPaths() error {
 	if c.DockerRuntime == "" {
 		return fmt.Errorf("docker-runtime: must not be empty")
 	}
+	if c.DependaproxyContainer == "" {
+		return fmt.Errorf("dependaproxy-container: must not be empty")
+	}
 	return nil
 }
 
@@ -310,6 +375,26 @@ func (c Config) validateURLs() error {
 		if err := validateHTTPURL(f.field, f.value); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateModelRouting covers the Ollama/Anthropic model-routing block.
+// OllamaURL="" is the escape hatch (real Anthropic API via AnthropicAPIKey
+// alone), so it is the only field validated unconditionally; AgentModel and
+// AgentFastModel only matter once a local backend is actually configured.
+func (c Config) validateModelRouting() error {
+	if c.OllamaURL == "" {
+		return nil
+	}
+	if err := validateHTTPURL("ollama-url", c.OllamaURL); err != nil {
+		return err
+	}
+	if c.AgentModel == "" {
+		return fmt.Errorf("agent-model: must not be empty when ollama-url is set")
+	}
+	if c.AgentFastModel == "" {
+		return fmt.Errorf("agent-fast-model: must not be empty when ollama-url is set")
 	}
 	return nil
 }

@@ -43,6 +43,7 @@ jobs:
       - run: make IN_CONTAINER=1 lint
       - run: make IN_CONTAINER=1 vuln
       - run: make IN_CONTAINER=1 skill-check
+      - run: make IN_CONTAINER=1 dind-init-check
       - run: make IN_CONTAINER=1 build
       - run: make IN_CONTAINER=1 test
       - run: go tool cover -func=cover.out

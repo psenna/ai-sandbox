@@ -49,9 +49,9 @@ DOCKER_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	$(GOLANG_IMAGE)
 endif
 
-.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check agent-image agent-image-smoke
+.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke
 
-all: vet fmt-check lint test skill-check
+all: vet fmt-check lint test skill-check dind-init-check
 
 build:
 	$(DOCKER_RUN) go build -trimpath -o bin/docker-operator ./cmd/docker-operator
@@ -124,4 +124,16 @@ agent-image-smoke:
 		echo "FAIL: shared use-docker skill baked in, not the fork"; exit 1; \
 	fi
 	@echo "OK: use-docker is the fork"
+	@echo "--- tmux-boot.sh is present and executable ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/tmux-boot.sh'
+	@echo "OK: /usr/local/bin/tmux-boot.sh"
 	@echo "agent-image-smoke: PASS"
+
+# scripts/dind-init.sh is the SINGLE source of truth; internal/agent embeds a
+# copy because go:embed cannot reach outside its own package directory (and
+# refuses symlinks). Fail loudly rather than let the two drift.
+dind-init-check:
+	@cmp -s ../scripts/dind-init.sh internal/agent/dind-init.sh || { \
+		echo "internal/agent/dind-init.sh has drifted from ../scripts/dind-init.sh"; \
+		diff -u ../scripts/dind-init.sh internal/agent/dind-init.sh || true; exit 1; }
+	@echo "dind-init-check: OK"

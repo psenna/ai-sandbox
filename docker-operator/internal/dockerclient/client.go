@@ -46,6 +46,7 @@ type Client interface {
 	ContainerClient
 	ExecClient
 	EventClient
+	ImageClient
 
 	// Close releases the client's idle connections. It does not touch any
 	// Docker object.
@@ -176,6 +177,31 @@ type ExecClient interface {
 	// ExecInspect reports whether an exec is still running and, once it is
 	// not, its exit code -- the only way to get an exec's exit status.
 	ExecInspect(ctx context.Context, execID string) (ExecStatus, error)
+}
+
+// ImageClient ensures the images agent containers are built from are present
+// on the daemon. It is deliberately minimal: the operator never builds, tags,
+// lists or removes images.
+type ImageClient interface {
+	// ImageInspect returns one image by reference (name:tag or ID), or an
+	// error satisfying IsNotFound when the daemon holds no such image. It
+	// never contacts a registry.
+	ImageInspect(ctx context.Context, ref string) (Image, error)
+
+	// ImagePull pulls ref and blocks until the pull has finished, discarding
+	// the progress stream. Pulling an image that is already present is a
+	// cheap no-op on the daemon.
+	//
+	// No registry credentials are ever sent: docker-operator's images are
+	// either public (docker:27-dind) or built locally (the agent image), and
+	// a registry credential the operator could leak would buy nothing.
+	ImagePull(ctx context.Context, ref string) error
+}
+
+// Image is an image present on the daemon.
+type Image struct {
+	ID       string
+	RepoTags []string
 }
 
 // EventClient subscribes to the daemon event stream, which is how
@@ -719,6 +745,28 @@ func (d *Docker) Events(ctx context.Context, filter EventFilter) (<-chan Event, 
 		}
 	}()
 	return out, errs
+}
+
+// ImageInspect returns one image by reference.
+func (d *Docker) ImageInspect(ctx context.Context, ref string) (Image, error) {
+	res, err := d.api.ImageInspect(ctx, ref)
+	if err != nil {
+		return Image{}, wrapErr("image", ref, err)
+	}
+	return Image{ID: res.ID, RepoTags: append([]string(nil), res.RepoTags...)}, nil
+}
+
+// ImagePull pulls ref and blocks until the pull has finished.
+func (d *Docker) ImagePull(ctx context.Context, ref string) error {
+	res, err := d.api.ImagePull(ctx, ref, client.ImagePullOptions{})
+	if err != nil {
+		return fmt.Errorf("pulling image %q: %w", ref, err)
+	}
+	defer func() { _ = res.Close() }()
+	if err := res.Wait(ctx); err != nil {
+		return fmt.Errorf("pulling image %q: %w", ref, err)
+	}
+	return nil
 }
 
 // DemuxStream copies a non-TTY exec stream from src, writing the process's
