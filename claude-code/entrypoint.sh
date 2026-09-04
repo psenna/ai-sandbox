@@ -43,25 +43,39 @@ cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 mkdir -p /workspace/.claude/skills/use-dependaproxy
 cp /opt/skills/use-dependaproxy/SKILL.md /workspace/.claude/skills/use-dependaproxy/SKILL.md
 
+# use-sandbox / freeze / unfreeze are Kubernetes-operator-only (the sidecar
+# control API and its snapshot-based freeze/wake). The docker-operator agent
+# image (docker-operator/agent/Dockerfile) does not bake them in, so each is
+# copied only if actually present -- guarding this loop is what lets a
+# trimmed image still boot instead of dying in entrypoint.sh before exec
+# "$@" runs. In the root image all three files exist, so this changes
+# nothing there.
+
 # use-sandbox: the ai-sandbox operator's sidecar control API (declare a
 # wait, report a result, leave a progress breadcrumb) -- only relevant when
 # this container is running inside an operator-managed SandboxEnvironment
 # pod, but harmless to always drop in (on-demand skill, only loaded when
 # needed).
-mkdir -p /workspace/.claude/skills/use-sandbox
-cp /opt/skills/use-sandbox/SKILL.md /workspace/.claude/skills/use-sandbox/SKILL.md
+if [ -f /opt/skills/use-sandbox/SKILL.md ]; then
+  mkdir -p /workspace/.claude/skills/use-sandbox
+  cp /opt/skills/use-sandbox/SKILL.md /workspace/.claude/skills/use-sandbox/SKILL.md
+fi
 
 # freeze: what actually happens when the agent declares a wait (snapshot,
 # teardown, slot release) and what to check on resume -- same on-demand,
 # harmless-if-irrelevant rationale as use-sandbox above.
-mkdir -p /workspace/.claude/skills/freeze
-cp /opt/skills/freeze/SKILL.md /workspace/.claude/skills/freeze/SKILL.md
+if [ -f /opt/skills/freeze/SKILL.md ]; then
+  mkdir -p /workspace/.claude/skills/freeze
+  cp /opt/skills/freeze/SKILL.md /workspace/.claude/skills/freeze/SKILL.md
+fi
 
 # unfreeze: the counterpart to freeze -- what a wake restored, what it did
 # not (cold image cache, containers gone), and what to re-establish, in
 # order. Only relevant to a pod that was woken, so equally on-demand.
-mkdir -p /workspace/.claude/skills/unfreeze
-cp /opt/skills/unfreeze/SKILL.md /workspace/.claude/skills/unfreeze/SKILL.md
+if [ -f /opt/skills/unfreeze/SKILL.md ]; then
+  mkdir -p /workspace/.claude/skills/unfreeze
+  cp /opt/skills/unfreeze/SKILL.md /workspace/.claude/skills/unfreeze/SKILL.md
+fi
 
 # implement-issue: drive a GitHub issue from spec to merged PR with a tiered
 # model pipeline (Opus plans, Sonnet implements, Opus validates & fixes).

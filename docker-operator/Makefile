@@ -27,6 +27,7 @@ SKILL_FORK      ?= agent/skills/use-docker/SKILL.md
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION   ?= v1.6.0
+AGENT_IMAGE           ?= ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev
 
 REPO_SUBDIR := $(patsubst $(SHARED_DIR)/%,%,$(CURDIR))
 CACHE_DIR   := /work/$(CACHE_SUBDIR)
@@ -48,7 +49,7 @@ DOCKER_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	$(GOLANG_IMAGE)
 endif
 
-.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check
+.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check agent-image agent-image-smoke
 
 all: vet fmt-check lint test skill-check
 
@@ -94,3 +95,33 @@ skill-check:
 		exit 1; \
 	fi
 	@echo "skill-check: OK -- no hardcoded dependaproxy IP in $(SKILL_FORK)"
+
+# The agent image needs repo-root context (it COPYs claude-code/*/SKILL.md and
+# docker-operator/agent/skills/use-docker/SKILL.md alike), so CURDIR (this
+# directory) is wrong -- build from the parent, same as docker-compose.yaml's
+# own `context: .` for the root image.
+agent-image:
+	$(DOCKER) build -f agent/Dockerfile -t $(AGENT_IMAGE) ..
+
+# Verifies the built image's CONTENTS, not entrypoint.sh's runtime behaviour --
+# --entrypoint bypasses it deliberately, since entrypoint.sh requires
+# AGENT_TOKEN/GITHUB_REPO and a writable /workspace, neither of which this
+# check is about.
+agent-image-smoke:
+	@echo "--- tmux is installed ---"
+	docker run --rm --entrypoint tmux $(AGENT_IMAGE) -V
+	@echo "--- /opt/skills holds exactly the 4 expected skills ---"
+	@actual=$$(docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'ls -1 /opt/skills' | sort); \
+	expected=$$(printf 'implement-issue\nuse-dependaproxy\nuse-docker\nuse-git-proxy'); \
+	if [ "$$actual" != "$$expected" ]; then \
+		echo "FAIL: /opt/skills mismatch"; \
+		printf 'want:\n%s\ngot:\n%s\n' "$$expected" "$$actual"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$actual" | tr '\n' ' '; echo
+	@echo "--- use-docker is the local fork, not the shared copy ---"
+	@if docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'grep -qF 172.23.0.10 /opt/skills/use-docker/SKILL.md'; then \
+		echo "FAIL: shared use-docker skill baked in, not the fork"; exit 1; \
+	fi
+	@echo "OK: use-docker is the fork"
+	@echo "agent-image-smoke: PASS"
