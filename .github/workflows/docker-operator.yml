@@ -36,12 +36,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-          # No go.sum yet (issue #61: the module has zero dependencies) --
-          # actions/setup-go's cache fails to resolve a cache-dependency-path
-          # that doesn't exist yet. Flip this on (cache: true,
-          # cache-dependency-path: docker-operator/go.sum) once a real
-          # dependency lands.
-          cache: false
+          cache: true
+          cache-dependency-path: docker-operator/go.sum
       - run: make IN_CONTAINER=1 vet
       - run: make IN_CONTAINER=1 fmt-check
       - run: make IN_CONTAINER=1 lint
