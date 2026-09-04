@@ -23,6 +23,7 @@ SHARED_DIR      ?= /workspace
 CACHE_SUBDIR    ?= .gocache-docker-operator
 DEPENDAPROXY_IP ?= 172.23.0.10
 GO_ENV_FILE     ?= $(SHARED_DIR)/go.env
+SKILL_FORK      ?= agent/skills/use-docker/SKILL.md
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION   ?= v1.6.0
@@ -47,9 +48,9 @@ DOCKER_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	$(GOLANG_IMAGE)
 endif
 
-.PHONY: all build test vet fmt fmt-check lint vuln tidy
+.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check
 
-all: vet fmt-check lint test
+all: vet fmt-check lint test skill-check
 
 build:
 	$(DOCKER_RUN) go build -trimpath -o bin/docker-operator ./cmd/docker-operator
@@ -78,3 +79,18 @@ vuln:
 	$(DOCKER_RUN) sh -c 'command -v govulncheck >/dev/null || \
 		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
 		govulncheck ./...'
+
+# The agent's use-docker skill is a deliberate FORK of
+# claude-code/use-docker/SKILL.md: every agent gets a PRIVATE dinernet, so the
+# compose stack's static dependaproxy address is meaningless here and the
+# examples must read /workspace/dependaproxy-ip (written by entrypoint.sh from
+# DEPENDAPROXY_DINERNET_IP) instead. Guard against a copy-paste refresh from
+# upstream silently reintroducing the literal -- it would fail as a connect
+# timeout at runtime, not an error.
+skill-check:
+	@test -f $(SKILL_FORK) || { echo "$(SKILL_FORK): missing"; exit 1; }
+	@if grep -qF '172.23.0.10' $(SKILL_FORK); then \
+		echo "$(SKILL_FORK): hardcoded dependaproxy IP 172.23.0.10 -- read /workspace/dependaproxy-ip instead"; \
+		exit 1; \
+	fi
+	@echo "skill-check: OK -- no hardcoded dependaproxy IP in $(SKILL_FORK)"

@@ -78,9 +78,21 @@ cp /opt/skills/implement-issue/SKILL.md /workspace/.claude/skills/implement-issu
 #     pip 26.x ignores bind-mounted pip.conf files, so we use env vars).
 #   - /workspace/go.env                     : go (GOPROXY; no userinfo — go refuses
 #     to send credentials over HTTP).
+#   - /workspace/dependaproxy-ip            : the dinernet-side IP of the
+#     DependaProxy container, spliced into --add-host by workload containers
+#     (the nested daemon has no DNS for sibling names). See use-docker.
 : "${DEPENDAPROXY_URL:=http://dependaproxy:8080/npm}"
 : "${DEPENDAPROXY_PYPI_URL:=http://dependaproxy:8080/pypi}"
 : "${DEPENDAPROXY_GOPROXY_URL:=http://dependaproxy:8080/goproxy}"
+# The DinD daemon cannot resolve the compose/service name "dependaproxy", so
+# every workload container needs --add-host=dependaproxy:<ip>. In the root
+# compose stack that IP is pinned statically in docker-compose.yaml. The
+# docker-operator instead gives each agent a PRIVATE dinernet and connects the
+# shared dependaproxy container to it at create time, so the address is
+# per-agent and is injected here as DEPENDAPROXY_DINERNET_IP. Unset (the
+# compose case) falls back to the static address, exactly like the three URLs
+# above.
+: "${DEPENDAPROXY_DINERNET_IP:=172.23.0.10}"
 
 # --- npm ---
 printf 'registry=%s\n' "$DEPENDAPROXY_URL" > /home/node/.npmrc
@@ -95,6 +107,11 @@ printf 'PIP_TRUSTED_HOST=dependaproxy\n' >> /workspace/pip.env
 # Go still verifies module checksums against sum.golang.org directly (that host
 # is intentionally not blocked by dind-init.sh).
 printf 'GOPROXY=%s\n' "$DEPENDAPROXY_GOPROXY_URL" > /workspace/go.env
+
+# --- dependaproxy host IP ---
+# A bare IP plus a newline, so the use-docker skill can splice it straight into
+# a run: --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)".
+printf '%s\n' "$DEPENDAPROXY_DINERNET_IP" > /workspace/dependaproxy-ip
 
 # The compose `command` / `docker compose exec` args become $@. With no args the
 # default CMD (`bash`) keeps the container alive for interactive `docker compose
