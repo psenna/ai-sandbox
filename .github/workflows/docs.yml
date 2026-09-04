@@ -12,6 +12,14 @@ name: docs
 # `api` job already runs `make manifests generate crd-docs` followed by
 # `git diff --exit-code`, and it triggers on `operator/**` -- which covers
 # every path this workflow does.
+#
+# CAVEAT: this workflow's own `pull_request` trigger is also paused right
+# now (see below), on top of operator.yml's `api` job losing its PR trigger
+# already -- so CRD/crd-reference.md drift AND quickstart rot are both
+# caught only on push to main while docker-operator CI is prioritized, not
+# on the PR. Run `make IN_CONTAINER=1 crd-docs-check` and
+# `hack/quickstart-check.sh` locally on any PR that touches api/, config/crd/
+# or operator/README.md's quickstart until the pre-merge gates are restored.
 
 on:
   push:
@@ -25,17 +33,13 @@ on:
       - 'operator/test/e2e/agent/**'
       - 'operator/Dockerfile'
       - '.github/workflows/docs.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'operator/README.md'
-      - 'operator/docs/**'
-      - 'operator/hack/quickstart-check.sh'
-      - 'operator/deploy/helm/**'
-      - 'operator/config/crd/**'
-      - 'operator/test/e2e/agent/**'
-      - 'operator/Dockerfile'
-      - '.github/workflows/docs.yml'
+  # pull_request intentionally omitted for now: same rationale as
+  # operator.yml -- CI capacity is prioritized on docker-operator CI while
+  # that epic is under active development. This is a real kind-cluster job
+  # (quickstart-check.sh runs against a live cluster), so pausing it on PRs
+  # is a real savings. Still runs on every push to main. Re-add the
+  # pull_request block above (mirroring the push block) once
+  # docker-operator's own PR cadence settles down.
 
 concurrency:
   group: docs-${{ github.ref }}

@@ -1,0 +1,63 @@
+name: docker-operator CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker-operator/**'
+      - '.github/workflows/docker-operator.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker-operator/**'
+      - '.github/workflows/docker-operator.yml'
+
+permissions:
+  contents: read
+
+env:
+  # Kept in lockstep with operator.yml's GO_VERSION for the same reason:
+  # govulncheck flags vulnerabilities fixed in the Go toolchain itself, and
+  # actions/setup-go resolves a floating "1.25" to whatever patch was
+  # current when the runner image was built. Bump alongside GOLANG_IMAGE in
+  # docker-operator/Makefile when a new patch lands.
+  GO_VERSION: "1.25.13"
+
+defaults:
+  run:
+    working-directory: docker-operator
+
+jobs:
+  build-test:
+    name: vet + fmt + lint + vuln + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          # No go.sum yet (issue #61: the module has zero dependencies) --
+          # actions/setup-go's cache fails to resolve a cache-dependency-path
+          # that doesn't exist yet. Flip this on (cache: true,
+          # cache-dependency-path: docker-operator/go.sum) once a real
+          # dependency lands.
+          cache: false
+      - run: make IN_CONTAINER=1 vet
+      - run: make IN_CONTAINER=1 fmt-check
+      - run: make IN_CONTAINER=1 lint
+      - run: make IN_CONTAINER=1 vuln
+      - run: make IN_CONTAINER=1 build
+      - run: make IN_CONTAINER=1 test
+      - run: go tool cover -func=cover.out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-operator-coverage
+          path: docker-operator/cover.out
+
+  # A second job needing a real Docker daemon (self-hosted/sysbox runner, or
+  # a docker:dind service) for internal/dockerclient's and internal/agent's
+  # integration tests plus hack/smoke.sh belongs here too (see issue #80),
+  # but neither exists on this branch yet -- internal/dockerclient lands in
+  # #63, internal/agent's Create/Delete flows in #65/#66, hack/smoke.sh in
+  # #73. Added when there is something real for it to run; #80 stays open
+  # until then.

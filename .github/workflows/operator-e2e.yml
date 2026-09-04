@@ -6,11 +6,13 @@ on:
     paths:
       - 'operator/**'
       - '.github/workflows/operator-e2e.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'operator/**'
-      - '.github/workflows/operator-e2e.yml'
+  # pull_request intentionally omitted for now: same rationale as
+  # operator.yml -- CI capacity is prioritized on docker-operator CI while
+  # that epic is under active development. This is the expensive kind-
+  # cluster job, so pausing it on PRs is the larger of the two savings (see
+  # operator.yml's own comment for the paired build-test job). Still runs on
+  # every push to main. Re-add the pull_request block above (mirroring the
+  # push block) once docker-operator's own PR cadence settles down.
   workflow_dispatch:
     inputs:
       repeat:
