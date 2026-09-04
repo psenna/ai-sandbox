@@ -6,11 +6,12 @@ on:
     paths:
       - 'operator/**'
       - '.github/workflows/operator.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'operator/**'
-      - '.github/workflows/operator.yml'
+  # pull_request intentionally omitted for now: CI capacity is prioritized
+  # on docker-operator CI (see docker-operator.yml) while that epic is under
+  # active development. operator/ still gets a full run on every push to
+  # main, so regressions there are still caught -- just not on every PR.
+  # Re-add the pull_request trigger (mirroring the push block above) once
+  # docker-operator's own PR cadence settles down.
 
 permissions:
   contents: read
