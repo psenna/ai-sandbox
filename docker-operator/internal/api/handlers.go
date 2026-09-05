@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/wsbridge"
@@ -31,6 +34,21 @@ type AgentManager interface {
 	List(ctx context.Context) ([]store.Agent, error)
 	MaxAgents() int
 	Rename(ctx context.Context, id string, name, description *string) (store.Agent, error)
+
+	// DefaultBackend/DefaultModel/DefaultFastModel are the operator-configured
+	// defaults the create form pre-fills; they ride along on the list
+	// response so the UI needs no second request.
+	DefaultBackend() string
+	DefaultModel() string
+	DefaultFastModel() string
+
+	// AnthropicAuthStatus reports whether a shared Anthropic credential is
+	// configured, its kind and when it was last set -- never its value.
+	// SetAnthropicAuth stores (replacing) it; ClearAnthropicAuth removes it
+	// (idempotent).
+	AnthropicAuthStatus(ctx context.Context) (kind string, updatedAt time.Time, configured bool, err error)
+	SetAnthropicAuth(ctx context.Context, kind, value string) error
+	ClearAnthropicAuth(ctx context.Context) error
 }
 
 // Handler serves the docker-operator's REST surface: the agent collection
@@ -60,6 +78,10 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 	mux.HandleFunc("DELETE /api/agents/{id}", h.handleDelete)
 	mux.HandleFunc("GET /api/agents/{id}/output", h.handleOutput)
 
+	mux.HandleFunc("GET /api/anthropic/auth", h.handleAnthropicAuthGet)
+	mux.HandleFunc("PUT /api/anthropic/auth", h.handleAnthropicAuthPut)
+	mux.HandleFunc("DELETE /api/anthropic/auth", h.handleAnthropicAuthDelete)
+
 	// Bare, method-agnostic registrations for the same paths: net/http's
 	// ServeMux (1.22+) prefers a method-specific pattern for a matching
 	// method, but falls back to these for any OTHER method on the same
@@ -72,6 +94,7 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 	mux.HandleFunc("/api/agents", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
+	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "no such endpoint: "+r.Method+" "+r.URL.Path, "")
@@ -82,12 +105,17 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 
 // --- request/response DTOs -------------------------------------------------
 
-// createAgentRequest is the POST /api/agents body. Both fields are optional
-// (an agent with no name/description is valid -- the UI can fill them in
-// later via PATCH).
+// createAgentRequest is the POST /api/agents body. Every field is optional:
+// name/description default to empty (fill them in later via PATCH); backend
+// defaults to the operator's DefaultBackend; model/fast_model default to the
+// operator's configured Ollama models and are only valid for the ollama
+// backend.
 type createAgentRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Backend     string `json:"backend"`
+	Model       string `json:"model"`
+	FastModel   string `json:"fast_model"`
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -99,11 +127,30 @@ type patchAgentRequest struct {
 	Description *string `json:"description"`
 }
 
-// agentListResponse is the GET /api/agents body. MaxAgents rides along so
-// the UI can render "3 of 5 slots in use" without a second request.
+// agentListResponse is the GET /api/agents body. MaxAgents and the three
+// Default* fields ride along so the UI can render "3 of 5 slots in use" and
+// pre-fill the create form without a second request.
 type agentListResponse struct {
-	Agents    []store.Agent `json:"agents"`
-	MaxAgents int           `json:"max_agents"`
+	Agents           []store.Agent `json:"agents"`
+	MaxAgents        int           `json:"max_agents"`
+	DefaultBackend   string        `json:"default_backend"`
+	DefaultModel     string        `json:"default_model"`
+	DefaultFastModel string        `json:"default_fast_model"`
+}
+
+// anthropicAuthRequest is the PUT /api/anthropic/auth body.
+type anthropicAuthRequest struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// anthropicAuthResponse is the GET/PUT/DELETE /api/anthropic/auth body. It
+// never carries the credential value -- only whether one is configured, its
+// kind, and when it was last set.
+type anthropicAuthResponse struct {
+	Configured bool       `json:"configured"`
+	Kind       string     `json:"kind"`
+	UpdatedAt  *time.Time `json:"updated_at"`
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -117,7 +164,13 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	if agents == nil {
 		agents = []store.Agent{}
 	}
-	writeJSON(w, http.StatusOK, agentListResponse{Agents: agents, MaxAgents: h.mgr.MaxAgents()})
+	writeJSON(w, http.StatusOK, agentListResponse{
+		Agents:           agents,
+		MaxAgents:        h.mgr.MaxAgents(),
+		DefaultBackend:   h.mgr.DefaultBackend(),
+		DefaultModel:     h.mgr.DefaultModel(),
+		DefaultFastModel: h.mgr.DefaultFastModel(),
+	})
 }
 
 func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -126,12 +179,27 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadJSON, "the request body is not valid JSON: "+err.Error(), "")
 		return
 	}
+	if req.Backend != "" && !config.ValidBackend(req.Backend) {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
+		return
+	}
+	if req.Backend == config.BackendAnthropic && (req.Model != "" || req.FastModel != "") {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"model" and "fast_model" are not valid for the anthropic backend`, "model")
+		return
+	}
 
-	a, err := h.mgr.Create(r.Context(), agent.CreateRequest{Name: req.Name, Description: req.Description})
+	a, err := h.mgr.Create(r.Context(), agent.CreateRequest{
+		Name: req.Name, Description: req.Description,
+		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
+	})
 	if err != nil {
 		switch {
 		case store.IsAtCapacity(err):
 			writeError(w, http.StatusConflict, CodeAtCapacity, "the maximum number of agents is already running; delete one before creating another", "")
+		case agent.IsNoAnthropicAuth(err):
+			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before creating an agent that uses it", "backend")
+		case agent.IsInvalidBackend(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
 		default:
 			h.internalError(w, "creating agent", err)
 		}
@@ -139,6 +207,66 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/api/agents/"+a.ID)
 	writeJSON(w, http.StatusCreated, a)
+}
+
+func (h *Handler) handleAnthropicAuthGet(w http.ResponseWriter, r *http.Request) {
+	kind, updatedAt, configured, err := h.mgr.AnthropicAuthStatus(r.Context())
+	if err != nil {
+		h.internalError(w, "reading the Anthropic credential status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicAuthStatusBody(kind, updatedAt, configured))
+}
+
+func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request) {
+	var req anthropicAuthRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadJSON, "the request body is not valid JSON: "+err.Error(), "")
+		return
+	}
+	if !store.ValidAnthropicKind(req.Kind) {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"kind" must be "api_key" or "oauth"`, "kind")
+		return
+	}
+	if strings.TrimSpace(req.Value) == "" {
+		writeError(w, http.StatusBadRequest, CodeMissingField, `"value" must not be empty`, "value")
+		return
+	}
+	// Cheap shape check -- a real Anthropic Console key starts with sk-ant-.
+	// An OAuth token from `claude setup-token` has no stable public prefix,
+	// so it is only checked for non-emptiness above.
+	if req.Kind == store.AnthropicKindAPIKey && !strings.HasPrefix(req.Value, "sk-ant-") {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `an Anthropic API key starts with "sk-ant-"`, "value")
+		return
+	}
+
+	if err := h.mgr.SetAnthropicAuth(r.Context(), req.Kind, req.Value); err != nil {
+		h.internalError(w, "storing the Anthropic credential", err)
+		return
+	}
+	kind, updatedAt, configured, err := h.mgr.AnthropicAuthStatus(r.Context())
+	if err != nil {
+		h.internalError(w, "reading back the Anthropic credential status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicAuthStatusBody(kind, updatedAt, configured))
+}
+
+func (h *Handler) handleAnthropicAuthDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.mgr.ClearAnthropicAuth(r.Context()); err != nil {
+		h.internalError(w, "clearing the Anthropic credential", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicAuthResponse{Configured: false})
+}
+
+func anthropicAuthStatusBody(kind string, updatedAt time.Time, configured bool) anthropicAuthResponse {
+	resp := anthropicAuthResponse{Configured: configured, Kind: kind}
+	if configured {
+		u := updatedAt
+		resp.UpdatedAt = &u
+	}
+	return resp
 }
 
 func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {

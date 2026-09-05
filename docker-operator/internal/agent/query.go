@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
@@ -29,6 +30,37 @@ func (m *Manager) List(ctx context.Context) ([]store.Agent, error) {
 // duplicating configuration.
 func (m *Manager) MaxAgents() int {
 	return m.store.MaxAgents()
+}
+
+// DefaultBackend / DefaultModel / DefaultFastModel expose the operator's
+// configured create-form defaults, so internal/api's list response can
+// carry them and the UI can pre-fill without a second request.
+func (m *Manager) DefaultBackend() string   { return m.cfg.DefaultBackend }
+func (m *Manager) DefaultModel() string     { return m.cfg.AgentModel }
+func (m *Manager) DefaultFastModel() string { return m.cfg.AgentFastModel }
+
+// AnthropicAuthStatus reports whether the shared Anthropic credential is
+// configured -- its kind and last-set time, never its value. The value
+// stays inside internal/agent (resolveBackend) and internal/store; nothing
+// that could serialise it to a client ever holds it.
+func (m *Manager) AnthropicAuthStatus(ctx context.Context) (kind string, updatedAt time.Time, configured bool, err error) {
+	auth, ok, err := m.store.GetAnthropicAuth(ctx)
+	if err != nil || !ok {
+		return "", time.Time{}, false, err
+	}
+	return auth.Kind, auth.UpdatedAt, true, nil
+}
+
+// SetAnthropicAuth stores (replacing) the shared Anthropic credential.
+// ClearAnthropicAuth removes it and is idempotent. Both are thin
+// pass-throughs -- the store validates the kind and rejects an empty value.
+func (m *Manager) SetAnthropicAuth(ctx context.Context, kind, value string) error {
+	return m.store.SetAnthropicAuth(ctx, kind, value)
+}
+
+// ClearAnthropicAuth removes the shared Anthropic credential (idempotent).
+func (m *Manager) ClearAnthropicAuth(ctx context.Context) error {
+	return m.store.ClearAnthropicAuth(ctx)
 }
 
 // MarkUnexpectedExit records that an agent's own container stopped or died
