@@ -25,6 +25,11 @@ set -eu
 export TERM
 
 SESSION=main
+# Where the pane's output is captured. On the agent's OWN workspace volume, so
+# it outlives the tmux server, the container and the operator process, and so
+# the operator can read it back with a plain `tail` exec.
+# internal/wsbridge.OutputLogPath must match this literal.
+OUTPUT_LOG=/workspace/.agent-output.log
 
 # ONE tmux invocation, deliberately. Verified against tmux 3.7c (what
 # node:22-alpine ships, i.e. what the agent image has):
@@ -45,6 +50,31 @@ SESSION=main
 # which the pane can die unprotected. Confirmed to survive both a normal exit
 # (pane_dead=1, status=3) and a missing binary (pane_dead=1, status=127).
 tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude
+
+# Capture everything the pane writes to a durable, unbounded file, so the
+# operator can read an agent's output programmatically (internal/wsbridge's
+# ReadOutput, behind GET /api/agents/{id}/output) rather than only proxying it
+# live to a browser terminal. tmux's own scrollback is bounded AND dies with
+# the server; this file is neither.
+#
+# A SEPARATE tmux invocation, deliberately: pipe-pane resolves its -t target
+# when it runs, so the session must already exist -- it cannot be chained into
+# the command list above the way set-option can.
+#
+# `-o` is tmux's "only open a pipe if one is not already open" guard (the man
+# page's toggle idiom), NOT "output only" -- a common misreading. The direction
+# flag is left at its default of -O: the PANE's output is piped to the
+# command's stdin. Input typed by a viewer is captured too, but exactly once,
+# through the pane's own terminal echo.
+#
+# Never fatal, hence the `||`. Verified against tmux 3.7c: pipe-pane exits 1
+# with "target pane has exited" when the pane's process is already gone --
+# precisely the case the remain-on-exit above exists to keep inspectable. An
+# unguarded failure here would trip `set -e`, end this script, stop the
+# container and destroy the very evidence remain-on-exit preserved. Output
+# capture is an auxiliary feature; it must never be able to kill an agent.
+tmux pipe-pane -o -t "$SESSION" "cat >> $OUTPUT_LOG" ||
+	echo "tmux-boot: WARNING: pipe-pane failed, so $OUTPUT_LOG will not be written and the output endpoint will read back nothing; the session itself is unaffected"
 
 # Keep the container alive for exactly as long as the tmux session exists.
 # has-session is the loop CONDITION, so its non-zero exit once the session is
