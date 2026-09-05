@@ -54,10 +54,44 @@ jobs:
           name: docker-operator-coverage
           path: docker-operator/cover.out
 
-  # A second job needing a real Docker daemon (self-hosted/sysbox runner, or
-  # a docker:dind service) for internal/dockerclient's and internal/agent's
-  # integration tests plus hack/smoke.sh belongs here too (see issue #80),
-  # but neither exists on this branch yet -- internal/dockerclient lands in
-  # #63, internal/agent's Create/Delete flows in #65/#66, hack/smoke.sh in
-  # #73. Added when there is something real for it to run; #80 stays open
-  # until then.
+  # A real Docker daemon, no sysbox/dind-service needed: ubuntu-latest
+  # already ships one at the default socket, which is exactly what
+  # build-test's own `make test` above already talks to (internal/dockerclient
+  # and internal/agent's realDockerClient(t) helper skips only when NO daemon
+  # is reachable, gated by neither -short nor a build tag) -- so
+  # dockerclient's conformance tests and agent's non-sysbox integration tests
+  # (e.g. TestIntegrationTmuxBootRemainOnExit) already run for real in
+  # build-test today, just without the agent image present, which is the one
+  # thing this job adds. Its own sysbox-gated assertions (TestIntegrationCreateDelete,
+  # TestIntegrationMaxAgentsRealDaemon, hack/smoke.sh's create/delete
+  # round-trip) still skip honestly here, same as this sandbox's own dev
+  # environment -- ubuntu-latest has no sysbox-runc installed either (#80
+  # stays open for THAT: a self-hosted sysbox runner). What this job newly
+  # proves for real: the agent image builds, its contents are correct
+  # (agent-image-smoke), the binary starts/serves/shuts down cleanly, and a
+  # create-failure's rollback leaves zero orphaned resources -- via
+  # hack/smoke.sh's own honest sysbox-absent branch.
+  integration:
+    name: integration (real docker daemon, agent image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: docker-operator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: docker-operator/go.sum
+      # smoke.sh's own doc comment: pre-pull so a real create's DinD-image
+      # ensure step doesn't add a slow first-pull to the timing budget below.
+      - run: docker pull docker:27-dind
+      - run: make IN_CONTAINER=1 agent-image
+      - run: make IN_CONTAINER=1 agent-image-smoke
+      - name: integration tests (now with the agent image present)
+        run: make IN_CONTAINER=1 test
+      - run: make IN_CONTAINER=1 build
+      - name: hack/smoke.sh (binary-level, real daemon)
+        run: ./hack/smoke.sh
