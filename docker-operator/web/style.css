@@ -128,3 +128,79 @@ html, body {
 	margin: auto;
 	color: var(--fg-dim);
 }
+
+.detail {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.detail__header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--border);
+	flex: 0 0 auto;
+}
+
+.detail__name {
+	font-size: 14px;
+	font-weight: 600;
+	flex: 0 1 240px;
+}
+
+.detail__description {
+	flex: 1 1 auto;
+	color: var(--fg-dim);
+}
+
+.detail__name,
+.detail__description {
+	background: var(--bg-item);
+	color: var(--fg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 6px 8px;
+	font: inherit;
+	min-width: 0;
+}
+
+.detail__name:focus,
+.detail__description:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.detail__save-status {
+	color: var(--fg-dim);
+	font-size: 12px;
+	flex: 0 0 auto;
+	min-width: 3.5em;
+}
+
+.detail__delete-btn {
+	background: transparent;
+	color: var(--status-error);
+	border: 1px solid var(--status-error);
+	border-radius: 6px;
+	padding: 6px 12px;
+	font-size: 13px;
+	cursor: pointer;
+	flex: 0 0 auto;
+}
+
+.detail__delete-btn:hover { background: var(--status-error); color: #fff; }
+.detail__delete-btn:disabled { opacity: 0.5; cursor: default; background: transparent; color: var(--status-error); }
+
+.detail__terminal {
+	flex: 1 1 auto;
+	min-height: 0;
+	padding: 8px;
+	background: #1e1e1e;
+}
+
+.detail__terminal .xterm {
+	height: 100%;
+}

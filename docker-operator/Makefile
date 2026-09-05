@@ -148,8 +148,10 @@ dind-init-check:
 	@echo "dind-init-check: OK"
 
 # render.js is deliberately document/window-free (see its own doc comment),
-# so its tests run directly under Node's built-in test runner -- no jsdom,
-# no headless browser, no npm install at all. IN_CONTAINER=1 (CI) runs node
-# directly, since ubuntu-latest already ships one; NODE_RUN wraps it locally.
+# and terminal.js guards its one window.* assignment so requiring it under
+# Node doesn't throw -- both test files run directly under Node's built-in
+# test runner: no jsdom, no headless browser, no npm install at all.
+# IN_CONTAINER=1 (CI) runs node directly, since ubuntu-latest already ships
+# one; NODE_RUN wraps it locally.
 web-test:
-	$(NODE_RUN) node --test web/render.test.js
+	$(NODE_RUN) node --test web/render.test.js web/terminal.test.js
