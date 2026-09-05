@@ -99,3 +99,64 @@ test('escapeHTML: escapes all five HTML-significant characters', () => {
 test('escapeHTML: leaves ordinary text untouched', () => {
 	assert.equal(Render.escapeHTML('agent-42 (staging)'), 'agent-42 (staging)');
 });
+
+test('backendLabel: maps ids to labels, empty falls back to Ollama', () => {
+	assert.equal(Render.backendLabel('ollama'), 'Ollama');
+	assert.equal(Render.backendLabel('anthropic'), 'Anthropic');
+	assert.equal(Render.backendLabel(''), 'Ollama');
+	assert.equal(Render.backendLabel(undefined), 'Ollama');
+});
+
+test('renderAgentListItem: shows the backend label', () => {
+	assert.match(Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', backend: 'anthropic' }), /Anthropic/);
+	assert.match(Render.renderAgentListItem({ id: 'agt_b', name: 'B', status: 'running', backend: 'ollama' }), /Ollama/);
+});
+
+test('renderCreateForm: defaults pre-fill the model fields and select the backend', () => {
+	const html = Render.renderCreateForm({ backend: 'ollama', model: 'glm-5.3:cloud', fastModel: 'glm-5.3-flash:cloud' });
+	assert.match(html, /value="glm-5\.3:cloud"/);
+	assert.match(html, /value="glm-5\.3-flash:cloud"/);
+	assert.match(html, /name="backend" value="ollama" checked/);
+	// The ollama model block is visible for an ollama default.
+	assert.match(html, /create-form__ollama"(?!\s*hidden)/);
+});
+
+test('renderCreateForm: an anthropic default hides the ollama model block', () => {
+	const html = Render.renderCreateForm({ backend: 'anthropic' });
+	assert.match(html, /name="backend" value="anthropic" checked/);
+	assert.match(html, /class="create-form__ollama" hidden/);
+});
+
+test('renderCreateForm: handles missing defaults without throwing', () => {
+	const html = Render.renderCreateForm();
+	assert.match(html, /name="backend" value="ollama" checked/);
+	assert.match(html, /class="create-form__model"/);
+});
+
+test('renderCreateForm: a model default containing HTML is escaped in the value attribute', () => {
+	const html = Render.renderCreateForm({ model: '"><script>x</script>' });
+	assert.doesNotMatch(html, /<script>x<\/script>/);
+});
+
+test('renderAnthropicStatus: unset', () => {
+	const html = Render.renderAnthropicStatus({ configured: false });
+	assert.match(html, /No Anthropic credential/);
+	assert.match(html, /anthropic-panel__status--unset/);
+});
+
+test('renderAnthropicStatus: api key with a date', () => {
+	const html = Render.renderAnthropicStatus({ configured: true, kind: 'api_key', updated_at: '2026-09-05T12:00:00Z' });
+	assert.match(html, /API key/);
+	assert.match(html, /set 2026-09-05/);
+	assert.match(html, /anthropic-panel__status--set/);
+});
+
+test('renderAnthropicStatus: oauth token, missing date is tolerated', () => {
+	const html = Render.renderAnthropicStatus({ configured: true, kind: 'oauth' });
+	assert.match(html, /OAuth token/);
+	assert.doesNotMatch(html, /set /);
+});
+
+test('renderAnthropicStatus: null input degrades to unset', () => {
+	assert.match(Render.renderAnthropicStatus(null), /anthropic-panel__status--unset/);
+});

@@ -38,9 +38,67 @@
 		return text ? JSON.parse(text) : null;
 	}
 
-	function wsURL(agentID) {
+	function wsURL(path) {
 		var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-		return proto + '//' + window.location.host + '/ws/agents/' + encodeURIComponent(agentID) + '/terminal';
+		return proto + '//' + window.location.host + path;
+	}
+
+	// attachTerminal opens an xterm.js terminal in termEl bridged to the
+	// WebSocket at wsPath (issue #72's protocol: binary frames = PTY bytes,
+	// a JSON TEXT frame = resize). Returns { teardown } -- shared by the
+	// agent detail view and the Anthropic login view.
+	function attachTerminal(termEl, wsPath) {
+		var term = new window.Terminal({
+			convertEol: true,
+			cursorBlink: true,
+			fontSize: 13,
+			fontFamily: 'Menlo, Consolas, "DejaVu Sans Mono", monospace',
+			theme: { background: '#1e1e1e' },
+		});
+		var fitAddon = new window.FitAddon.FitAddon();
+		term.loadAddon(fitAddon);
+		term.open(termEl);
+		fitAddon.fit();
+
+		var socket = new WebSocket(wsURL(wsPath));
+		socket.binaryType = 'arraybuffer';
+
+		function sendResize() {
+			if (socket.readyState !== WebSocket.OPEN) return;
+			socket.send(resizeFrame(term.cols, term.rows));
+		}
+
+		socket.addEventListener('open', sendResize);
+		socket.addEventListener('message', function (ev) {
+			if (ev.data instanceof ArrayBuffer) {
+				term.write(new Uint8Array(ev.data));
+			} else {
+				term.write(ev.data);
+			}
+		});
+		socket.addEventListener('close', function (ev) {
+			term.write('\r\n\x1b[90m[connection closed' + (ev.reason ? ': ' + ev.reason : '') + ']\x1b[0m\r\n');
+		});
+		socket.addEventListener('error', function () {
+			term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n');
+		});
+
+		term.onData(function (data) {
+			if (socket.readyState !== WebSocket.OPEN) return;
+			socket.send(encodeKeystroke(data));
+		});
+		term.onResize(sendResize);
+
+		var resizeObserver = new ResizeObserver(function () { fitAddon.fit(); });
+		resizeObserver.observe(termEl);
+
+		return {
+			teardown: function () {
+				resizeObserver.disconnect();
+				try { socket.close(); } catch (e) { /* already closed or never opened */ }
+				term.dispose();
+			},
+		};
 	}
 
 	// resizeFrame builds the TEXT control frame the server's
@@ -134,69 +192,67 @@
 
 		// --- terminal ------------------------------------------------------
 
-		var term = new window.Terminal({
-			convertEol: true,
-			cursorBlink: true,
-			fontSize: 13,
-			fontFamily: 'Menlo, Consolas, "DejaVu Sans Mono", monospace',
-			theme: { background: '#1e1e1e' },
-		});
-		var fitAddon = new window.FitAddon.FitAddon();
-		term.loadAddon(fitAddon);
-		term.open(termEl);
-		fitAddon.fit();
-
-		var socket = new WebSocket(wsURL(agentID));
-		socket.binaryType = 'arraybuffer';
-
-		function sendResize() {
-			if (socket.readyState !== WebSocket.OPEN) return;
-			// A plain string argument to send() is a TEXT frame -- the
-			// server's control-frame parser only looks at TEXT frames,
-			// exactly as issue #72's protocol specifies.
-			socket.send(resizeFrame(term.cols, term.rows));
-		}
-
-		socket.addEventListener('open', sendResize);
-
-		socket.addEventListener('message', function (ev) {
-			if (ev.data instanceof ArrayBuffer) {
-				term.write(new Uint8Array(ev.data));
-			} else {
-				// The bridge never sends a TEXT message today (only TEXT
-				// close-frame reasons, delivered via the close event below,
-				// not 'message') -- written to the terminal rather than
-				// silently dropped in case that ever changes.
-				term.write(ev.data);
-			}
-		});
-		socket.addEventListener('close', function (ev) {
-			term.write('\r\n\x1b[90m[connection closed' + (ev.reason ? ': ' + ev.reason : '') + ']\x1b[0m\r\n');
-		});
-		socket.addEventListener('error', function () {
-			term.write('\r\n\x1b[31m[connection error]\x1b[0m\r\n');
-		});
-
-		term.onData(function (data) {
-			if (socket.readyState !== WebSocket.OPEN) return;
-			socket.send(encodeKeystroke(data));
-		});
-
-		term.onResize(sendResize);
-
-		var resizeObserver = new ResizeObserver(function () {
-			fitAddon.fit();
-		});
-		resizeObserver.observe(termEl);
-
+		var t = attachTerminal(termEl, '/ws/agents/' + encodeURIComponent(agentID) + '/terminal');
 		current = {
 			teardown: function () {
 				destroyed = true;
-				resizeObserver.disconnect();
-				try { socket.close(); } catch (e) { /* already closed or never opened */ }
-				term.dispose();
+				t.teardown();
 			},
 		};
+	}
+
+	// renderAnthropicLogin renders the "Log in with your Claude subscription"
+	// view: a terminal attached to /ws/anthropic/login/terminal (running
+	// `claude setup-token`), plus a field to paste the token it prints.
+	// opts.submitToken(token) returns a promise; opts.onClose() is called
+	// after a successful submit or a Cancel.
+	function renderAnthropicLogin(container, opts) {
+		teardownCurrent();
+		opts = opts || {};
+
+		container.innerHTML =
+			'<div class="detail">' +
+				'<div class="detail__header">' +
+					'<strong>Anthropic login</strong>' +
+					'<span class="detail__save-status" aria-live="polite"></span>' +
+					'<button class="login__close" type="button">Cancel</button>' +
+				'</div>' +
+				'<p class="login__hint">Run <code>claude setup-token</code> in the terminal below, complete the sign-in in your browser, then paste the token it prints here. It is stored once and used by every agent set to the Anthropic backend.</p>' +
+				'<div class="detail__terminal login__terminal"></div>' +
+				'<form class="login__form">' +
+					'<input class="login__token" type="text" placeholder="Paste the token (starts with sk-ant-oat…)" aria-label="Anthropic OAuth token">' +
+					'<button class="login__save" type="submit">Save token</button>' +
+				'</form>' +
+			'</div>';
+
+		var termEl = container.querySelector('.login__terminal');
+		var status = container.querySelector('.detail__save-status');
+		var tokenInput = container.querySelector('.login__token');
+		var saveBtn = container.querySelector('.login__save');
+
+		var t = attachTerminal(termEl, '/ws/anthropic/login/terminal');
+		current = { teardown: t.teardown };
+
+		container.querySelector('.login__close').addEventListener('click', function () {
+			if (typeof opts.onClose === 'function') opts.onClose();
+		});
+
+		container.querySelector('.login__form').addEventListener('submit', function (ev) {
+			ev.preventDefault();
+			var token = tokenInput.value.trim();
+			if (!token) return;
+			saveBtn.disabled = true;
+			status.textContent = 'Saving…';
+			Promise.resolve(opts.submitToken ? opts.submitToken(token) : null)
+				.then(function () {
+					status.textContent = 'Saved';
+					if (typeof opts.onClose === 'function') opts.onClose();
+				})
+				.catch(function (e) {
+					saveBtn.disabled = false;
+					status.textContent = 'Save failed: ' + (e && e.message ? e.message : e);
+				});
+		});
 	}
 
 	// In a browser, wire up the real entry point app.js calls into. Under
@@ -205,6 +261,10 @@
 	// under test there.
 	if (typeof window !== 'undefined') {
 		window.renderAgentDetail = renderAgentDetail;
+		window.renderAnthropicLogin = renderAnthropicLogin;
+		// So app.js can tear down a terminal/WebSocket when it swaps the
+		// main area back to the placeholder without rendering a new view.
+		window.teardownActiveView = teardownCurrent;
 	}
 
 	// Exported for terminal.test.js only -- renderAgentDetail itself needs a
