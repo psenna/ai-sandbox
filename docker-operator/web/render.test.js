@@ -138,6 +138,21 @@ test('renderCreateForm: a model default containing HTML is escaped in the value 
 	assert.doesNotMatch(html, /<script>x<\/script>/);
 });
 
+test('renderCreateForm: the repo field is always present and pre-fills from defaults', () => {
+	const html = Render.renderCreateForm({ backend: 'anthropic', repo: 'psenna/ai-sandbox.git' });
+	assert.match(html, /class="create-form__repo"[^>]*value="psenna\/ai-sandbox\.git"/);
+});
+
+test('renderCreateForm: an empty repo default leaves the field blank', () => {
+	const html = Render.renderCreateForm({});
+	assert.match(html, /class="create-form__repo"[^>]*value=""/);
+});
+
+test('renderCreateForm: a repo default containing HTML is escaped', () => {
+	const html = Render.renderCreateForm({ repo: '"><script>x</script>' });
+	assert.doesNotMatch(html, /<script>x<\/script>/);
+});
+
 test('renderAnthropicStatus: unset', () => {
 	const html = Render.renderAnthropicStatus({ configured: false });
 	assert.match(html, /No Anthropic credential/);

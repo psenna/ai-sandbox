@@ -3,10 +3,12 @@
 // flag > env > built-in default precedence -- the same idiom as
 // operator/internal/config.
 //
-// Two values are REQUIRED and have no default: GITHUB_REPO and AGENT_TOKEN,
-// the shared repository and Bearer every agent uses against git-proxy (they
-// are also the only two values ai-sandbox/.env.example demands). Everything
-// else defaults to something usable on a single local host: the agent cap
+// One value is REQUIRED and has no default: AGENT_TOKEN, the Bearer every
+// agent presents to git-proxy. GITHUB_REPO is optional -- it is the repo a
+// create request that names no per-agent repo falls back to, and an agent
+// with no repo at all boots as a bare Claude terminal that clones on demand.
+// Everything else defaults to something usable on a single local host: the
+// agent cap
 // (MAX_AGENTS), the HTTP listen address (LISTEN_ADDR), the BoltDB path
 // (STATE_DB_PATH), the agent image (AGENT_IMAGE), the shared network names
 // (PROXYNET_NAME/DBNET_NAME), the DinD sidecar's runtime (DOCKER_RUNTIME),

@@ -17,8 +17,9 @@ func envFrom(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// requiredEnv is the minimum a real deployment must supply: the two values
-// with no default. Everything else is expected to default.
+// requiredEnv is a representative minimal deployment: AGENT_TOKEN (the one
+// value with no default) plus a GITHUB_REPO -- optional now, but the common
+// case. Everything else is expected to default.
 func requiredEnv() map[string]string {
 	return map[string]string{
 		"GITHUB_REPO": "psenna/ai-sandbox.git",
@@ -27,7 +28,7 @@ func requiredEnv() map[string]string {
 }
 
 // envWith returns requiredEnv overlaid with extra. A "" value removes the
-// key, so a case can drop a required variable.
+// key, so a case can drop a variable.
 func envWith(extra map[string]string) func(string) string {
 	m := requiredEnv()
 	for k, v := range extra {
@@ -222,8 +223,9 @@ func TestValidate_Errors(t *testing.T) {
 		args []string
 		want string // substring the error must contain
 	}{
-		{name: "GITHUB_REPO missing", env: map[string]string{"GITHUB_REPO": ""}, want: "github-repo"},
-		{name: "GITHUB_REPO empty via flag", args: []string{"--github-repo="}, want: "github-repo"},
+		{name: "GITHUB_REPO is a full URL", env: map[string]string{"GITHUB_REPO": "https://github.com/psenna/ai-sandbox"}, want: "github-repo"},
+		{name: "GITHUB_REPO has no owner", args: []string{"--github-repo=ai-sandbox.git"}, want: "github-repo"},
+		{name: "GITHUB_REPO has a nested path", args: []string{"--github-repo=psenna/ai-sandbox/tree/main"}, want: "github-repo"},
 		{name: "AGENT_TOKEN missing", env: map[string]string{"AGENT_TOKEN": ""}, want: "agent-token"},
 		{name: "AGENT_TOKEN empty via flag", args: []string{"--agent-token="}, want: "agent-token"},
 
@@ -307,6 +309,8 @@ func TestValidate_AcceptsBoundaryValues(t *testing.T) {
 		{"https ollama-url", []string{"--ollama-url=https://ollama.internal:11434"}},
 		{"default-backend anthropic", []string{"--default-backend=anthropic"}},
 		{"default-backend ollama", []string{"--default-backend=ollama"}},
+		{"empty github-repo is allowed -- the agent boots as a bare terminal", []string{"--github-repo="}},
+		{"github-repo without a .git suffix", []string{"--github-repo=psenna/ai-sandbox"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,6 +322,28 @@ func TestValidate_AcceptsBoundaryValues(t *testing.T) {
 				t.Errorf("Validate() with %v: unexpected error: %v", tc.args, err)
 			}
 		})
+	}
+}
+
+func TestValidGithubRepo(t *testing.T) {
+	valid := []string{
+		"psenna/ai-sandbox.git", "psenna/ai-sandbox", "a/b",
+		"my-org/my_repo.v2", "Owner123/repo-name",
+	}
+	for _, s := range valid {
+		if !ValidGithubRepo(s) {
+			t.Errorf("ValidGithubRepo(%q) = false, want true", s)
+		}
+	}
+	invalid := []string{
+		"", "no-slash", "psenna/ai-sandbox/tree/main",
+		"https://github.com/psenna/ai-sandbox", "git@github.com:psenna/ai-sandbox.git",
+		"psenna /ai-sandbox", "/leading", "trailing/", "owner/re po",
+	}
+	for _, s := range invalid {
+		if ValidGithubRepo(s) {
+			t.Errorf("ValidGithubRepo(%q) = true, want false", s)
+		}
 	}
 }
 

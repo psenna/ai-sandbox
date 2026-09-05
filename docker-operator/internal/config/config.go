@@ -12,8 +12,10 @@ import (
 )
 
 // Built-in defaults, applied when neither a flag nor an environment variable
-// supplies a value. GITHUB_REPO and AGENT_TOKEN are absent on purpose: they
-// are required, and a default AGENT_TOKEN would be a hardcoded credential.
+// supplies a value. AGENT_TOKEN is absent on purpose: it is required, and a
+// default would be a hardcoded credential. GITHUB_REPO is optional (an agent
+// with none boots as a bare Claude terminal and clones on demand) and has no
+// meaningful default, so it too is absent here.
 //
 // The service URLs mirror ai-sandbox/docker-compose.yaml's claude service
 // exactly, and the network names mirror the plan's resource-naming section,
@@ -142,9 +144,13 @@ type Config struct {
 	// Validate rejects a configuration where the two names are equal.
 	DbnetName string
 
-	// GithubRepo is the owner/repo.git every agent clones through git-proxy.
-	// REQUIRED: repo-specific, so no default can be correct. V1 shares one
-	// repository across all agents (plan decision 3).
+	// GithubRepo is the owner/repo.git a create request that names no
+	// per-agent repo falls back to, templated into the agent container as
+	// GITHUB_REPO. OPTIONAL: an agent with no repo (neither this default nor
+	// a per-agent value) boots as a bare Claude terminal and clones on
+	// demand through git-proxy. Nothing auto-clones it; it is a hint of
+	// which repo the agent is here to work on. When set it must look like
+	// owner/repo or owner/repo.git.
 	GithubRepo string
 
 	// AgentToken is the Bearer every agent presents to git-proxy. It is NOT
@@ -264,7 +270,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 		"name of the shared network carrying dependaproxy's postgres; must differ from proxynet-name (env DBNET_NAME)")
 	fs.StringVar(&c.GithubRepo, "github-repo",
 		envOr(getenv, "GITHUB_REPO", ""),
-		"required: owner/repo.git every agent clones through git-proxy (env GITHUB_REPO)")
+		"optional: owner/repo.git a create request that names no per-agent repo falls back to; an agent with no repo boots as a bare terminal and clones on demand (env GITHUB_REPO)")
 	fs.StringVar(&agentToken, "agent-token",
 		envOr(getenv, "AGENT_TOKEN", ""),
 		"required: the Bearer every agent presents to git-proxy, not a GitHub PAT. Prefer the AGENT_TOKEN environment variable: flag values are visible to any user who can read the process table (env AGENT_TOKEN)")
@@ -343,14 +349,14 @@ func (c Config) Validate() error {
 	return c.validateModelRouting()
 }
 
-// validateRequired covers the two values that have no default and must be
-// supplied by the operator's environment.
+// validateRequired covers AGENT_TOKEN (required, no default) and the shape of
+// GITHUB_REPO (optional, but if given it must be a plausible owner/repo ref).
 func (c Config) validateRequired() error {
-	if c.GithubRepo == "" {
-		return fmt.Errorf("github-repo: must not be empty; set the GITHUB_REPO environment variable or -github-repo to the owner/repo.git every agent clones")
-	}
 	if c.AgentToken.IsZero() {
 		return fmt.Errorf("agent-token: must not be empty; set the AGENT_TOKEN environment variable to the Bearer every agent presents to git-proxy")
+	}
+	if c.GithubRepo != "" && !ValidGithubRepo(c.GithubRepo) {
+		return fmt.Errorf("github-repo: %q is not a valid repo reference, want owner/repo or owner/repo.git", c.GithubRepo)
 	}
 	return nil
 }
@@ -430,6 +436,17 @@ func (c Config) validateModelRouting() error {
 	}
 	return nil
 }
+
+// githubRepoRE matches a bare "owner/repo" or "owner/repo.git" reference:
+// exactly one slash, and only the characters GitHub allows in an owner or a
+// repository name. It deliberately rejects a full URL, a scheme, whitespace
+// or a nested path -- git-proxy is addressed as http://git-proxy:8080/<this>.
+var githubRepoRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+// ValidGithubRepo reports whether s is a plausible "owner/repo(.git)"
+// reference. The empty string is not valid here; callers that treat an empty
+// repo as "no repo" check for that themselves.
+func ValidGithubRepo(s string) bool { return githubRepoRE.MatchString(s) }
 
 // dockerNameRE matches the character set Docker accepts for a network name.
 var dockerNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)

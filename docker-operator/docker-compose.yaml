@@ -126,9 +126,15 @@ services:
       # agent records its own choice; this is only the create-form default.
       DEFAULT_AGENT_BACKEND: "${DEFAULT_AGENT_BACKEND:-ollama}"
 
-      # git-proxy legs, shared by every agent in V1 (one repo, one token).
+      # git-proxy legs. AGENT_TOKEN is REQUIRED -- the Bearer every agent
+      # presents to git-proxy (not a GitHub PAT; git-proxy consumes it for
+      # auth and never forwards it). GITHUB_REPO is OPTIONAL: it is the repo
+      # a create request that names no per-agent repo falls back to, and an
+      # agent with none boots as a bare Claude terminal that clones on
+      # demand. Each agent can also be pinned to its own repo on the create
+      # form / via the POST /api/agents "repo" field.
       AGENT_TOKEN: "${AGENT_TOKEN}"
-      GITHUB_REPO: "${GITHUB_REPO}"
+      GITHUB_REPO: "${GITHUB_REPO:-}"
       GIT_PROXY_URL: "http://git-proxy:8080"
       GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
 

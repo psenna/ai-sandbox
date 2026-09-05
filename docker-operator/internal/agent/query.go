@@ -32,12 +32,14 @@ func (m *Manager) MaxAgents() int {
 	return m.store.MaxAgents()
 }
 
-// DefaultBackend / DefaultModel / DefaultFastModel expose the operator's
-// configured create-form defaults, so internal/api's list response can
-// carry them and the UI can pre-fill without a second request.
+// DefaultBackend / DefaultModel / DefaultFastModel / DefaultRepo expose the
+// operator's configured create-form defaults, so internal/api's list
+// response can carry them and the UI can pre-fill without a second request.
+// DefaultRepo is "" when the operator set no GITHUB_REPO.
 func (m *Manager) DefaultBackend() string   { return m.cfg.DefaultBackend }
 func (m *Manager) DefaultModel() string     { return m.cfg.AgentModel }
 func (m *Manager) DefaultFastModel() string { return m.cfg.AgentFastModel }
+func (m *Manager) DefaultRepo() string      { return m.cfg.GithubRepo }
 
 // AnthropicAuthStatus reports whether the shared Anthropic credential is
 // configured -- its kind and last-set time, never its value. The value

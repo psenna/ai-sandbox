@@ -813,6 +813,7 @@ func TestCreate_PersistsBackendAndModels(t *testing.T) {
 		Backend:   "ollama",
 		Model:     "glm-5.3:cloud",
 		FastModel: "glm-5.3-flash:cloud",
+		Repo:      "psenna/ai-sandbox.git",
 	}
 	got, err := s.Create(ctx, spec)
 	if err != nil {
@@ -820,6 +821,9 @@ func TestCreate_PersistsBackendAndModels(t *testing.T) {
 	}
 	if got.Backend != "ollama" || got.Model != "glm-5.3:cloud" || got.FastModel != "glm-5.3-flash:cloud" {
 		t.Fatalf("Create returned backend/model/fast_model = %q/%q/%q, want the spec's values", got.Backend, got.Model, got.FastModel)
+	}
+	if got.Repo != "psenna/ai-sandbox.git" {
+		t.Fatalf("Create returned repo = %q, want the spec's value", got.Repo)
 	}
 
 	// Round-trips through JSON + a reopen unchanged.
@@ -837,6 +841,9 @@ func TestCreate_PersistsBackendAndModels(t *testing.T) {
 	}
 	if stored.Backend != "ollama" || stored.Model != "glm-5.3:cloud" || stored.FastModel != "glm-5.3-flash:cloud" {
 		t.Fatalf("after reopen backend/model/fast_model = %q/%q/%q, want the spec's values", stored.Backend, stored.Model, stored.FastModel)
+	}
+	if stored.Repo != "psenna/ai-sandbox.git" {
+		t.Fatalf("after reopen repo = %q, want the spec's value", stored.Repo)
 	}
 }
 

@@ -126,6 +126,7 @@
 				'<div class="detail__header">' +
 					'<input class="detail__name" type="text" placeholder="(unnamed)" aria-label="Agent name">' +
 					'<input class="detail__description" type="text" placeholder="Add a description…" aria-label="Agent description">' +
+					'<span class="detail__repo" title="repository this agent works"></span>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
 					'<button class="detail__delete-btn" type="button">Delete</button>' +
 				'</div>' +
@@ -134,6 +135,7 @@
 
 		var nameInput = container.querySelector('.detail__name');
 		var descInput = container.querySelector('.detail__description');
+		var repoEl = container.querySelector('.detail__repo');
 		var saveStatus = container.querySelector('.detail__save-status');
 		var deleteBtn = container.querySelector('.detail__delete-btn');
 		var termEl = container.querySelector('.detail__terminal');
@@ -145,6 +147,7 @@
 				if (destroyed) return;
 				nameInput.value = agent.name || '';
 				descInput.value = agent.description || '';
+				repoEl.textContent = agent.repo || 'no repo';
 			})
 			.catch(function (e) {
 				if (destroyed) return;

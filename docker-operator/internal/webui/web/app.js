@@ -58,6 +58,7 @@
 			backend: data.default_backend || 'ollama',
 			model: data.default_model || '',
 			fastModel: data.default_fast_model || '',
+			repo: data.default_repo || '',
 		};
 		renderSidebar();
 	}
@@ -106,6 +107,8 @@
 				description: form.querySelector('.create-form__description').value.trim(),
 				backend: backend,
 			};
+			var repo = form.querySelector('.create-form__repo').value.trim();
+			if (repo) body.repo = repo;
 			if (backend === 'ollama') {
 				body.model = form.querySelector('.create-form__model').value.trim();
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();

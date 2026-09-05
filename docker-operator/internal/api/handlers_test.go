@@ -37,6 +37,7 @@ type fakeManager struct {
 	defaultBackend   string
 	defaultModel     string
 	defaultFastModel string
+	defaultRepo      string
 
 	anthropicKind      string
 	anthropicUpdatedAt time.Time
@@ -57,6 +58,7 @@ func newFakeManager(maxAgents int) *fakeManager {
 		defaultBackend:   config.BackendOllama,
 		defaultModel:     "glm-5.3:cloud",
 		defaultFastModel: "glm-5.3-flash:cloud",
+		defaultRepo:      "psenna/ai-sandbox.git",
 	}
 }
 
@@ -80,6 +82,7 @@ func (f *fakeManager) Create(_ context.Context, req agent.CreateRequest) (store.
 		Backend:     req.Backend,
 		Model:       req.Model,
 		FastModel:   req.FastModel,
+		Repo:        req.Repo,
 		Status:      store.StatusCreating,
 	}
 	f.agents[a.ID] = a
@@ -121,6 +124,7 @@ func (f *fakeManager) MaxAgents() int { return f.maxAgents }
 func (f *fakeManager) DefaultBackend() string   { return f.defaultBackend }
 func (f *fakeManager) DefaultModel() string     { return f.defaultModel }
 func (f *fakeManager) DefaultFastModel() string { return f.defaultFastModel }
+func (f *fakeManager) DefaultRepo() string      { return f.defaultRepo }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
 	f.mu.Lock()
@@ -266,6 +270,35 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreate_Repo(t *testing.T) {
+	t.Run("a valid per-agent repo is passed through and recorded", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Repo: "acme/widget.git"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+		}
+		if a := decodeAgent(t, rec); a.Repo != "acme/widget.git" {
+			t.Errorf("created agent Repo = %q, want the requested repo", a.Repo)
+		}
+	})
+
+	t.Run("a malformed repo is a 400 before the manager is called", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.createErr = errors.New("Create must not be reached")
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Repo: "https://github.com/acme/widget"})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+		}
+		if got := decodeEnvelope(t, rec).Error.Code; got != CodeInvalidParam {
+			t.Errorf("error code = %q, want %q", got, CodeInvalidParam)
+		}
+	})
+}
+
 func TestCreate_EmptyBodyIsValid(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
@@ -359,6 +392,9 @@ func TestList(t *testing.T) {
 	if resp.DefaultBackend != "ollama" || resp.DefaultModel != "glm-5.3:cloud" || resp.DefaultFastModel != "glm-5.3-flash:cloud" {
 		t.Errorf("defaults = %q/%q/%q, want the operator's configured create-form defaults",
 			resp.DefaultBackend, resp.DefaultModel, resp.DefaultFastModel)
+	}
+	if resp.DefaultRepo != "psenna/ai-sandbox.git" {
+		t.Errorf("DefaultRepo = %q, want the operator's configured repo", resp.DefaultRepo)
 	}
 }
 

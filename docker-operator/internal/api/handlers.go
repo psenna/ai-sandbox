@@ -35,12 +35,14 @@ type AgentManager interface {
 	MaxAgents() int
 	Rename(ctx context.Context, id string, name, description *string) (store.Agent, error)
 
-	// DefaultBackend/DefaultModel/DefaultFastModel are the operator-configured
-	// defaults the create form pre-fills; they ride along on the list
-	// response so the UI needs no second request.
+	// DefaultBackend/DefaultModel/DefaultFastModel/DefaultRepo are the
+	// operator-configured defaults the create form pre-fills; they ride
+	// along on the list response so the UI needs no second request.
+	// DefaultRepo is "" when the operator configured no GITHUB_REPO.
 	DefaultBackend() string
 	DefaultModel() string
 	DefaultFastModel() string
+	DefaultRepo() string
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
@@ -132,6 +134,10 @@ type createAgentRequest struct {
 	Backend     string `json:"backend"`
 	Model       string `json:"model"`
 	FastModel   string `json:"fast_model"`
+	// Repo is this agent's owner/repo.git, overriding the operator's
+	// GITHUB_REPO default. Empty falls back to that default; empty with no
+	// default means the agent boots as a bare terminal. Nothing clones it.
+	Repo string `json:"repo"`
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -152,6 +158,7 @@ type agentListResponse struct {
 	DefaultBackend   string        `json:"default_backend"`
 	DefaultModel     string        `json:"default_model"`
 	DefaultFastModel string        `json:"default_fast_model"`
+	DefaultRepo      string        `json:"default_repo"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -193,6 +200,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		DefaultBackend:   h.mgr.DefaultBackend(),
 		DefaultModel:     h.mgr.DefaultModel(),
 		DefaultFastModel: h.mgr.DefaultFastModel(),
+		DefaultRepo:      h.mgr.DefaultRepo(),
 	})
 }
 
@@ -210,10 +218,15 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"model" and "fast_model" are not valid for the anthropic backend`, "model")
 		return
 	}
+	if req.Repo != "" && !config.ValidGithubRepo(req.Repo) {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
+		return
+	}
 
 	a, err := h.mgr.Create(r.Context(), agent.CreateRequest{
 		Name: req.Name, Description: req.Description,
 		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
+		Repo: req.Repo,
 	})
 	if err != nil {
 		switch {
@@ -223,6 +236,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before creating an agent that uses it", "backend")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
+		case agent.IsInvalidRepo(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
 		default:
 			h.internalError(w, "creating agent", err)
 		}

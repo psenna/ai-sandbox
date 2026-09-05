@@ -38,8 +38,8 @@ const AnthropicLoginIdleTimeout = 20 * time.Minute
 
 // anthropicLoginScript is the login container's foreground process, passed
 // as an inline Entrypoint so the agent image's own /entrypoint.sh (which
-// requires AGENT_TOKEN/GITHUB_REPO and sets up git-proxy/DependaProxy, none
-// of which `claude setup-token` needs) is skipped entirely.
+// requires AGENT_TOKEN and sets up git-proxy/DependaProxy, none of which
+// `claude setup-token` needs) is skipped entirely.
 //
 // Same "the tmux session owns the container" shape as
 // docker-operator/agent/tmux-boot.sh (see its header for the tmux 3.7c

@@ -85,21 +85,25 @@
 	}
 
 	// renderCreateForm renders the "New Agent" form. defaults pre-fills the
-	// backend choice and the two Ollama model fields from the operator's
-	// configuration (GET /api/agents' default_* fields). The caller wires
-	// the backend radio to show/hide .create-form__ollama and submits the
-	// form's values to POST /api/agents.
+	// backend choice, the two Ollama model fields and the repo from the
+	// operator's configuration (GET /api/agents' default_* fields). The
+	// caller wires the backend radio to show/hide .create-form__ollama and
+	// submits the form's values to POST /api/agents.
 	function renderCreateForm(defaults) {
 		defaults = defaults || {};
 		var backend = defaults.backend === 'anthropic' ? 'anthropic' : 'ollama';
 		var model = escapeHTML(defaults.model || '');
 		var fastModel = escapeHTML(defaults.fastModel || '');
+		var repo = escapeHTML(defaults.repo || '');
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		return (
 			'<form class="create-form">' +
 				'<h2 class="create-form__title">New agent</h2>' +
 				'<label class="create-form__row">Name<input class="create-form__name" type="text" placeholder="(optional)"></label>' +
 				'<label class="create-form__row">Description<input class="create-form__description" type="text" placeholder="(optional)"></label>' +
+				'<label class="create-form__row">Repository' +
+					'<input class="create-form__repo" type="text" value="' + repo + '" placeholder="owner/repo.git — blank for a bare terminal">' +
+				'</label>' +
 				'<fieldset class="create-form__row create-form__backend">' +
 					'<legend>Backend</legend>' +
 					'<label><input type="radio" name="backend" value="ollama"' + (backend === 'ollama' ? ' checked' : '') + '> Ollama</label>' +
