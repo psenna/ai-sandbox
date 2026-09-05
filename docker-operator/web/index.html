@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docker-operator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+	<aside class="sidebar">
+		<button id="new-agent-btn" class="new-agent-btn" type="button">+ New Agent</button>
+		<ul id="agent-list" class="agent-list">
+			<li class="agent-list__loading">Loading…</li>
+		</ul>
+		<div id="agent-capacity" class="agent-capacity"></div>
+	</aside>
+	<main id="main-area" class="main-area">
+		<p class="placeholder">Select an agent, or create a new one.</p>
+	</main>
+</div>
+<script src="render.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
