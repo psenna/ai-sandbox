@@ -16,7 +16,14 @@
 set -eu
 
 : "${AGENT_TOKEN:?AGENT_TOKEN must be set (see .env)}"
-: "${GITHUB_REPO:?GITHUB_REPO must be set (see .env)}"
+
+# GITHUB_REPO is optional and unused here: nothing in this script clones a
+# repository -- whoever drives the agent runs the first `git clone` in the
+# terminal, through the git-proxy rewrite configured below. When it IS set
+# (the compose stack and the Kubernetes operator both set it) it rides in the
+# environment as a hint of which repo the agent is here to work on; the
+# docker-operator populates it per agent.
+: "${GITHUB_REPO:=}"
 
 # Rewrite https://github.com/<anything> -> http://git-proxy:8080/<anything> so all
 # git traffic flows through the proxy.

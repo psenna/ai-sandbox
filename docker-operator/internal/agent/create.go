@@ -25,10 +25,15 @@ var ErrNoAnthropicAuth = errors.New("no Anthropic credential is configured")
 // config.BackendOllama nor config.BackendAnthropic.
 var ErrInvalidBackend = errors.New("invalid agent backend")
 
-// IsNoAnthropicAuth / IsInvalidBackend let internal/api map the two
-// create-time backend errors without importing the sentinels by name.
+// ErrInvalidRepo is returned by Create for a non-empty CreateRequest.Repo
+// that is not a plausible owner/repo(.git) reference.
+var ErrInvalidRepo = errors.New("invalid agent repo")
+
+// IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo let internal/api map
+// the create-time request errors without importing the sentinels by name.
 func IsNoAnthropicAuth(err error) bool { return errors.Is(err, ErrNoAnthropicAuth) }
 func IsInvalidBackend(err error) bool  { return errors.Is(err, ErrInvalidBackend) }
+func IsInvalidRepo(err error) bool     { return errors.Is(err, ErrInvalidRepo) }
 
 // resolvedBackend is everything about an agent's LLM backend that its
 // container environment needs, worked out once in Create from the request,
@@ -202,6 +207,11 @@ type CreateRequest struct {
 	// "use the operator default". Ignored for the anthropic backend.
 	Model     string
 	FastModel string
+	// Repo is the owner/repo.git this agent works, overriding the operator's
+	// GithubRepo default for this one agent. Empty falls back to that
+	// default; if that is empty too the agent boots with no repo. Nothing
+	// clones it. Create validates its shape when non-empty.
+	Repo string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -235,6 +245,14 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
 
+	// Same reasoning for the repo: a malformed one is a bad request, not a
+	// reason to burn a slot. Empty (no per-agent repo, no operator default)
+	// is fine -- the agent boots as a bare terminal.
+	repo := firstNonEmpty(req.Repo, m.cfg.GithubRepo)
+	if repo != "" && !config.ValidGithubRepo(repo) {
+		return store.Agent{}, fmt.Errorf("creating an agent: %w: %q", ErrInvalidRepo, repo)
+	}
+
 	// Reserve the slot FIRST. store.Create both counts and inserts inside one
 	// bbolt read-write transaction, so N racing creates against a cap of N-1
 	// produce exactly N-1 successes. The error satisfies store.IsAtCapacity,
@@ -242,6 +260,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	a, err := m.store.Create(ctx, store.CreateSpec{
 		ID: id, Name: req.Name, Description: req.Description,
 		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
+		Repo: repo,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -591,8 +610,10 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 		// git-proxy legs, consumed by entrypoint.sh and the use-git-proxy
 		// skill. This Bearer is NOT the GitHub PAT: git-proxy consumes it for
 		// authentication and never forwards it.
-		"AGENT_TOKEN":          token,
-		"GITHUB_REPO":          m.cfg.GithubRepo,
+		"AGENT_TOKEN": token,
+		// The per-agent repo resolved at create time (request value, else
+		// the operator's GithubRepo default, else empty for a bare agent).
+		"GITHUB_REPO":          a.Repo,
 		"GIT_PROXY_URL":        m.cfg.GitProxyURL,
 		"GIT_PROXY_BROKER_URL": m.cfg.GitProxyBrokerURL,
 		"GIT_PROXY_TOKEN":      token,

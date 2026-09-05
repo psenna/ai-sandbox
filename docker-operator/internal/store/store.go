@@ -123,6 +123,12 @@ type Agent struct {
 	Model     string `json:"model,omitempty"`
 	FastModel string `json:"fast_model,omitempty"`
 
+	// Repo is the owner/repo.git this agent works, templated into its
+	// container as GITHUB_REPO. Set once at create time from the request or
+	// the operator's GithubRepo default; empty means the agent boots as a
+	// bare terminal with no repo. Nothing auto-clones it -- it is a hint.
+	Repo string `json:"repo,omitempty"`
+
 	// Status is the lifecycle state; see Status.
 	Status Status `json:"status"`
 	// ErrorMessage explains a StatusError agent. Empty in every other state.
@@ -181,13 +187,14 @@ type CreateSpec struct {
 	Name string
 	// Description is the initial free-form description. May be empty.
 	Description string
-	// Backend, Model and FastModel are recorded on the new agent verbatim.
-	// internal/agent resolves them (request value or operator default) and
-	// validates Backend before calling Create; the store only persists what
-	// it is given.
+	// Backend, Model, FastModel and Repo are recorded on the new agent
+	// verbatim. internal/agent resolves them (request value or operator
+	// default) and validates them before calling Create; the store only
+	// persists what it is given.
 	Backend   string
 	Model     string
 	FastModel string
+	Repo      string
 }
 
 // bucketAgents holds every agent record, keyed by agent ID. bucketSettings
@@ -344,6 +351,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		Backend:     spec.Backend,
 		Model:       spec.Model,
 		FastModel:   spec.FastModel,
+		Repo:        spec.Repo,
 		Status:      StatusCreating,
 		CreatedAt:   now,
 		UpdatedAt:   now,

@@ -122,9 +122,9 @@ anything else on the same Docker host.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` (so the create form needs no second request). |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model` are for `ollama` only (`400` with `anthropic`). `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
-| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`). |
+| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_repo` (so the create form needs no second request). |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model` are for `ollama` only (`400` with `anthropic`). `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `repo`). |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. |
 | `GET` | `/api/agents/{id}/output?tail=N` | The agent's captured pane output (raw text, not JSON-wrapped). Unused by the UI today; exists for future automation. |
@@ -153,6 +153,18 @@ form:
 The backend and models are fixed once an agent is created (changing them
 would need the container's environment rebuilt). `DEFAULT_AGENT_BACKEND`
 sets which one the form (and an API request that names none) starts on.
+
+## Choosing a repo
+
+The **New Agent** form has an optional **Repository** field (`owner/repo` or
+`owner/repo.git`). It is pre-filled from the operator's `GITHUB_REPO` and
+overridable per agent; leave it blank on both and the agent boots as a bare
+Claude terminal. **Nothing is auto-cloned** either way — whoever drives the
+agent runs the first `git clone` in the terminal, which the entrypoint has
+already routed through git-proxy (`https://github.com/… → git-proxy`, Bearer
+attached). On-demand cloning only works for repos git-proxy is configured to
+serve (its `credentials.yaml`). The chosen repo rides in the container as
+`GITHUB_REPO` as a hint, and shows in the agent's detail header.
 
 ## Anthropic login
 
@@ -196,6 +208,9 @@ can read it here, CI ran it.
 
 ```sh quickstart
 export AGENT_TOKEN=agent-token-1
+# GITHUB_REPO is optional -- the default repo agents fall back to. Unset it
+# and agents boot as bare terminals; each can still be pinned to its own repo
+# on the create form.
 export GITHUB_REPO=psenna/ai-sandbox.git
 docker compose up -d --build
 ```
@@ -217,14 +232,17 @@ curl -fsS http://127.0.0.1:8000/api/agents
 curl -fsS http://127.0.0.1:8000/ | grep -o '<title>[^<]*</title>'
 ```
 
-The first line prints `{"agents":[],"max_agents":5}` on a fresh operator;
-the second confirms the embedded web UI (not a 404 or an error page) is
-being served at `/`.
+The first line prints an empty agent list plus `max_agents` and the
+operator's create-form defaults (`default_backend` / `default_model` /
+`default_fast_model` / `default_repo`) on a fresh operator; the second
+confirms the embedded web UI (not a 404 or an error page) is being served
+at `/`.
 
 **4 — create an agent (needs `sysbox-runc`, see below)**
 
 Clicking **+ New Agent** in the UI — filling in the form (name, description,
-[backend](#choosing-a-backend), and for Ollama the two model names) — or
+optional [repo](#choosing-a-repo), [backend](#choosing-a-backend), and for
+Ollama the two model names) — or
 `curl -X POST http://127.0.0.1:8000/api/agents -d '{"backend":"ollama"}'` —
 creates the two containers, three volumes and private network described in
 [Architecture](#architecture) above, then opens a live terminal running

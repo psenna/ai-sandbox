@@ -180,6 +180,16 @@ html, body {
 	min-width: 3.5em;
 }
 
+.detail__repo {
+	color: var(--fg-dim);
+	font-size: 12px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	flex: 0 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .detail__delete-btn {
 	background: transparent;
 	color: var(--status-error);
