@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,34 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
+
+// ErrNoAnthropicAuth is returned by Create for a backend=anthropic request
+// when no Anthropic credential has been stored yet. internal/api maps it to
+// a 409 ("configure the Anthropic account first").
+var ErrNoAnthropicAuth = errors.New("no Anthropic credential is configured")
+
+// ErrInvalidBackend is returned by Create for a backend that is neither
+// config.BackendOllama nor config.BackendAnthropic.
+var ErrInvalidBackend = errors.New("invalid agent backend")
+
+// IsNoAnthropicAuth / IsInvalidBackend let internal/api map the two
+// create-time backend errors without importing the sentinels by name.
+func IsNoAnthropicAuth(err error) bool { return errors.Is(err, ErrNoAnthropicAuth) }
+func IsInvalidBackend(err error) bool  { return errors.Is(err, ErrInvalidBackend) }
+
+// resolvedBackend is everything about an agent's LLM backend that its
+// container environment needs, worked out once in Create from the request,
+// the operator config and -- for the anthropic backend -- the stored shared
+// credential. It is threaded through the build sequence rather than re-read,
+// so a credential change mid-create cannot half-apply.
+type resolvedBackend struct {
+	kind      string // config.BackendOllama | config.BackendAnthropic
+	model     string // ollama only: the default/opus tier
+	fastModel string // ollama only: the sonnet/haiku tier
+	// anthropic only: exactly one is non-empty.
+	apiKey     string
+	oauthToken string
+}
 
 // dindInitScript is scripts/dind-init.sh, embedded so the operator can hand it
 // to each DinD sidecar as an argument instead of bind-mounting it.
@@ -165,6 +194,14 @@ type CreateRequest struct {
 	Name string
 	// Description is free-form text shown in the UI. May be empty.
 	Description string
+	// Backend is "ollama", "anthropic", or "" to use the operator's
+	// DefaultBackend. Create validates it.
+	Backend string
+	// Model and FastModel override the operator's default Ollama models for
+	// this one agent (default/opus tier, and sonnet/haiku tier). Empty means
+	// "use the operator default". Ignored for the anthropic backend.
+	Model     string
+	FastModel string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -190,20 +227,68 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
 
+	// Resolve the backend before reserving a slot: an invalid backend, or a
+	// backend=anthropic request with no stored credential, is the caller's
+	// mistake and must not consume a slot even briefly.
+	rb, err := m.resolveBackend(ctx, req)
+	if err != nil {
+		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
+	}
+
 	// Reserve the slot FIRST. store.Create both counts and inserts inside one
 	// bbolt read-write transaction, so N racing creates against a cap of N-1
 	// produce exactly N-1 successes. The error satisfies store.IsAtCapacity,
 	// which internal/api maps to 409.
-	a, err := m.store.Create(ctx, store.CreateSpec{ID: id, Name: req.Name, Description: req.Description})
+	a, err := m.store.Create(ctx, store.CreateSpec{
+		ID: id, Name: req.Name, Description: req.Description,
+		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
+	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
 	}
 
-	if err := m.build(ctx, &a); err != nil {
+	if err := m.build(ctx, &a, rb); err != nil {
 		m.rollback(ctx, a, err)
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
 	}
 	return a, nil
+}
+
+// resolveBackend turns a CreateRequest's backend fields + the operator config
+// + the stored Anthropic credential into a resolvedBackend, or an error the
+// caller can map to a 4xx (ErrInvalidBackend, ErrNoAnthropicAuth).
+func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest) (resolvedBackend, error) {
+	kind := req.Backend
+	if kind == "" {
+		kind = m.cfg.DefaultBackend
+	}
+	if !config.ValidBackend(kind) {
+		return resolvedBackend{}, fmt.Errorf("%w: %q", ErrInvalidBackend, kind)
+	}
+
+	rb := resolvedBackend{kind: kind}
+	switch kind {
+	case config.BackendOllama:
+		rb.model = firstNonEmpty(req.Model, m.cfg.AgentModel)
+		rb.fastModel = firstNonEmpty(req.FastModel, m.cfg.AgentFastModel)
+	case config.BackendAnthropic:
+		auth, ok, err := m.store.GetAnthropicAuth(ctx)
+		if err != nil {
+			return resolvedBackend{}, fmt.Errorf("reading the stored Anthropic credential: %w", err)
+		}
+		if !ok {
+			return resolvedBackend{}, ErrNoAnthropicAuth
+		}
+		switch auth.Kind {
+		case store.AnthropicKindAPIKey:
+			rb.apiKey = auth.Value
+		case store.AnthropicKindOAuth:
+			rb.oauthToken = auth.Value
+		default:
+			return resolvedBackend{}, fmt.Errorf("the stored Anthropic credential has an unknown kind %q", auth.Kind)
+		}
+	}
+	return rb, nil
 }
 
 // build runs the create sequence against a record that already holds a slot.
@@ -212,7 +297,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 // the sidecar healthy before the agent container that talks to it, and the
 // dependaproxy address read back before the agent container whose environment
 // carries it.
-func (m *Manager) build(ctx context.Context, a *store.Agent) error {
+func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend) error {
 	if err := m.stampNames(ctx, a); err != nil {
 		return err
 	}
@@ -231,7 +316,7 @@ func (m *Manager) build(ctx context.Context, a *store.Agent) error {
 	if err := m.connectDependaproxy(ctx, a); err != nil {
 		return err
 	}
-	if err := m.startAgentContainer(ctx, a); err != nil {
+	if err := m.startAgentContainer(ctx, a, rb); err != nil {
 		return err
 	}
 	if err := m.waitTmuxSession(ctx, *a); err != nil {
@@ -447,8 +532,8 @@ func (m *Manager) connectDependaproxy(ctx context.Context, a *store.Agent) error
 }
 
 // startAgentContainer creates and starts the agent container itself.
-func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent) error {
-	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a))
+func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend) error {
+	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a, rb))
 	if err != nil {
 		return fmt.Errorf("creating the agent container %q: %w", a.ContainerName, err)
 	}
@@ -468,12 +553,12 @@ func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent) error
 // /workspace/dependaproxy-ip) and ends in `exec "$@"`. Cmd is what is
 // overridden, to tmux-boot.sh -- which is why the image's own CMD can stay
 // ["bash"] and a plain `docker run` of it remains an ordinary shell.
-func (m *Manager) agentSpec(a store.Agent) dockerclient.ContainerSpec {
+func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend) dockerclient.ContainerSpec {
 	return dockerclient.ContainerSpec{
 		Name:   a.ContainerName,
 		Image:  m.cfg.AgentImage,
 		Cmd:    []string{tmuxBootPath},
-		Env:    m.agentEnv(a),
+		Env:    m.agentEnv(a, rb),
 		Labels: labelsFor(a.ID, RoleAgent),
 		Mounts: []dockerclient.Mount{
 			{Type: dockerclient.MountTypeVolume, Source: a.WorkspaceVolume, Target: workspaceMount},
@@ -499,7 +584,7 @@ func (m *Manager) agentSpec(a store.Agent) dockerclient.ContainerSpec {
 // This is the one sanctioned place config.Secret.Reveal is called: the values
 // have to reach the container as plain strings, and every other path a Secret
 // can take -- fmt, encoding/json, log/slog -- stays redacted.
-func (m *Manager) agentEnv(a store.Agent) map[string]string {
+func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string {
 	token := m.cfg.AgentToken.Reveal()
 
 	env := map[string]string{
@@ -532,10 +617,6 @@ func (m *Manager) agentEnv(a store.Agent) map[string]string {
 		// sessions and plugins survive a container recreate.
 		"CLAUDE_CONFIG_DIR":              configMount,
 		"CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-		// Explicitly empty by default: an empty API key is what stops Claude
-		// Code falling back to the Anthropic cloud when a local backend is
-		// configured.
-		"ANTHROPIC_API_KEY": m.cfg.AnthropicAPIKey.Reveal(),
 
 		// tmux needs a terminal type even for a detached session.
 		"TERM": "xterm-256color",
@@ -545,21 +626,46 @@ func (m *Manager) agentEnv(a store.Agent) map[string]string {
 		env["DEPENDAPROXY_DINERNET_IP"] = a.DependaproxyDinernetIP.String()
 	}
 
-	// Model routing. Empty OllamaURL means "talk to the real Anthropic API
-	// with ANTHROPIC_API_KEY"; otherwise every model tier Claude Code can pick
-	// is mapped, because leaving sonnet/opus unmapped is what makes Task and
-	// Explore subagents fail with "model may not exist or you may not have
-	// access" against a non-Anthropic backend.
-	if m.cfg.OllamaURL != "" {
+	m.applyBackendEnv(env, rb)
+	return env
+}
+
+// applyBackendEnv writes the model-routing / credential half of the agent's
+// environment, which is the only part that differs between the two backends.
+//
+//   - ollama: point Claude Code at the shared Ollama daemon and map EVERY
+//     model tier to this agent's models -- leaving sonnet/opus unmapped is
+//     what makes Task and Explore subagents fail with "model may not exist"
+//     against a non-Anthropic backend. ANTHROPIC_API_KEY is set empty so
+//     Claude Code cannot silently fall back to the real cloud.
+//   - anthropic: no base URL, no model overrides (real Anthropic defaults),
+//     and exactly one of ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN from
+//     the operator's stored shared credential.
+//
+// The one carried-over quirk: if the operator cleared OllamaURL entirely
+// (the historical "just use the real cloud with a static key" escape hatch),
+// an ollama agent falls back to cfg.AnthropicAPIKey with no routing -- so
+// that deployment shape keeps working without anyone having to switch every
+// agent to the anthropic backend.
+func (m *Manager) applyBackendEnv(env map[string]string, rb resolvedBackend) {
+	switch rb.kind {
+	case config.BackendAnthropic:
+		env["ANTHROPIC_API_KEY"] = rb.apiKey
+		env["CLAUDE_CODE_OAUTH_TOKEN"] = rb.oauthToken
+
+	case config.BackendOllama:
+		if m.cfg.OllamaURL == "" {
+			env["ANTHROPIC_API_KEY"] = m.cfg.AnthropicAPIKey.Reveal()
+			return
+		}
+		env["ANTHROPIC_API_KEY"] = ""
 		env["ANTHROPIC_BASE_URL"] = m.cfg.OllamaURL
 		env["ANTHROPIC_AUTH_TOKEN"] = m.cfg.AnthropicAuthToken.Reveal()
-		env["ANTHROPIC_MODEL"] = m.cfg.AgentModel
-		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = m.cfg.AgentModel
-		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = m.cfg.AgentFastModel
-		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = m.cfg.AgentFastModel
+		env["ANTHROPIC_MODEL"] = rb.model
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = rb.model
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = rb.fastModel
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = rb.fastModel
 	}
-
-	return env
 }
 
 // waitTmuxSession polls `tmux has-session -t main` inside the agent container
