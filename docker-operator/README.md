@@ -214,6 +214,22 @@ rearchitecting anything above it.
 
 ## Development
 
+Copy [`.env.example`](.env.example) to `.env` and fill it in — see the root
+README's [Setup section](../README.md#setup) for `config.yaml`/
+`credentials.yaml`, which this stack shares with the root compose stack.
+
+Before committing, run the repo-wide secret scan from the repository root:
+
+```sh
+bash ../scripts/check-no-secrets.sh
+```
+
+or wire it as a git pre-commit hook once, same as `scripts/check-no-secrets.sh`'s own header comment recommends:
+
+```sh
+ln -s ../../scripts/check-no-secrets.sh ../.git/hooks/pre-commit
+```
+
 See the [Makefile](Makefile) for every check CI runs (`vet`, `fmt-check`,
 `lint`, `vuln`, `test`, `web-test`, `skill-check`, `dind-init-check`,
 `web-embed-check`) — `make all` runs the lot. Go and Node both run inside
