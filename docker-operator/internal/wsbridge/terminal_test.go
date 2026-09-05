@@ -2,12 +2,17 @@ package wsbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
@@ -123,5 +128,35 @@ func TestHandleControl_IgnoresBadInput(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestContainerTerminalHandler_ClosesCleanlyWhenContainerAbsent proves the
+// Anthropic-login terminal route (NewContainerTerminalHandler) does not hang
+// or 500 when its fixed container is not there -- it upgrades, then closes
+// the WebSocket with the not-ready reason.
+func TestContainerTerminalHandler_ClosesCleanlyWhenContainerAbsent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ws/anthropic/login/terminal",
+		NewContainerTerminalHandler(dockerclienttest.New(), "docker-operator-anthropic-login", "no login in progress", discardLog))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/anthropic/login/terminal"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err = conn.ReadMessage()
+
+	var ce *websocket.CloseError
+	if !errors.As(err, &ce) {
+		t.Fatalf("ReadMessage err = %v, want a *websocket.CloseError (a clean close, not a hang or a raw read error)", err)
+	}
+	if !strings.Contains(ce.Text, "no login in progress") {
+		t.Errorf("close reason = %q, want it to mention the not-ready reason", ce.Text)
 	}
 }

@@ -219,3 +219,105 @@ func TestAnthropicAuth_GetErrorIs500(t *testing.T) {
 		t.Errorf("500 body leaked the internal error: %s", rec.Body.String())
 	}
 }
+
+// --- /api/anthropic/login ----------------------------------------------
+
+func TestAnthropicLogin_StartStopStatus(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	// Not active initially.
+	rec := doJSON(t, h, "GET", "/api/anthropic/login", nil)
+	var got anthropicLoginResponse
+	decode(t, rec.Body.Bytes(), &got)
+	if got.Active || got.WS != "" {
+		t.Fatalf("initial GET = %+v, want inactive with no ws", got)
+	}
+
+	// Start.
+	rec = doJSON(t, h, "POST", "/api/anthropic/login", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	decode(t, rec.Body.Bytes(), &got)
+	if !got.Active || got.WS != "/ws/anthropic/login/terminal" {
+		t.Fatalf("POST resp = %+v, want active with the ws path", got)
+	}
+	if !mgr.loginActive {
+		t.Error("manager loginActive is false after POST")
+	}
+
+	// GET now reports active.
+	rec = doJSON(t, h, "GET", "/api/anthropic/login", nil)
+	decode(t, rec.Body.Bytes(), &got)
+	if !got.Active {
+		t.Error("GET after POST reports inactive")
+	}
+
+	// Delete.
+	rec = doJSON(t, h, "DELETE", "/api/anthropic/login", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d, want 200", rec.Code)
+	}
+	if mgr.loginActive {
+		t.Error("manager loginActive is true after DELETE")
+	}
+}
+
+func TestAnthropicLogin_StartErrorIs500(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.loginStartErr = errors.New("no such network docker-operator-proxynet")
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/anthropic/login", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "docker-operator-proxynet") {
+		t.Errorf("500 body leaked the internal error: %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicLogin_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PUT", "/api/anthropic/login", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+// TestAnthropicAuth_PutTearsDownLogin: storing a credential means the
+// setup-token helper has done its job, so PUT /api/anthropic/auth also
+// removes the login container.
+func TestAnthropicAuth_PutTearsDownLogin(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.loginActive = true
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "oat-x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	if mgr.loginActive {
+		t.Error("login container still active after a successful PUT /api/anthropic/auth")
+	}
+}
+
+// A login-teardown failure during PUT must not fail the request -- the
+// credential was still stored.
+func TestAnthropicAuth_PutSucceedsEvenIfLoginTeardownFails(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.loginActive = true
+	mgr.loginStopErr = errors.New("daemon hiccup")
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "oat-x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200 despite the teardown failure; body: %s", rec.Code, rec.Body)
+	}
+	if !mgr.anthropicSet {
+		t.Error("credential was not stored")
+	}
+}

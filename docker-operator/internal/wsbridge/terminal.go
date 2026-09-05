@@ -101,41 +101,67 @@ func NewTerminalHandler(getter AgentGetter, docker dockerclient.ExecClient, log 
 			return
 		}
 
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			// Upgrade already wrote its own HTTP response on failure; there
-			// is no response left to write here.
-			log.Warn("terminal: websocket upgrade failed", "agent_id", id, "error", err)
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		execID, err := docker.ExecCreate(r.Context(), a.ContainerID, dockerclient.ExecSpec{
-			Cmd:   []string{"tmux", "attach-session", "-t", tmuxSession},
-			TTY:   true,
-			Stdin: true,
-		})
-		if err != nil {
-			log.Warn("terminal: exec create failed; the agent's container is likely stopped", "agent_id", id, "error", err)
-			closeWithReason(conn, "agent is not running")
-			return
-		}
-		stream, err := docker.ExecAttach(r.Context(), execID)
-		if err != nil {
-			log.Warn("terminal: exec attach failed; the agent's container is likely stopped", "agent_id", id, "error", err)
-			closeWithReason(conn, "agent is not running")
-			return
-		}
-		defer func() { _ = stream.Close() }()
-
-		bridge(r.Context(), conn, stream, docker, execID, id, log)
+		serveTerminal(w, r, docker, a.ContainerID, "agent "+id, "agent is not running", log)
 	}
+}
+
+// NewContainerTerminalHandler bridges a WebSocket to a `tmux attach-session
+// -t main` inside a container named up front, rather than one looked up from
+// an agent record -- used for the Anthropic-login helper
+// (GET /ws/anthropic/login/terminal). If the container is not there (no
+// login session started, or it was torn down), the WebSocket closes with
+// notReadyReason instead of a pre-upgrade HTTP error, because by the time
+// the browser opens this socket it has already decided a login is in
+// progress.
+func NewContainerTerminalHandler(docker dockerclient.ExecClient, containerName, notReadyReason string, log *slog.Logger) http.HandlerFunc {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		serveTerminal(w, r, docker, containerName, "container "+containerName, notReadyReason, log)
+	}
+}
+
+// serveTerminal is the shared core of both terminal handlers: upgrade the
+// connection, exec `tmux attach-session -t main` in target (a container name
+// or ID), and pump bytes until either side ends. logLabel identifies the
+// target in log lines; notReadyReason is the WebSocket close reason when the
+// exec cannot be created (the container is stopped or absent).
+func serveTerminal(w http.ResponseWriter, r *http.Request, docker dockerclient.ExecClient, target, logLabel, notReadyReason string, log *slog.Logger) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		// Upgrade already wrote its own HTTP response on failure; there is
+		// no response left to write here.
+		log.Warn("terminal: websocket upgrade failed", "target", logLabel, "error", err)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	execID, err := docker.ExecCreate(r.Context(), target, dockerclient.ExecSpec{
+		Cmd:   []string{"tmux", "attach-session", "-t", tmuxSession},
+		TTY:   true,
+		Stdin: true,
+	})
+	if err != nil {
+		log.Warn("terminal: exec create failed; the target container is likely stopped or absent", "target", logLabel, "error", err)
+		closeWithReason(conn, notReadyReason)
+		return
+	}
+	stream, err := docker.ExecAttach(r.Context(), execID)
+	if err != nil {
+		log.Warn("terminal: exec attach failed; the target container is likely stopped", "target", logLabel, "error", err)
+		closeWithReason(conn, notReadyReason)
+		return
+	}
+	defer func() { _ = stream.Close() }()
+
+	bridge(r.Context(), conn, stream, docker, execID, logLabel, log)
 }
 
 // bridge pumps bytes in both directions until either side ends, then
 // returns. It never touches the container: closing conn or stream ends only
 // this exec.
-func bridge(ctx context.Context, conn *websocket.Conn, stream dockerclient.ExecStream, docker dockerclient.ExecClient, execID, agentID string, log *slog.Logger) {
+func bridge(ctx context.Context, conn *websocket.Conn, stream dockerclient.ExecStream, docker dockerclient.ExecClient, execID, label string, log *slog.Logger) {
 	done := make(chan struct{})
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }
@@ -153,7 +179,7 @@ func bridge(ctx context.Context, conn *websocket.Conn, stream dockerclient.ExecS
 			}
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
-					log.Info("terminal: exec stream ended", "agent_id", agentID, "error", err)
+					log.Info("terminal: exec stream ended", "target", label, "error", err)
 				}
 				// A graceful close notifies the browser this session -- not
 				// necessarily the agent -- has ended (the container may have
@@ -179,7 +205,7 @@ func bridge(ctx context.Context, conn *websocket.Conn, stream dockerclient.ExecS
 					return
 				}
 			case websocket.TextMessage:
-				handleControl(ctx, docker, execID, agentID, data, log)
+				handleControl(ctx, docker, execID, label, data, log)
 			}
 		}
 	}()
@@ -191,23 +217,23 @@ func bridge(ctx context.Context, conn *websocket.Conn, stream dockerclient.ExecS
 // malformed frame or an out-of-range/unknown message is logged and ignored
 // rather than tearing down the connection -- a single bad control frame
 // should not cost the user their terminal.
-func handleControl(ctx context.Context, docker dockerclient.ExecClient, execID, agentID string, data []byte, log *slog.Logger) {
+func handleControl(ctx context.Context, docker dockerclient.ExecClient, execID, label string, data []byte, log *slog.Logger) {
 	var msg controlMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		log.Warn("terminal: ignoring malformed control frame", "agent_id", agentID, "error", err)
+		log.Warn("terminal: ignoring malformed control frame", "target", label, "error", err)
 		return
 	}
 	if msg.Type != controlTypeResize {
-		log.Warn("terminal: ignoring unknown control frame type", "agent_id", agentID, "type", msg.Type)
+		log.Warn("terminal: ignoring unknown control frame type", "target", label, "type", msg.Type)
 		return
 	}
 	if msg.Cols <= 0 || msg.Rows <= 0 || msg.Cols > maxTTYDimension || msg.Rows > maxTTYDimension {
-		log.Warn("terminal: ignoring out-of-range resize", "agent_id", agentID, "cols", msg.Cols, "rows", msg.Rows)
+		log.Warn("terminal: ignoring out-of-range resize", "target", label, "cols", msg.Cols, "rows", msg.Rows)
 		return
 	}
 	size := dockerclient.TTYSize{Cols: uint16(msg.Cols), Rows: uint16(msg.Rows)} //nolint:gosec // G115: both operands range-checked against maxTTYDimension immediately above
 	if err := docker.ExecResize(ctx, execID, size); err != nil {
-		log.Warn("terminal: resize failed", "agent_id", agentID, "error", err)
+		log.Warn("terminal: resize failed", "target", label, "error", err)
 	}
 }
 

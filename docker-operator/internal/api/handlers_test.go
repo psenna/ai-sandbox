@@ -44,6 +44,10 @@ type fakeManager struct {
 	anthropicGetErr    error
 	anthropicSetErr    error
 	anthropicClearErr  error
+
+	loginActive   bool
+	loginStartErr error
+	loginStopErr  error
 }
 
 func newFakeManager(maxAgents int) *fakeManager {
@@ -155,6 +159,32 @@ func (f *fakeManager) ClearAnthropicAuth(_ context.Context) error {
 	f.anthropicKind = ""
 	f.anthropicUpdatedAt = time.Time{}
 	return nil
+}
+
+func (f *fakeManager) StartAnthropicLogin(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loginStartErr != nil {
+		return f.loginStartErr
+	}
+	f.loginActive = true
+	return nil
+}
+
+func (f *fakeManager) StopAnthropicLogin(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loginStopErr != nil {
+		return f.loginStopErr
+	}
+	f.loginActive = false
+	return nil
+}
+
+func (f *fakeManager) AnthropicLoginActive(_ context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loginActive, nil
 }
 
 func (f *fakeManager) Rename(_ context.Context, id string, name, description *string) (store.Agent, error) {
