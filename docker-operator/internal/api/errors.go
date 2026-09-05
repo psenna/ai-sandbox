@@ -33,6 +33,7 @@ const (
 	CodeInvalidParam     = "invalid_param"
 	CodeNotFound         = "not_found"
 	CodeAtCapacity       = "at_capacity"
+	CodeNoAnthropicAuth  = "no_anthropic_auth"
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeInternal         = "internal"
 )

@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
@@ -31,10 +33,27 @@ type fakeManager struct {
 
 	createErr error
 	deleteErr error
+
+	defaultBackend   string
+	defaultModel     string
+	defaultFastModel string
+
+	anthropicKind      string
+	anthropicUpdatedAt time.Time
+	anthropicSet       bool
+	anthropicGetErr    error
+	anthropicSetErr    error
+	anthropicClearErr  error
 }
 
 func newFakeManager(maxAgents int) *fakeManager {
-	return &fakeManager{agents: map[string]store.Agent{}, maxAgents: maxAgents}
+	return &fakeManager{
+		agents:           map[string]store.Agent{},
+		maxAgents:        maxAgents,
+		defaultBackend:   config.BackendOllama,
+		defaultModel:     "glm-5.3:cloud",
+		defaultFastModel: "glm-5.3-flash:cloud",
+	}
 }
 
 func (f *fakeManager) seed(a store.Agent) {
@@ -54,6 +73,9 @@ func (f *fakeManager) Create(_ context.Context, req agent.CreateRequest) (store.
 		ID:          fmt.Sprintf("agt_%08d", f.nextID),
 		Name:        req.Name,
 		Description: req.Description,
+		Backend:     req.Backend,
+		Model:       req.Model,
+		FastModel:   req.FastModel,
 		Status:      store.StatusCreating,
 	}
 	f.agents[a.ID] = a
@@ -91,6 +113,49 @@ func (f *fakeManager) List(_ context.Context) ([]store.Agent, error) {
 }
 
 func (f *fakeManager) MaxAgents() int { return f.maxAgents }
+
+func (f *fakeManager) DefaultBackend() string   { return f.defaultBackend }
+func (f *fakeManager) DefaultModel() string     { return f.defaultModel }
+func (f *fakeManager) DefaultFastModel() string { return f.defaultFastModel }
+
+func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicGetErr != nil {
+		return "", time.Time{}, false, f.anthropicGetErr
+	}
+	if !f.anthropicSet {
+		return "", time.Time{}, false, nil
+	}
+	return f.anthropicKind, f.anthropicUpdatedAt, true, nil
+}
+
+func (f *fakeManager) SetAnthropicAuth(_ context.Context, kind, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicSetErr != nil {
+		return f.anthropicSetErr
+	}
+	if !store.ValidAnthropicKind(kind) || value == "" {
+		return fmt.Errorf("fakeManager: bad SetAnthropicAuth args kind=%q value-empty=%v", kind, value == "")
+	}
+	f.anthropicKind = kind
+	f.anthropicUpdatedAt = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	f.anthropicSet = true
+	return nil
+}
+
+func (f *fakeManager) ClearAnthropicAuth(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicClearErr != nil {
+		return f.anthropicClearErr
+	}
+	f.anthropicSet = false
+	f.anthropicKind = ""
+	f.anthropicUpdatedAt = time.Time{}
+	return nil
+}
 
 func (f *fakeManager) Rename(_ context.Context, id string, name, description *string) (store.Agent, error) {
 	f.mu.Lock()
@@ -260,6 +325,10 @@ func TestList(t *testing.T) {
 	}
 	if resp.MaxAgents != 5 {
 		t.Errorf("MaxAgents = %d, want 5", resp.MaxAgents)
+	}
+	if resp.DefaultBackend != "ollama" || resp.DefaultModel != "glm-5.3:cloud" || resp.DefaultFastModel != "glm-5.3-flash:cloud" {
+		t.Errorf("defaults = %q/%q/%q, want the operator's configured create-form defaults",
+			resp.DefaultBackend, resp.DefaultModel, resp.DefaultFastModel)
 	}
 }
 
