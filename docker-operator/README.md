@@ -28,6 +28,10 @@ A single Go binary (`docker-operator`) that:
 - Serves a small web UI (sidebar + terminal) at `/`, embedded in the binary.
 - Enforces a hard `MAX_AGENTS` cap, checked atomically before any Docker
   resource is touched.
+- Lets each agent be created against a **per-agent LLM backend** — the
+  shared Ollama daemon (with per-agent model names) or a real Anthropic
+  account — chosen on the create form. See [Choosing a
+  backend](#choosing-a-backend).
 
 ## Architecture
 
@@ -118,13 +122,59 @@ anything else on the same Docker host.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/agents` | List agents + the configured `max_agents`. |
-| `POST` | `/api/agents` | Create an agent (`{"name","description"}`, both optional). `409` when at capacity. |
-| `GET` | `/api/agents/{id}` | Get one agent's record. |
+| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` (so the create form needs no second request). |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model` are for `ollama` only (`400` with `anthropic`). `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`). |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. |
 | `GET` | `/api/agents/{id}/output?tail=N` | The agent's captured pane output (raw text, not JSON-wrapped). Unused by the UI today; exists for future automation. |
 | `GET` | `/ws/agents/{id}/terminal` | WebSocket terminal bridge — binary frames are raw PTY bytes each way, a JSON text frame is `{"type":"resize","cols":N,"rows":N}`. |
+| `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
+| `GET`/`POST`/`DELETE` | `/api/anthropic/login` | Status / start / stop the `claude setup-token` helper container. `POST` returns `{"active":true,"ws":"/ws/anthropic/login/terminal"}`. |
+| `GET` | `/ws/anthropic/login/terminal` | Terminal bridge into the login helper container (same frame protocol as the agent terminal). |
+
+## Choosing a backend
+
+Every agent is created against one LLM backend, picked on the **New Agent**
+form:
+
+- **Ollama** (the default) — the agent's model traffic goes through the
+  shared `ollama` daemon. The form pre-fills two model names from the
+  operator's `OLLAMA_MODEL` / `OLLAMA_FAST_MODEL`
+  (`glm-5.3:cloud` / `glm-5.3-flash:cloud` by default) for the
+  default/"opus" tier and the "sonnet"+"haiku" tiers; edit them per agent.
+  The daemon authenticates `:cloud` models to ollama.com with the SSH
+  keypair in `../.ollama` — no per-agent key.
+- **Anthropic** — the agent talks to the real Anthropic API using the
+  operator's **one shared credential** (see [Anthropic
+  login](#anthropic-login)). Creating an `anthropic` agent before a
+  credential is configured fails with `409 no_anthropic_auth`.
+
+The backend and models are fixed once an agent is created (changing them
+would need the container's environment rebuilt). `DEFAULT_AGENT_BACKEND`
+sets which one the form (and an API request that names none) starts on.
+
+## Anthropic login
+
+The shared Anthropic credential is set from the sidebar's **Anthropic
+account** panel and used by **every** `anthropic` agent — injected into the
+container at create time (changing it later only affects agents created
+after). Two kinds:
+
+- **API key** — paste an `sk-ant-…` Anthropic Console key. Injected as
+  `ANTHROPIC_API_KEY`. Pay-per-token Console billing.
+- **OAuth token (Claude subscription)** — click **Log in**: the operator
+  spins a throwaway container running `claude setup-token`, wired to a
+  terminal in the main area. Complete the sign-in in your browser, copy the
+  token it prints, paste it into the field. Injected as
+  `CLAUDE_CODE_OAUTH_TOKEN`; uses your Claude Pro/Max subscription. The
+  helper container is torn down once the token is stored, on an explicit
+  cancel, after a 20-minute idle timeout, and at operator startup.
+
+The credential lives in the operator's BoltDB state file (0600, same volume
+and trust boundary as every agent record); no API response ever returns its
+value. `bash ../scripts/check-no-secrets.sh` still passes — nothing lands in
+a tracked file.
 
 ## Quickstart
 
@@ -173,10 +223,14 @@ being served at `/`.
 
 **4 — create an agent (needs `sysbox-runc`, see below)**
 
-Clicking **+ New Agent** in the UI — or `curl -X POST
-http://127.0.0.1:8000/api/agents` — creates the two containers, three
-volumes and private network described in [Architecture](#architecture)
-above, then opens a live terminal running `claude` inside a `tmux` session.
+Clicking **+ New Agent** in the UI — filling in the form (name, description,
+[backend](#choosing-a-backend), and for Ollama the two model names) — or
+`curl -X POST http://127.0.0.1:8000/api/agents -d '{"backend":"ollama"}'` —
+creates the two containers, three volumes and private network described in
+[Architecture](#architecture) above, then opens a live terminal running
+`claude` inside a `tmux` session. For an `anthropic` agent, set the shared
+credential first (sidebar **Anthropic account** panel — see [Anthropic
+login](#anthropic-login)).
 
 **This step needs `sysbox-runc` installed on the Docker host** (unprivileged
 Docker-in-Docker for the agent's own DinD sidecar; see
