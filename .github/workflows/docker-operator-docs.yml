@@ -1,0 +1,61 @@
+name: docker-operator docs
+
+# The quickstart in docker-operator/README.md is executed as a
+# documentation test (#79): hack/quickstart-check.sh extracts the `sh
+# quickstart`-tagged fenced blocks from that file and runs them verbatim
+# against a real Docker daemon (the one ubuntu-latest already ships), so
+# the documented commands cannot rot silently. Structure mirrors
+# .github/workflows/docs.yml's own `quickstart` job -- checkout, run the
+# check, upload diagnostics on failure -- simplified: no kind cluster, no
+# helm, just `docker compose` against the runner's own Docker.
+#
+# This job deliberately does NOT cover creating an agent (the README's step
+# 4): that needs sysbox-runc for the agent's own DinD sidecar, which
+# ubuntu-latest does not have (tracked in #80, same gap as
+# docker-operator.yml's own still-missing integration-test job). Step 4 is
+# documented but not tagged `quickstart` for exactly that reason.
+#
+# CAVEAT: like docs.yml, this workflow's pull_request trigger is
+# intentionally omitted for now (see docker-operator.yml's own PR-pause
+# rationale) -- runs on every push to main. Run
+# `docker-operator/hack/quickstart-check.sh` locally on any PR that touches
+# docker-operator/README.md or its compose stack until PR-cadence gates are
+# restored.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker-operator/README.md'
+      - 'docker-operator/hack/quickstart-check.sh'
+      - 'docker-operator/docker-compose.yaml'
+      - 'docker-operator/Dockerfile'
+      - 'config.yaml'
+      - 'credentials.yaml'
+      - 'dependaproxy.yaml'
+      - '.github/workflows/docker-operator-docs.yml'
+  # pull_request intentionally omitted -- see the header comment above.
+
+concurrency:
+  group: docker-operator-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quickstart:
+    name: quickstart (docker compose, documentation test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: run the documented quickstart, verbatim
+        run: docker-operator/hack/quickstart-check.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quickstart-artifacts-${{ github.run_id }}
+          path: docker-operator/.quickstart-artifacts
+          retention-days: 14
+          if-no-files-found: ignore
