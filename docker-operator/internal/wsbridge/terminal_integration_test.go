@@ -32,6 +32,21 @@ const tmuxShellBoot = `apk add -q tmux >/dev/null && tmux new-session -d -s main
 func newTerminalTestServer(t *testing.T, c dockerclient.Client) (srv *httptest.Server, agentID, containerID string) {
 	t.Helper()
 	ctx := context.Background()
+
+	// A CI runner has no reason to have alpine:3 pre-pulled (unlike this
+	// sandbox's DinD daemon, which other tests/builds already warmed).
+	// Ensure it the same way internal/agent's create flow does: inspect,
+	// pull only on a miss. A pull failure (no registry reachable at all)
+	// skips rather than fails -- this test is about the terminal bridge, not
+	// about registry connectivity.
+	if _, err := c.ImageInspect(ctx, "alpine:3"); dockerclient.IsNotFound(err) {
+		if err := c.ImagePull(ctx, "alpine:3"); err != nil {
+			t.Skipf("alpine:3 is not present and could not be pulled: %v", err)
+		}
+	} else if err != nil {
+		t.Fatalf("ImageInspect(alpine:3): %v", err)
+	}
+
 	name := "docker-operator-itest-terminal-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	id, err := c.ContainerCreate(ctx, dockerclient.ContainerSpec{
 		Name:  name,
