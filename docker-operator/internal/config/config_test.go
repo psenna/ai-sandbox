@@ -70,11 +70,12 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		DependaproxyPyPIURL:    "http://dependaproxy:8080/pypi",
 		DependaproxyGoproxyURL: "http://dependaproxy:8080/goproxy",
 		DockerRuntime:          "sysbox-runc",
+		DefaultBackend:         "ollama",
 		OllamaURL:              "http://ollama:11434",
 		AnthropicAuthToken:     Secret("ollama"),
 		AnthropicAPIKey:        Secret(""),
-		AgentModel:             "glm-5.2:cloud",
-		AgentFastModel:         "deepseek-v4-flash:0731-cloud",
+		AgentModel:             "glm-5.3:cloud",
+		AgentFastModel:         "glm-5.3-flash:cloud",
 		DependaproxyContainer:  "docker-operator-dependaproxy",
 	}
 	if c != want {
@@ -125,6 +126,8 @@ var fieldCases = []struct {
 		func(c Config) string { return c.DependaproxyGoproxyURL }},
 	{"DockerRuntime", "DOCKER_RUNTIME", "docker-runtime", "env-runc", "flag-runc",
 		func(c Config) string { return c.DockerRuntime }},
+	{"DefaultBackend", "DEFAULT_AGENT_BACKEND", "default-backend", "anthropic", "ollama",
+		func(c Config) string { return c.DefaultBackend }},
 	{"OllamaURL", "OLLAMA_URL", "ollama-url", "http://env-ollama:11434", "http://flag-ollama:11434",
 		func(c Config) string { return c.OllamaURL }},
 	{"AnthropicAuthToken", "ANTHROPIC_AUTH_TOKEN", "anthropic-auth-token", "env-auth", "flag-auth",
@@ -239,6 +242,9 @@ func TestValidate_Errors(t *testing.T) {
 		{name: "agent-image empty", args: []string{"--agent-image="}, want: "agent-image"},
 		{name: "docker-runtime empty", args: []string{"--docker-runtime="}, want: "docker-runtime"},
 
+		{name: "default-backend empty", args: []string{"--default-backend="}, want: "default-backend"},
+		{name: "default-backend unknown", args: []string{"--default-backend=vertex"}, want: "default-backend"},
+
 		{name: "proxynet-name empty", args: []string{"--proxynet-name="}, want: "proxynet-name"},
 		{name: "proxynet-name has a space", args: []string{"--proxynet-name=bad name"}, want: "proxynet-name"},
 		{name: "proxynet-name has a slash", args: []string{"--proxynet-name=a/b"}, want: "proxynet-name"},
@@ -299,6 +305,8 @@ func TestValidate_AcceptsBoundaryValues(t *testing.T) {
 		{"empty ollama-url is the escape hatch, even with agent-model/agent-fast-model empty too",
 			[]string{"--ollama-url=", "--agent-model=", "--agent-fast-model="}},
 		{"https ollama-url", []string{"--ollama-url=https://ollama.internal:11434"}},
+		{"default-backend anthropic", []string{"--default-backend=anthropic"}},
+		{"default-backend ollama", []string{"--default-backend=ollama"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

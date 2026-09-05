@@ -39,10 +39,26 @@ const (
 
 	defaultOllamaURL             = "http://ollama:11434"
 	defaultAnthropicAuth         = "ollama" // NOT defaultAnthropicAuthToken -- gosec G101 pattern-matches "token" in identifier names
-	defaultAgentModel            = "glm-5.2:cloud"
-	defaultAgentFastModel        = "deepseek-v4-flash:0731-cloud"
+	defaultAgentModel            = "glm-5.3:cloud"
+	defaultAgentFastModel        = "glm-5.3-flash:cloud"
 	defaultDependaproxyContainer = "docker-operator-dependaproxy"
+
+	defaultAgentBackend = BackendOllama
 )
+
+// The two LLM backends an agent can be created against. BackendOllama routes
+// the agent's model traffic through the shared Ollama daemon (OllamaURL +
+// per-agent model names); BackendAnthropic points it at the real Anthropic
+// API using the operator's stored Anthropic credential (see
+// internal/store's AnthropicAuth). The choice is per agent -- DefaultBackend
+// is only the fallback for a create request that does not name one.
+const (
+	BackendOllama    = "ollama"
+	BackendAnthropic = "anthropic"
+)
+
+// ValidBackend reports whether s is one of the two supported backend names.
+func ValidBackend(s string) bool { return s == BackendOllama || s == BackendAnthropic }
 
 // redacted is what every stringification path of Secret emits in place of
 // the real value.
@@ -163,10 +179,17 @@ type Config struct {
 	// would require --privileged and is not a supported configuration.
 	DockerRuntime string
 
+	// DefaultBackend is the LLM backend a create request that does not name
+	// one falls back to: BackendOllama or BackendAnthropic. Every agent
+	// records its own backend, so this only affects the default on the
+	// create form / an API request with no "backend" field.
+	DefaultBackend string
+
 	// OllamaURL is the shared Ollama daemon's Anthropic-compatible endpoint,
-	// templated into each agent as ANTHROPIC_BASE_URL. Empty is an explicit
-	// escape hatch: omit the whole Ollama/model-routing block and let Claude
-	// Code talk to the real Anthropic API using only AnthropicAPIKey.
+	// templated into each BackendOllama agent as ANTHROPIC_BASE_URL. Empty
+	// is an explicit escape hatch: omit the whole Ollama/model-routing block
+	// and let Claude Code talk to the real Anthropic API using only
+	// AnthropicAPIKey. A BackendAnthropic agent ignores this field entirely.
 	OllamaURL string
 
 	// AnthropicAuthToken is the fixed placeholder token Claude Code sends to
@@ -180,14 +203,17 @@ type Config struct {
 	// when a local backend (OllamaURL) is configured.
 	AnthropicAPIKey Secret
 
-	// AgentModel is the model every agent's default and "opus" tier resolves
-	// to when OllamaURL is set.
+	// AgentModel is the default the create form pre-fills for a BackendOllama
+	// agent's "default"/"opus" tier, and the value used when a create
+	// request names no per-agent model. Only meaningful for BackendOllama.
 	AgentModel string
 
-	// AgentFastModel is the model every agent's "sonnet" and "haiku" tiers
-	// resolve to when OllamaURL is set. Without mapping every tier, Task/
-	// Explore subagents fail with "model may not exist" against a
-	// non-Anthropic backend -- a documented gotcha in the root README.
+	// AgentFastModel is the default the create form pre-fills for a
+	// BackendOllama agent's "sonnet"/"haiku" tiers, and the value used when
+	// a create request names no per-agent fast model. Without mapping every
+	// tier, Task/Explore subagents fail with "model may not exist" against a
+	// non-Anthropic backend -- a documented gotcha in the root README. Only
+	// meaningful for BackendOllama.
 	AgentFastModel string
 
 	// DependaproxyContainer is the name of the shared DependaProxy container
@@ -260,6 +286,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.DockerRuntime, "docker-runtime",
 		envOr(getenv, "DOCKER_RUNTIME", defaultDockerRuntime),
 		"container runtime for each agent's Docker-in-Docker sidecar (env DOCKER_RUNTIME)")
+	fs.StringVar(&c.DefaultBackend, "default-backend",
+		envOr(getenv, "DEFAULT_AGENT_BACKEND", defaultAgentBackend),
+		"LLM backend for a create request that names none: \"ollama\" or \"anthropic\" (env DEFAULT_AGENT_BACKEND)")
 	fs.StringVar(&c.OllamaURL, "ollama-url",
 		envOr(getenv, "OLLAMA_URL", defaultOllamaURL),
 		"shared Ollama daemon's Anthropic-compatible endpoint, templated into each agent as ANTHROPIC_BASE_URL; empty omits the whole model-routing block (env OLLAMA_URL)")
@@ -344,6 +373,9 @@ func (c Config) validateLimitsAndPaths() error {
 	}
 	if c.DockerRuntime == "" {
 		return fmt.Errorf("docker-runtime: must not be empty")
+	}
+	if !ValidBackend(c.DefaultBackend) {
+		return fmt.Errorf("default-backend: %q is not a valid backend, want %q or %q", c.DefaultBackend, BackendOllama, BackendAnthropic)
 	}
 	if c.DependaproxyContainer == "" {
 		return fmt.Errorf("dependaproxy-container: must not be empty")
