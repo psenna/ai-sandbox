@@ -1,0 +1,89 @@
+name: docker-operator release
+
+# Build docker-operator's own image and publish it to the GitHub Container
+# Registry (GHCR) when a GitHub Release is published.
+#
+#   ghcr.io/<owner>/ai-sandbox-docker-operator:<release tag>
+#
+# Structure and every step copied from .github/workflows/release.yml's
+# docker-publish job (multi-arch buildx, GHCR login, provenance: false),
+# retargeted at docker-operator/ -- see that file for the line-by-line
+# precedent. No Helm-publish equivalent here: docker-operator is a plain
+# Docker binary, not a Kubernetes operator, so there is no chart to publish.
+#
+# As of #81, no image has ever been published to
+# ghcr.io/psenna/ai-sandbox-docker-operator (docker-operator.yml's own jobs
+# never push); this is the first workflow that can publish one. The AGENT
+# image (docker-operator/agent/Dockerfile,
+# ghcr.io/psenna/ai-sandbox-docker-operator-agent) is a separate, not-yet
+# published concern -- out of scope here, see internal/config's
+# defaultAgentImage doc comment for the ":dev" placeholder it resolves to
+# today.
+#
+# Safety: only runs on the canonical repository AND only for releases cut
+# from `main`. Forks and releases created from other branches are skipped.
+#
+# NOT exercised by ordinary push/PR CI -- only a real `release: published`
+# event runs this workflow at all, so it is verified by structure/review
+# (see #81), not by a green check on every PR.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read    # checkout the tagged commit
+  packages: write   # push the image to ghcr.io
+
+jobs:
+  docker-publish:
+    name: publish docker image to GHCR
+    runs-on: ubuntu-latest
+    # Only the canonical repo, and only releases whose target branch is
+    # main. github.event.release.target_commitish is the branch the release
+    # was created from; a release cut from a feature branch is skipped.
+    if: github.repository == 'psenna/ai-sandbox' && github.event.release.target_commitish == 'main'
+    steps:
+      - name: checkout release tag
+        # actions/checkout defaults to the ref that triggered the event --
+        # for a release, that is the tag's commit (detached HEAD). We build
+        # exactly the tagged source, not whatever main points at when the
+        # run starts.
+        uses: actions/checkout@v4
+
+      - name: set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push image
+        uses: docker/build-push-action@v6
+        with:
+          # docker-operator/Dockerfile COPYs docker-operator/ from the repo
+          # root (see its own header comment: `docker build -f
+          # docker-operator/Dockerfile -t docker-operator:dev .`), unlike
+          # operator/Dockerfile's self-contained `context: operator` -- so
+          # the context here is the checkout root, not the docker-operator/
+          # subdirectory.
+          context: .
+          file: docker-operator/Dockerfile
+          push: true
+          # docker-operator/Dockerfile's build stage does not cross-compile
+          # from BUILDPLATFORM the way operator/Dockerfile does, so the
+          # linux/arm64 leg builds under QEMU emulation -- slower, but
+          # correct; matches this workflow's own copied pattern rather than
+          # changing the Dockerfile as part of a CI-workflow issue.
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/${{ github.repository_owner }}/ai-sandbox-docker-operator:${{ github.event.release.tag_name }}
+          # Keep the manifest a plain multi-arch manifest list (no
+          # provenance or SBOM attestations), matching what a local `docker
+          # build` produces.
+          provenance: false
