@@ -13,6 +13,7 @@
 # e2e/kind/helm/envtest/controller-gen machinery there has no analog here.
 
 GOLANG_IMAGE   ?= golang:1.25
+NODE_IMAGE     ?= node:22
 DOCKER         ?= docker
 IN_CONTAINER   ?= 0
 
@@ -35,6 +36,7 @@ GO_ENV_FLAG := $(if $(wildcard $(GO_ENV_FILE)),--env-file $(GO_ENV_FILE),)
 
 ifeq ($(IN_CONTAINER),1)
 DOCKER_RUN :=
+NODE_RUN   :=
 else
 ifeq ($(REPO_SUBDIR),$(CURDIR))
 $(error CURDIR ($(CURDIR)) is not under SHARED_DIR ($(SHARED_DIR)) -- set SHARED_DIR=, or run with IN_CONTAINER=1)
@@ -47,11 +49,18 @@ DOCKER_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	-e PATH=$(CACHE_DIR)/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 	-e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local \
 	$(GOLANG_IMAGE)
+# web-test needs neither GOPROXY/DependaProxy routing nor a persistent
+# module cache -- render.test.js uses only Node's own built-in test runner,
+# no npm install at all -- so this wrapper is deliberately smaller than
+# DOCKER_RUN.
+NODE_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
+	-v $(SHARED_DIR):/work -w /work/$(REPO_SUBDIR) \
+	$(NODE_IMAGE)
 endif
 
-.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke
+.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke web-test
 
-all: vet fmt-check lint test skill-check dind-init-check
+all: vet fmt-check lint test skill-check dind-init-check web-test
 
 build:
 	$(DOCKER_RUN) go build -trimpath -o bin/docker-operator ./cmd/docker-operator
@@ -137,3 +146,10 @@ dind-init-check:
 		echo "internal/agent/dind-init.sh has drifted from ../scripts/dind-init.sh"; \
 		diff -u ../scripts/dind-init.sh internal/agent/dind-init.sh || true; exit 1; }
 	@echo "dind-init-check: OK"
+
+# render.js is deliberately document/window-free (see its own doc comment),
+# so its tests run directly under Node's built-in test runner -- no jsdom,
+# no headless browser, no npm install at all. IN_CONTAINER=1 (CI) runs node
+# directly, since ubuntu-latest already ships one; NODE_RUN wraps it locally.
+web-test:
+	$(NODE_RUN) node --test web/render.test.js
