@@ -2,3 +2,11 @@ bin/
 cover.out
 cover.html
 .gocache*/
+
+# git-proxy runtime state (mirror cache + audit log) and DependaProxy's
+# on-disk cache from `docker compose up` -- same rationale as the root
+# .gitignore's own data/ entry, may hold repo contents/audit records.
+data/
+
+# hack/quickstart-check.sh's diagnostics-on-failure dump.
+.quickstart-artifacts/
