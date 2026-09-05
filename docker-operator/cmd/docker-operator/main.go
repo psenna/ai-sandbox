@@ -21,6 +21,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/webui"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/wsbridge"
 )
 
@@ -106,10 +107,20 @@ func run(log *slog.Logger) error {
 	stopStatusSync := startStatusSync(docker, mgr, log)
 	defer stopStatusSync()
 
+	webHandler, err := webui.Handler()
+	if err != nil {
+		return fmt.Errorf("building the web UI handler: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("/api/", api.NewHandler(mgr, docker, log))
 	mux.HandleFunc("GET /ws/agents/{id}/terminal", wsbridge.NewTerminalHandler(mgr, docker, log))
+	// Registered last but matched first for anything it owns: net/http's
+	// ServeMux always prefers the most specific pattern, so this catch-all
+	// root never shadows the explicit routes above regardless of
+	// registration order.
+	mux.Handle("/", webHandler)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,

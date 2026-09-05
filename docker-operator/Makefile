@@ -58,9 +58,9 @@ NODE_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	$(NODE_IMAGE)
 endif
 
-.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke web-test
+.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke web-test sync-web-embed web-embed-check
 
-all: vet fmt-check lint test skill-check dind-init-check web-test
+all: vet fmt-check lint test skill-check dind-init-check web-test web-embed-check
 
 build:
 	$(DOCKER_RUN) go build -trimpath -o bin/docker-operator ./cmd/docker-operator
@@ -155,3 +155,35 @@ dind-init-check:
 # one; NODE_RUN wraps it locally.
 web-test:
 	$(NODE_RUN) node --test web/render.test.js web/terminal.test.js
+
+# web/ is the single source of truth for the frontend; internal/webui embeds
+# a COMMITTED COPY at internal/webui/web because go:embed cannot reach
+# outside its own package directory and refuses to follow a symlinked
+# directory (same constraint dind-init-check documents for
+# internal/agent/dind-init.sh). Test files are excluded -- nothing at
+# runtime needs to serve render.test.js/terminal.test.js over HTTP. Plain
+# shell against the shared /workspace mount, no container needed, same as
+# skill-check/dind-init-check.
+sync-web-embed:
+	@rm -rf internal/webui/web
+	@mkdir -p internal/webui/web
+	@cp -a web/. internal/webui/web/
+	@find internal/webui/web -name '*.test.js' -delete
+	@echo "sync-web-embed: internal/webui/web regenerated from web/"
+
+# Non-mutating counterpart to sync-web-embed (same pairing as fmt/fmt-check):
+# regenerates the copy into a scratch directory and diffs it against the
+# committed internal/webui/web, so CI catches an edit to web/ that forgot to
+# re-run sync-web-embed without touching the working tree itself.
+web-embed-check:
+	@tmp=$$(mktemp -d) && \
+	cp -a web/. "$$tmp/" && \
+	find "$$tmp" -name '*.test.js' -delete && \
+	if ! diff -rq "$$tmp" internal/webui/web >/tmp/web-embed-check.diff 2>&1; then \
+		echo "internal/webui/web has drifted from web/ -- run 'make sync-web-embed' and commit the result:"; \
+		cat /tmp/web-embed-check.diff; \
+		rm -rf "$$tmp" /tmp/web-embed-check.diff; \
+		exit 1; \
+	fi; \
+	rm -rf "$$tmp" /tmp/web-embed-check.diff; \
+	echo "web-embed-check: OK -- internal/webui/web matches web/"
