@@ -192,6 +192,69 @@ func TestIntegrationTmuxBootRemainOnExit(t *testing.T) {
 		id, cfg.AgentImage, dockerclient.StateRunning, pid)
 }
 
+// TestIntegrationAnthropicLogin is #108's acceptance criterion for real:
+// StartAnthropicLogin brings up the singleton `claude setup-token` helper
+// (agent image, no sysbox, no DinD), its tmux "main" session appears, a
+// second Start is a no-op, and StopAnthropicLogin removes it. It needs only
+// the built agent image and creates its own throwaway proxynet network.
+func TestIntegrationAnthropicLogin(t *testing.T) {
+	c := realDockerClient(t)
+	cfg := integrationConfig(t)
+	ctx := context.Background()
+
+	if _, err := c.ImageInspect(ctx, cfg.AgentImage); dockerclient.IsNotFound(err) {
+		t.Skipf("agent image %q is not present; build it with `make agent-image`: %v", cfg.AgentImage, err)
+	} else if err != nil {
+		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImage, err)
+	}
+
+	// The login container attaches to proxynet for egress; create a
+	// throwaway one so this test does not depend on the operator's own
+	// startup having run.
+	netName := uniqueContainerName("proxynet")
+	cfg.ProxynetName = netName
+	if _, err := c.NetworkCreate(ctx, dockerclient.NetworkSpec{Name: netName}); err != nil {
+		t.Fatalf("NetworkCreate(%q): %v", netName, err)
+	}
+	t.Cleanup(func() { _ = c.NetworkRemove(context.Background(), netName) })
+
+	m := NewManager(c, newTestStore(t, 3), cfg, testLogger(), testOptions())
+	t.Cleanup(func() { _ = m.StopAnthropicLogin(context.Background()) })
+
+	if err := m.StartAnthropicLogin(ctx); err != nil {
+		t.Fatalf("StartAnthropicLogin: %v", err)
+	}
+
+	// The tmux "main" session must appear.
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		code, _, err := execRun(ctx, c, AnthropicLoginContainerName, []string{"tmux", "has-session", "-t", "main"})
+		if err == nil && code == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the login helper's tmux \"main\" session never appeared (last: exit=%d err=%v)", code, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Idempotent.
+	if err := m.StartAnthropicLogin(ctx); err != nil {
+		t.Fatalf("second StartAnthropicLogin: %v", err)
+	}
+	if active, err := m.AnthropicLoginActive(ctx); err != nil || !active {
+		t.Fatalf("AnthropicLoginActive = (%v, %v), want (true, nil)", active, err)
+	}
+
+	if err := m.StopAnthropicLogin(ctx); err != nil {
+		t.Fatalf("StopAnthropicLogin: %v", err)
+	}
+	if active, err := m.AnthropicLoginActive(ctx); err != nil || active {
+		t.Fatalf("AnthropicLoginActive after Stop = (%v, %v), want (false, nil)", active, err)
+	}
+	t.Logf("PASS: Anthropic-login helper lifecycle confirmed for real (image %s)", cfg.AgentImage)
+}
+
 // TestIntegrationCreateDelete proves #65 + #66 for real against a live
 // Docker daemon. It needs sysbox-runc (to run an unprivileged inner daemon)
 // and a running container named cfg.DependaproxyContainer (for

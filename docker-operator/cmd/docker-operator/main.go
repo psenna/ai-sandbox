@@ -107,6 +107,18 @@ func run(log *slog.Logger) error {
 	stopStatusSync := startStatusSync(docker, mgr, log)
 	defer stopStatusSync()
 
+	// A login helper container must never outlive the operator process that
+	// started it -- it is a transient `claude setup-token` shell. Clear any
+	// leftover from a previous run, then run a janitor that ages out one a
+	// user started and walked away from.
+	loginReapCtx, cancelLoginReap := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := mgr.StopAnthropicLogin(loginReapCtx); err != nil {
+		log.Warn("could not clear a leftover Anthropic-login container at startup", "error", err)
+	}
+	cancelLoginReap()
+	stopLoginJanitor := startAnthropicLoginJanitor(mgr, log)
+	defer stopLoginJanitor()
+
 	webHandler, err := webui.Handler()
 	if err != nil {
 		return fmt.Errorf("building the web UI handler: %w", err)
@@ -116,6 +128,9 @@ func run(log *slog.Logger) error {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("/api/", api.NewHandler(mgr, docker, log))
 	mux.HandleFunc("GET /ws/agents/{id}/terminal", wsbridge.NewTerminalHandler(mgr, docker, log))
+	mux.HandleFunc("GET /ws/anthropic/login/terminal", wsbridge.NewContainerTerminalHandler(
+		docker, agent.AnthropicLoginContainerName,
+		"no Anthropic login is in progress -- POST /api/anthropic/login first", log))
 	// Registered last but matched first for anything it owns: net/http's
 	// ServeMux always prefers the most specific pattern, so this catch-all
 	// root never shadows the explicit routes above regardless of
@@ -172,6 +187,43 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// anthropicLoginReapInterval is how often the janitor checks whether a login
+// helper container has aged past agent.AnthropicLoginIdleTimeout.
+const anthropicLoginReapInterval = 2 * time.Minute
+
+// startAnthropicLoginJanitor runs a ticker that ages out a `claude
+// setup-token` helper container a user started and walked away from. The
+// returned stop function halts the ticker and tears down any login container
+// still running, so one never survives a clean shutdown.
+func startAnthropicLoginJanitor(mgr *agent.Manager, log *slog.Logger) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(anthropicLoginReapInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := mgr.ReapStaleAnthropicLogin(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Warn("anthropic-login janitor: reap failed", "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		if err := mgr.StopAnthropicLogin(stopCtx); err != nil {
+			log.Warn("could not tear down the Anthropic-login container on shutdown", "error", err)
+		}
+	}
 }
 
 // startStatusSync subscribes to the Docker Events API, filtered to

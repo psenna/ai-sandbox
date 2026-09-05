@@ -49,7 +49,19 @@ type AgentManager interface {
 	AnthropicAuthStatus(ctx context.Context) (kind string, updatedAt time.Time, configured bool, err error)
 	SetAnthropicAuth(ctx context.Context, kind, value string) error
 	ClearAnthropicAuth(ctx context.Context) error
+
+	// StartAnthropicLogin ensures the singleton `claude setup-token` helper
+	// container is running (idempotent); StopAnthropicLogin tears it down
+	// (idempotent); AnthropicLoginActive reports whether it exists.
+	StartAnthropicLogin(ctx context.Context) error
+	StopAnthropicLogin(ctx context.Context) error
+	AnthropicLoginActive(ctx context.Context) (bool, error)
 }
+
+// anthropicLoginWSPath is the WebSocket route cmd/docker-operator wires to
+// wsbridge.NewContainerTerminalHandler for the login helper. Returned to the
+// UI by the login endpoints so it does not hard-code the path.
+const anthropicLoginWSPath = "/ws/anthropic/login/terminal"
 
 // Handler serves the docker-operator's REST surface: the agent collection
 // and item endpoints, and the output endpoint.
@@ -81,6 +93,9 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 	mux.HandleFunc("GET /api/anthropic/auth", h.handleAnthropicAuthGet)
 	mux.HandleFunc("PUT /api/anthropic/auth", h.handleAnthropicAuthPut)
 	mux.HandleFunc("DELETE /api/anthropic/auth", h.handleAnthropicAuthDelete)
+	mux.HandleFunc("GET /api/anthropic/login", h.handleAnthropicLoginGet)
+	mux.HandleFunc("POST /api/anthropic/login", h.handleAnthropicLoginStart)
+	mux.HandleFunc("DELETE /api/anthropic/login", h.handleAnthropicLoginStop)
 
 	// Bare, method-agnostic registrations for the same paths: net/http's
 	// ServeMux (1.22+) prefers a method-specific pattern for a matching
@@ -95,6 +110,7 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 	mux.HandleFunc("/api/agents/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
+	mux.HandleFunc("/api/anthropic/login", methodNotAllowed)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "no such endpoint: "+r.Method+" "+r.URL.Path, "")
@@ -151,6 +167,13 @@ type anthropicAuthResponse struct {
 	Configured bool       `json:"configured"`
 	Kind       string     `json:"kind"`
 	UpdatedAt  *time.Time `json:"updated_at"`
+}
+
+// anthropicLoginResponse is the GET/POST/DELETE /api/anthropic/login body.
+// When Active, WS is the path the UI opens a terminal WebSocket to.
+type anthropicLoginResponse struct {
+	Active bool   `json:"active"`
+	WS     string `json:"ws,omitempty"`
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -244,6 +267,12 @@ func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request)
 		h.internalError(w, "storing the Anthropic credential", err)
 		return
 	}
+	// The credential is now stored, so a running `claude setup-token` helper
+	// has done its job -- tear it down. Best-effort: a failure here does not
+	// undo the store, so the request still succeeded.
+	if err := h.mgr.StopAnthropicLogin(r.Context()); err != nil {
+		h.log.Warn("could not tear down the Anthropic-login helper after storing the credential", "error", err)
+	}
 	kind, updatedAt, configured, err := h.mgr.AnthropicAuthStatus(r.Context())
 	if err != nil {
 		h.internalError(w, "reading back the Anthropic credential status", err)
@@ -258,6 +287,39 @@ func (h *Handler) handleAnthropicAuthDelete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, anthropicAuthResponse{Configured: false})
+}
+
+func (h *Handler) handleAnthropicLoginGet(w http.ResponseWriter, r *http.Request) {
+	active, err := h.mgr.AnthropicLoginActive(r.Context())
+	if err != nil {
+		h.internalError(w, "checking the Anthropic-login helper", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicLoginBody(active))
+}
+
+func (h *Handler) handleAnthropicLoginStart(w http.ResponseWriter, r *http.Request) {
+	if err := h.mgr.StartAnthropicLogin(r.Context()); err != nil {
+		h.internalError(w, "starting the Anthropic-login helper", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicLoginBody(true))
+}
+
+func (h *Handler) handleAnthropicLoginStop(w http.ResponseWriter, r *http.Request) {
+	if err := h.mgr.StopAnthropicLogin(r.Context()); err != nil {
+		h.internalError(w, "stopping the Anthropic-login helper", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicLoginBody(false))
+}
+
+func anthropicLoginBody(active bool) anthropicLoginResponse {
+	resp := anthropicLoginResponse{Active: active}
+	if active {
+		resp.WS = anthropicLoginWSPath
+	}
+	return resp
 }
 
 func anthropicAuthStatusBody(kind string, updatedAt time.Time, configured bool) anthropicAuthResponse {
