@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/containerd/errdefs v1.0.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.1
 	go.etcd.io/bbolt v1.5.0

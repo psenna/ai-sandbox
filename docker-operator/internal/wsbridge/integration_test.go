@@ -21,8 +21,8 @@ import (
 // move would break internal/agent's own tests first and loudly.
 const tmuxBootPath = "/usr/local/bin/tmux-boot.sh"
 
-// tmuxSession is the session name tmux-boot.sh creates; same reasoning.
-const tmuxSession = "main"
+// tmuxSession is defined in terminal.go (production code needs it too, to
+// attach-session -t main); this file just uses it.
 
 // paneMarker is the text the stand-in pane command prints. Long and unique
 // enough that it cannot appear in the image's own boot chatter.
