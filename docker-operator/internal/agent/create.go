@@ -660,8 +660,12 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 //     against a non-Anthropic backend. ANTHROPIC_API_KEY is set empty so
 //     Claude Code cannot silently fall back to the real cloud.
 //   - anthropic: no base URL, no model overrides (real Anthropic defaults),
-//     and exactly one of ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN from
-//     the operator's stored shared credential.
+//     and ONLY the one of ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN the
+//     operator's stored shared credential actually populates. The other is
+//     left unset, not set empty: unlike the ollama path (where an empty
+//     ANTHROPIC_API_KEY is deliberate, to block a silent cloud fallback), an
+//     empty ANTHROPIC_API_KEY="" sitting next to a real CLAUDE_CODE_OAUTH_TOKEN
+//     makes Claude Code skip the token and drop to an interactive login.
 //
 // The one carried-over quirk: if the operator cleared OllamaURL entirely
 // (the historical "just use the real cloud with a static key" escape hatch),
@@ -671,8 +675,15 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 func (m *Manager) applyBackendEnv(env map[string]string, rb resolvedBackend) {
 	switch rb.kind {
 	case config.BackendAnthropic:
-		env["ANTHROPIC_API_KEY"] = rb.apiKey
-		env["CLAUDE_CODE_OAUTH_TOKEN"] = rb.oauthToken
+		// resolveBackend guarantees exactly one of these is non-empty. Set
+		// only that one -- see this function's header for why a blank var is
+		// not harmless on the anthropic path.
+		if rb.apiKey != "" {
+			env["ANTHROPIC_API_KEY"] = rb.apiKey
+		}
+		if rb.oauthToken != "" {
+			env["CLAUDE_CODE_OAUTH_TOKEN"] = rb.oauthToken
+		}
 
 	case config.BackendOllama:
 		if m.cfg.OllamaURL == "" {

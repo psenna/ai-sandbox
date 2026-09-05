@@ -18,6 +18,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/api"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/authmw"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
@@ -83,6 +84,7 @@ func run(log *slog.Logger) error {
 	if err := ensureSharedNetworks(context.Background(), docker, cfg); err != nil {
 		return err
 	}
+	warnIfReachableFromAgents(context.Background(), docker, os.Getenv("HOSTNAME"), cfg.ProxynetName, log)
 
 	st, err := store.Open(cfg.StateDBPath, cfg.MaxAgents)
 	if err != nil {
@@ -124,17 +126,31 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("building the web UI handler: %w", err)
 	}
 
+	// The static Bearer that gates the REST API and both terminal WebSockets.
+	// Empty disables the check (authmw.RequireBearer is then a no-op wrapper);
+	// warn loudly, because on an exposed listen address that means anything
+	// that can reach the port controls every agent.
+	apiToken := cfg.APIToken.Reveal()
+	if apiToken == "" {
+		log.Warn("SECURITY: no operator API token is set (OPERATOR_API_TOKEN); the REST API and terminal WebSockets accept any caller that can reach the listen address",
+			"listen_addr", cfg.ListenAddr)
+	}
+	protect := func(h http.Handler) http.Handler { return authmw.RequireBearer(apiToken, h) }
+
 	mux := http.NewServeMux()
+	// /healthz stays open: it carries no data and is the liveness probe.
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.Handle("/api/", api.NewHandler(mgr, docker, log))
-	mux.HandleFunc("GET /ws/agents/{id}/terminal", wsbridge.NewTerminalHandler(mgr, docker, log))
-	mux.HandleFunc("GET /ws/anthropic/login/terminal", wsbridge.NewContainerTerminalHandler(
+	mux.Handle("/api/", protect(api.NewHandler(mgr, docker, log)))
+	mux.Handle("GET /ws/agents/{id}/terminal", protect(wsbridge.NewTerminalHandler(mgr, docker, log)))
+	mux.Handle("GET /ws/anthropic/login/terminal", protect(wsbridge.NewContainerTerminalHandler(
 		docker, agent.AnthropicLoginContainerName,
-		"no Anthropic login is in progress -- POST /api/anthropic/login first", log))
+		"no Anthropic login is in progress -- POST /api/anthropic/login first", log)))
 	// Registered last but matched first for anything it owns: net/http's
 	// ServeMux always prefers the most specific pattern, so this catch-all
 	// root never shadows the explicit routes above regardless of
-	// registration order.
+	// registration order. The web UI is served UNauthenticated on purpose:
+	// it is a static shell that ships no secret, and the browser fetches its
+	// token in separately (web/auth.js -- ?token= once, then localStorage).
 	mux.Handle("/", webHandler)
 
 	srv := &http.Server{
@@ -312,6 +328,44 @@ func ensureSharedNetworks(ctx context.Context, docker dockerclient.NetworkClient
 		}
 	}
 	return nil
+}
+
+// containerInspector is the one Docker method warnIfReachableFromAgents needs;
+// a narrow interface keeps its test double a couple of lines.
+type containerInspector interface {
+	ContainerInspect(ctx context.Context, id string) (dockerclient.Container, error)
+}
+
+// warnIfReachableFromAgents logs a prominent SECURITY warning when the
+// operator's own container is attached to the agent network (agentNetwork,
+// i.e. cfg.ProxynetName).
+//
+// Every agent container joins that network (internal/agent's agentSpec), so an
+// operator sitting on it puts its REST API and terminal WebSocket in reach of
+// every agent -- a compromised agent then only has OPERATOR_API_TOKEN between
+// it and reading or driving every other agent's terminal. Network isolation is
+// the primary boundary; the token is defence in depth. docker-compose.yaml
+// puts the operator on a dedicated operatornet precisely for this; the check
+// catches a hand-rolled `docker run` or an edited compose that regresses it.
+//
+// Best-effort and never fatal: if the operator cannot identify or inspect its
+// own container (run outside Docker, HOSTNAME overridden), it logs at debug and
+// returns -- a diagnostic must not keep the operator from starting.
+func warnIfReachableFromAgents(ctx context.Context, docker containerInspector, selfHostname, agentNetwork string, log *slog.Logger) {
+	if selfHostname == "" {
+		log.DebugContext(ctx, "network-isolation self-check skipped: no HOSTNAME to identify the operator's own container")
+		return
+	}
+	self, err := docker.ContainerInspect(ctx, selfHostname)
+	if err != nil {
+		log.DebugContext(ctx, "network-isolation self-check skipped: cannot inspect the operator's own container",
+			"container", selfHostname, "error", err)
+		return
+	}
+	if _, onAgentNetwork := self.Networks[agentNetwork]; onAgentNetwork {
+		log.WarnContext(ctx, "SECURITY: the operator container shares the agent network, so its API and terminal WebSocket are reachable from every agent; move the operator to a network no agent joins (docker-compose.yaml uses a dedicated operatornet)",
+			"operator_container", self.Name, "agent_network", agentNetwork)
+	}
 }
 
 // ensureNetwork creates a bridge network by name unless one already exists.

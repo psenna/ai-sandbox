@@ -120,6 +120,15 @@ type Config struct {
 	// should stay bound to a local interface on a shared host.
 	ListenAddr string
 
+	// APIToken, when non-empty, is the static Bearer every REST API and
+	// terminal-WebSocket request must present -- as "Authorization: Bearer
+	// <token>", or as "?token=<token>" on a browser WebSocket handshake
+	// (which cannot carry a header). OPTIONAL and a Secret: empty (the
+	// default) leaves the API unauthenticated, which the operator warns
+	// about at startup. Unrelated to AgentToken -- agents never call this
+	// API and never receive this value.
+	APIToken Secret
+
 	// StateDBPath is the BoltDB file holding agent records (issue #64).
 	// The default is an absolute path under /var/lib because the operator
 	// normally runs containerised with a named volume mounted there, where
@@ -240,6 +249,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	// flag.StringVar cannot target a Secret, so the token is parsed into a
 	// plain string and converted after Parse.
 	var agentToken string
+	var apiToken string
 	var anthropicAuthToken string
 	var anthropicAPIKey string
 
@@ -274,6 +284,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&agentToken, "agent-token",
 		envOr(getenv, "AGENT_TOKEN", ""),
 		"required: the Bearer every agent presents to git-proxy, not a GitHub PAT. Prefer the AGENT_TOKEN environment variable: flag values are visible to any user who can read the process table (env AGENT_TOKEN)")
+	fs.StringVar(&apiToken, "api-token",
+		envOr(getenv, "OPERATOR_API_TOKEN", ""),
+		"optional: static Bearer required on every REST API and terminal-WebSocket request; empty leaves the operator API unauthenticated. Prefer the OPERATOR_API_TOKEN environment variable: a flag value is visible to any user who can read the process table (env OPERATOR_API_TOKEN)")
 	fs.StringVar(&c.GitProxyURL, "git-proxy-url",
 		envOr(getenv, "GIT_PROXY_URL", defaultGitProxyURL),
 		"git-proxy git-protocol endpoint templated into each agent (env GIT_PROXY_URL)")
@@ -319,6 +332,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	}
 
 	c.AgentToken = Secret(agentToken)
+	c.APIToken = Secret(apiToken)
 	c.AnthropicAuthToken = Secret(anthropicAuthToken)
 	c.AnthropicAPIKey = Secret(anthropicAPIKey)
 

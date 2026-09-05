@@ -119,21 +119,22 @@ func TestAgentEnv_Backend(t *testing.T) {
 		}
 	})
 
-	t.Run("anthropic api-key: no base url, no model overrides", func(t *testing.T) {
+	t.Run("anthropic api-key: only the api key, no oauth token, no model overrides", func(t *testing.T) {
 		env := m.agentEnv(base, resolvedBackend{kind: config.BackendAnthropic, apiKey: "apikey-live"})
 		wantEq(t, env, "ANTHROPIC_API_KEY", "apikey-live")
-		wantEq(t, env, "CLAUDE_CODE_OAUTH_TOKEN", "")
-		for _, k := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_AUTH_TOKEN"} {
+		for _, k := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_AUTH_TOKEN"} {
 			if _, ok := env[k]; ok {
-				t.Errorf("%s is set for an anthropic agent, want it absent (real Anthropic defaults)", k)
+				t.Errorf("%s is set for an anthropic api-key agent, want it absent", k)
 			}
 		}
 	})
 
-	t.Run("anthropic oauth: token set, api key blank", func(t *testing.T) {
+	t.Run("anthropic oauth: only the oauth token, no blank api key", func(t *testing.T) {
 		env := m.agentEnv(base, resolvedBackend{kind: config.BackendAnthropic, oauthToken: "oat-live"})
 		wantEq(t, env, "CLAUDE_CODE_OAUTH_TOKEN", "oat-live")
-		wantEq(t, env, "ANTHROPIC_API_KEY", "")
+		if _, ok := env["ANTHROPIC_API_KEY"]; ok {
+			t.Errorf("ANTHROPIC_API_KEY is set for an anthropic oauth agent, want it absent (an empty value makes Claude Code skip the token)")
+		}
 	})
 }
 

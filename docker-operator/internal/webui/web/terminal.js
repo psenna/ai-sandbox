@@ -23,7 +23,8 @@
 	}
 
 	async function fetchJSON(url, options) {
-		var resp = await fetch(url, options);
+		var doFetch = (typeof window !== 'undefined' && window.OperatorAuth && window.OperatorAuth.fetch) || fetch;
+		var resp = await doFetch(url, options);
 		var text = await resp.text();
 		if (!resp.ok) {
 			var msg = 'request failed (' + resp.status + ')';
@@ -39,6 +40,11 @@
 	}
 
 	function wsURL(path) {
+		// auth.js builds the URL and appends ?token= when the operator API is
+		// authenticated (a browser cannot set a header on a WS handshake).
+		if (typeof window !== 'undefined' && window.OperatorAuth && window.OperatorAuth.wsURL) {
+			return window.OperatorAuth.wsURL(path);
+		}
 		var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 		return proto + '//' + window.location.host + path;
 	}

@@ -154,7 +154,7 @@ dind-init-check:
 # IN_CONTAINER=1 (CI) runs node directly, since ubuntu-latest already ships
 # one; NODE_RUN wraps it locally.
 web-test:
-	$(NODE_RUN) node --test web/render.test.js web/terminal.test.js
+	$(NODE_RUN) node --test web/render.test.js web/terminal.test.js web/auth.test.js
 
 # web/ is the single source of truth for the frontend; internal/webui embeds
 # a COMMITTED COPY at internal/webui/web because go:embed cannot reach

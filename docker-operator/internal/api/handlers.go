@@ -270,12 +270,24 @@ func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, CodeMissingField, `"value" must not be empty`, "value")
 		return
 	}
-	// Cheap shape check -- a real Anthropic Console key starts with sk-ant-.
-	// An OAuth token from `claude setup-token` has no stable public prefix,
-	// so it is only checked for non-emptiness above.
-	if req.Kind == store.AnthropicKindAPIKey && !strings.HasPrefix(req.Value, "sk-ant-") {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `an Anthropic API key starts with "sk-ant-"`, "value")
-		return
+	// Cheap shape checks. Both credentials go into every anthropic-backend
+	// agent's environment verbatim (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN),
+	// where a truncated or wrong-field paste does not error loudly -- Claude Code
+	// just ignores it and drops the agent to an interactive login. Catching the
+	// obvious mistakes here is worth the brittleness of a prefix match.
+	//   - a Console API key starts with "sk-ant-"
+	//   - a `claude setup-token` OAuth token starts with "sk-ant-oat01-"
+	switch req.Kind {
+	case store.AnthropicKindAPIKey:
+		if !strings.HasPrefix(req.Value, "sk-ant-") {
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `an Anthropic API key starts with "sk-ant-"`, "value")
+			return
+		}
+	case store.AnthropicKindOAuth:
+		if !strings.HasPrefix(req.Value, "sk-ant-oat01-") {
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `a Claude Code OAuth token (from "claude setup-token") starts with "sk-ant-oat01-"`, "value")
+			return
+		}
 	}
 
 	if err := h.mgr.SetAnthropicAuth(r.Context(), req.Kind, req.Value); err != nil {
