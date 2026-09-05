@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
@@ -126,7 +127,11 @@ func checkCreateLabels(t *testing.T, f *dockerclienttest.Fake, got store.Agent, 
 // Create used.
 func checkCmdWiring(t *testing.T, m *Manager, got store.Agent) {
 	t.Helper()
-	spec := m.agentSpec(got)
+	spec := m.agentSpec(got, resolvedBackend{
+		kind:      config.BackendOllama,
+		model:     m.cfg.AgentModel,
+		fastModel: m.cfg.AgentFastModel,
+	})
 	if len(spec.Cmd) != 1 || spec.Cmd[0] != tmuxBootPath {
 		t.Errorf("agent ContainerSpec.Cmd = %v, want [%q]", spec.Cmd, tmuxBootPath)
 	}

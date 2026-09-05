@@ -34,9 +34,13 @@ func testConfig(maxAgents int) config.Config {
 		DependaproxyGoproxyURL: "http://dependaproxy:8080/goproxy",
 		DockerRuntime:          "sysbox-runc",
 		DependaproxyContainer:  "test-dependaproxy",
-		// OllamaURL is deliberately left empty: most tests here care about
-		// the docker lifecycle, not model routing, and config_test.go already
-		// covers OllamaURL's own validation and defaulting in depth.
+		// The default backend for a create request that names none. Every
+		// backend-specific test overrides the request's Backend explicitly.
+		DefaultBackend:     config.BackendOllama,
+		OllamaURL:          "http://ollama:11434",
+		AnthropicAuthToken: config.Secret("test-anthropic-auth"),
+		AgentModel:         "test-opus-model",
+		AgentFastModel:     "test-fast-model",
 	}
 }
 
