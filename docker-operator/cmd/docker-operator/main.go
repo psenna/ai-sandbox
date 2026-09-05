@@ -79,6 +79,10 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("the docker daemon is not reachable: %w", err)
 	}
 
+	if err := ensureSharedNetworks(context.Background(), docker, cfg); err != nil {
+		return err
+	}
+
 	st, err := store.Open(cfg.StateDBPath, cfg.MaxAgents)
 	if err != nil {
 		return fmt.Errorf("opening the state database: %w", err)
@@ -225,4 +229,39 @@ func handleContainerEvent(ctx context.Context, mgr *agent.Manager, ev dockerclie
 	if err != nil && !store.IsNotFound(err) {
 		log.Warn("status-sync: recording an unexpected container exit failed", "agent_id", id, "error", err)
 	}
+}
+
+// ensureSharedNetworks creates the two shared, singleton networks (proxynet
+// and dbnet) if they do not already exist, so the operator also works
+// started bare (`docker run`), not only via docker-compose.yaml -- which
+// creates them itself, declaratively, before the operator container ever
+// starts, making this a no-op in the common case.
+//
+// These are NOT labeled ai-sandbox.docker-operator/managed: that label is
+// the per-agent orphan-recovery mechanism (see internal/agent's Reconcile),
+// and these two networks are intentionally shared infrastructure no single
+// agent record owns -- labeling them would make every reconcile pass report
+// them as "unmanaged", which they are not.
+func ensureSharedNetworks(ctx context.Context, docker dockerclient.NetworkClient, cfg config.Config) error {
+	for _, name := range []string{cfg.ProxynetName, cfg.DbnetName} {
+		if err := ensureNetwork(ctx, docker, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureNetwork creates a bridge network by name unless one already exists.
+func ensureNetwork(ctx context.Context, docker dockerclient.NetworkClient, name string) error {
+	_, err := docker.NetworkInspect(ctx, name)
+	switch {
+	case err == nil:
+		return nil
+	case !dockerclient.IsNotFound(err):
+		return fmt.Errorf("inspecting network %q: %w", name, err)
+	}
+	if _, err := docker.NetworkCreate(ctx, dockerclient.NetworkSpec{Name: name}); err != nil {
+		return fmt.Errorf("creating network %q: %w", name, err)
+	}
+	return nil
 }
