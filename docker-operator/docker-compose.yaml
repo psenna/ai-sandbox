@@ -1,0 +1,166 @@
+# docker-operator: the shared-services stack (ollama, git-proxy, postgres,
+# dependaproxy -- unchanged from the root ai-sandbox/docker-compose.yaml,
+# minus the single static `docker` DinD sidecar and `claude` agent, which
+# this stack replaces with the operator creating one DinD sidecar + one
+# agent container PER AGENT, on demand, via the real Docker API) plus the
+# docker-operator service itself.
+#
+# Topology:
+#   docker-operator-proxynet (shared, singleton): ollama, git-proxy,
+#     dependaproxy, docker-operator, and every agent container.
+#   docker-operator-dbnet (shared, singleton): postgres, dependaproxy only.
+#   docker-operator-agent-<id>-dinernet (per agent, PRIVATE, created and torn
+#     down by the operator itself -- not declared here at all): each agent's
+#     own DinD sidecar, plus dependaproxy connected into it dynamically at
+#     create time so workload containers inside that agent's nested daemon
+#     can reach it (there is no longer one static dependaproxy IP shared by
+#     every agent -- see docker-operator/agent/skills/use-docker/SKILL.md).
+#
+# The docker-operator container is the one thing in this whole repo that
+# holds a real Docker credential (the bind-mounted socket below) -- it is
+# the trusted control plane that creates/inspects/removes every other
+# container, the same "manager holds the credential, the managed workload
+# does not" split the Kubernetes operator already uses. No agent container
+# ever gets this socket.
+#
+# Prerequisites: same as the root stack's -- sysbox-ce installed
+# (setup-ubuntu-host.sh) for the per-agent DinD sidecars' runtime, and
+# `make agent-image` run once so AGENT_IMAGE exists locally.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: docker-operator-ollama
+    environment:
+      OLLAMA_NUM_CTX: "${OLLAMA_NUM_CTX:-131072}"
+    volumes:
+      - ../.ollama:/root/.ollama
+    networks:
+      - proxynet
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/11434'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # config.yaml/credentials.yaml are the ROOT stack's files (../), not a
+  # docker-operator-local copy: they are exactly the same git-proxy
+  # configuration either stack needs, and duplicating them would only invite
+  # the two copies to drift. See ai-sandbox/README.md's Setup section for how
+  # to populate credentials.yaml -- unchanged here.
+  git-proxy:
+    image: ghcr.io/psenna/git-proxy:v0.0.11
+    container_name: docker-operator-gitproxy
+    user: "1000:1000"
+    ports:
+      - "127.0.0.1:8080:8080" # git-protocol leg (clone/fetch/push)
+      - "127.0.0.1:8090:8090" # broker REST leg (PR + CI + issue ops)
+    volumes:
+      - ../config.yaml:/config.yaml:ro
+      - ../credentials.yaml:/credentials.yaml:ro
+      - ./data/mirror:/tmp/git-proxy-mirror
+      - ./data/audit:/tmp/git-proxy
+    networks:
+      - proxynet
+
+  postgres:
+    image: postgres:18
+    container_name: docker-operator-postgres
+    environment:
+      POSTGRES_USER: dependaproxy
+      POSTGRES_PASSWORD: dependaproxy-secret
+      POSTGRES_DB: dependaproxy
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks:
+      - dbnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dependaproxy -d dependaproxy"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  # container_name MUST equal internal/config's DependaproxyContainer default
+  # (docker-operator-dependaproxy) -- the create flow's NetworkConnect looks
+  # it up by exactly this name on each new agent's private dinernet.
+  # No static dinernet IP or dinernet membership here at all: unlike the
+  # root stack's single shared dinernet, connecting dependaproxy into a
+  # per-agent dinernet is the operator's job at create time, not compose's.
+  dependaproxy:
+    image: ghcr.io/psenna/dependaproxy:v0.0.7
+    container_name: docker-operator-dependaproxy
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../dependaproxy.yaml:/config.yaml:ro
+      - ./data/dependaproxy-cache:/var/lib/dependaproxy/cache
+    networks:
+      - proxynet
+      - dbnet
+
+  docker-operator:
+    build:
+      context: ..
+      dockerfile: docker-operator/Dockerfile
+    image: docker-operator:0.1.0
+    container_name: docker-operator
+    depends_on:
+      ollama:
+        condition: service_healthy
+      git-proxy:
+        condition: service_started
+      dependaproxy:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${LISTEN_PORT:-8000}:8000"
+    environment:
+      LISTEN_ADDR: "0.0.0.0:8000"
+      STATE_DB_PATH: "/var/lib/docker-operator/state.db"
+      MAX_AGENTS: "${MAX_AGENTS:-5}"
+      AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev}"
+      DOCKER_RUNTIME: "${DOCKER_RUNTIME:-sysbox-runc}"
+
+      # git-proxy legs, shared by every agent in V1 (one repo, one token).
+      AGENT_TOKEN: "${AGENT_TOKEN}"
+      GITHUB_REPO: "${GITHUB_REPO}"
+      GIT_PROXY_URL: "http://git-proxy:8080"
+      GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
+
+      # DependaProxy: reached by name on proxynet; the per-agent dinernet
+      # address is resolved per agent by the create flow, not set here.
+      DEPENDAPROXY_URL: "http://dependaproxy:8080/npm"
+      DEPENDAPROXY_PYPI_URL: "http://dependaproxy:8080/pypi"
+      DEPENDAPROXY_GOPROXY_URL: "http://dependaproxy:8080/goproxy"
+      DEPENDAPROXY_CONTAINER: "docker-operator-dependaproxy"
+
+      # Model routing (see internal/config.Config's OllamaURL doc comment for
+      # the "" escape hatch to the real Anthropic API instead).
+      OLLAMA_URL: "http://ollama:11434"
+      AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
+      AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-deepseek-v4-flash:0731-cloud}"
+    volumes:
+      # The trusted control-plane credential -- see the header comment.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - operator-state:/var/lib/docker-operator
+    networks:
+      - proxynet
+
+networks:
+  # Shared singletons. Explicit `name:` so they land under exactly the names
+  # internal/config's ProxynetName/DbnetName defaults expect -- compose would
+  # otherwise prefix them with this directory's name, and every agent
+  # container's NetworkAttachment would then point at a network that does
+  # not exist.
+  proxynet:
+    name: docker-operator-proxynet
+    driver: bridge
+  dbnet:
+    name: docker-operator-dbnet
+    driver: bridge
+
+volumes:
+  pgdata: {}
+  operator-state: {}
