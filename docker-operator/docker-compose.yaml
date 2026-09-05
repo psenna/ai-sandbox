@@ -122,6 +122,9 @@ services:
       MAX_AGENTS: "${MAX_AGENTS:-5}"
       AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev}"
       DOCKER_RUNTIME: "${DOCKER_RUNTIME:-sysbox-runc}"
+      # The backend a create request that names none falls back to. Each
+      # agent records its own choice; this is only the create-form default.
+      DEFAULT_AGENT_BACKEND: "${DEFAULT_AGENT_BACKEND:-ollama}"
 
       # git-proxy legs, shared by every agent in V1 (one repo, one token).
       AGENT_TOKEN: "${AGENT_TOKEN}"
@@ -136,11 +139,15 @@ services:
       DEPENDAPROXY_GOPROXY_URL: "http://dependaproxy:8080/goproxy"
       DEPENDAPROXY_CONTAINER: "docker-operator-dependaproxy"
 
-      # Model routing (see internal/config.Config's OllamaURL doc comment for
-      # the "" escape hatch to the real Anthropic API instead).
+      # Ollama-backend model routing: the create-form defaults for an
+      # "ollama" agent's opus tier and its sonnet+haiku tiers. Overridable
+      # per agent on the create form / via the POST /api/agents body. An
+      # "anthropic" agent ignores these and OLLAMA_URL entirely -- it uses
+      # the shared Anthropic credential (web UI "Anthropic account" panel /
+      # PUT /api/anthropic/auth).
       OLLAMA_URL: "http://ollama:11434"
-      AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.2:cloud}"
-      AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-deepseek-v4-flash:0731-cloud}"
+      AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.3:cloud}"
+      AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-glm-5.3-flash:cloud}"
     volumes:
       # The trusted control-plane credential -- see the header comment.
       - /var/run/docker.sock:/var/run/docker.sock
