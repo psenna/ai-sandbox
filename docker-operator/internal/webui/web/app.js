@@ -39,7 +39,11 @@
 	}
 
 	async function fetchJSON(url, options) {
-		var resp = await fetch(url, options);
+		// window.OperatorAuth (auth.js) attaches the Bearer token and handles a
+		// 401 by prompting for a new one; fall back to a bare fetch only if
+		// that script somehow did not load.
+		var doFetch = (window.OperatorAuth && window.OperatorAuth.fetch) || fetch;
+		var resp = await doFetch(url, options);
 		var text = await resp.text();
 		if (!resp.ok) throw apiError(resp.status, text);
 		return text ? JSON.parse(text) : null;

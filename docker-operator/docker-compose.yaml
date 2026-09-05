@@ -7,8 +7,17 @@
 #
 # Topology:
 #   docker-operator-proxynet (shared, singleton): ollama, git-proxy,
-#     dependaproxy, docker-operator, and every agent container.
+#     dependaproxy, and every agent container. NOT the operator -- see below.
 #   docker-operator-dbnet (shared, singleton): postgres, dependaproxy only.
+#   docker-operator-operatornet (singleton): the operator alone. It drives
+#     agents through the bind-mounted Docker socket, never over the network,
+#     and it never dials the shared services (it only templates their URLs
+#     into each agent's environment), so it needs no shared network -- and
+#     must not have one: every agent joins proxynet, so an operator on
+#     proxynet would expose its unauthenticated REST API and terminal
+#     WebSocket to every agent, defeating the per-agent dinernet isolation.
+#     The host reaches the API through the published 127.0.0.1 port, which
+#     does not depend on any shared network.
 #   docker-operator-agent-<id>-dinernet (per agent, PRIVATE, created and torn
 #     down by the operator itself -- not declared here at all): each agent's
 #     own DinD sidecar, plus dependaproxy connected into it dynamically at
@@ -21,7 +30,7 @@
 # the trusted control plane that creates/inspects/removes every other
 # container, the same "manager holds the credential, the managed workload
 # does not" split the Kubernetes operator already uses. No agent container
-# ever gets this socket.
+# ever gets this socket, and no agent shares a network with it.
 #
 # Prerequisites: same as the root stack's -- sysbox-ce installed
 # (setup-ubuntu-host.sh) for the per-agent DinD sidecars' runtime, and
@@ -126,6 +135,14 @@ services:
       # agent records its own choice; this is only the create-form default.
       DEFAULT_AGENT_BACKEND: "${DEFAULT_AGENT_BACKEND:-ollama}"
 
+      # OPTIONAL but strongly recommended: a static Bearer required on every
+      # REST API call and terminal-WebSocket connection. Empty leaves the API
+      # open to anything that can reach the published port (the operator logs
+      # a startup warning). In the browser, open the UI once as
+      # http://127.0.0.1:8000/?token=<value> -- it is stored and stripped
+      # from the URL. For curl: `-H "Authorization: Bearer <value>"`.
+      OPERATOR_API_TOKEN: "${OPERATOR_API_TOKEN:-}"
+
       # git-proxy legs. AGENT_TOKEN is REQUIRED -- the Bearer every agent
       # presents to git-proxy (not a GitHub PAT; git-proxy consumes it for
       # auth and never forwards it). GITHUB_REPO is OPTIONAL: it is the repo
@@ -138,8 +155,10 @@ services:
       GIT_PROXY_URL: "http://git-proxy:8080"
       GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
 
-      # DependaProxy: reached by name on proxynet; the per-agent dinernet
-      # address is resolved per agent by the create flow, not set here.
+      # DependaProxy: these URLs are templated into each agent's environment
+      # (agents resolve "dependaproxy" by name on proxynet); the operator
+      # itself never dials it. The per-agent dinernet address is resolved per
+      # agent by the create flow, not set here.
       DEPENDAPROXY_URL: "http://dependaproxy:8080/npm"
       DEPENDAPROXY_PYPI_URL: "http://dependaproxy:8080/pypi"
       DEPENDAPROXY_GOPROXY_URL: "http://dependaproxy:8080/goproxy"
@@ -159,7 +178,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - operator-state:/var/lib/docker-operator
     networks:
-      - proxynet
+      # operatornet ONLY -- deliberately no proxynet. See the header comment:
+      # the operator talks to agents through the Docker socket, not the
+      # network, so sharing a network with them only widens the attack
+      # surface. The operator logs a startup WARNING if it finds itself on
+      # the agent network anyway (cmd/docker-operator: warnIfReachableFromAgents).
+      - operatornet
 
 networks:
   # Shared singletons. Explicit `name:` so they land under exactly the names
@@ -172,6 +196,12 @@ networks:
     driver: bridge
   dbnet:
     name: docker-operator-dbnet
+    driver: bridge
+  # The operator's own isolation boundary: nothing else joins this. The
+  # operator needs a network for its published 127.0.0.1:8000 port to work
+  # but must not be reachable from any agent.
+  operatornet:
+    name: docker-operator-operatornet
     driver: bridge
 
 volumes:

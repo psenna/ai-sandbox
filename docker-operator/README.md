@@ -9,9 +9,13 @@ plain Docker, single host, no cluster required. See the root README's
 comparison](../README.md#two-ways-to-run-this-the-compose-stack-or-the-kubernetes-operator)
 for how this fits next to the other two ways to run this repo.
 
-V1 is a local-only tool: no auth, one shared GitHub repo + token for every
-agent. See [V2: network-egress restriction](#v2-network-egress-restriction)
-for the one direction this design deliberately leaves open.
+V1 is a local-only tool: it binds `127.0.0.1`, and one shared GitHub repo +
+token serves every agent. The operator's own REST API and terminal
+WebSockets take an optional static Bearer (`OPERATOR_API_TOKEN` — see
+[Authenticating the API](#authenticating-the-api)); the operator sits on its
+own Docker network that no agent joins. See [V2: network-egress
+restriction](#v2-network-egress-restriction) for the one direction this
+design deliberately leaves open.
 
 ## What it does
 
@@ -50,12 +54,15 @@ A single Go binary (`docker-operator`) that:
                     │        /ws/agents/*/terminal      │
                     │        /              (web UI)     │
                     └───────────────┬─────────────────┘
-                                    │ Docker API (unix socket)
+                                    │ Docker API (unix socket) — the operator
+                                    │ drives everything below through this,
+                                    │ never over the network; it sits alone on
+                                    │ operatornet, joined by no agent.
                                     ▼
        ┌─────────────────────────────────────────────────────────┐
        │  shared singletons (created once, reused by every agent)  │
        │  ollama · git-proxy · postgres · dependaproxy               │
-       │  networks: proxynet, dbnet                                 │
+       │  networks: proxynet, dbnet   (operator NOT on either)      │
        └─────────────────────────────────────────────────────────┘
                                     │
                                     │ per agent, on demand
@@ -109,11 +116,12 @@ snapshot-based freeze/wake.
 | Claude config volume | `docker-operator-agent-<id>-claude-config` | per agent, isolated |
 | DinD image-cache volume | `docker-operator-agent-<id>-dind-cache` | per agent, isolated |
 | Private network | `docker-operator-agent-<id>-dinernet` | per agent, private |
-| Proxy network | `docker-operator-proxynet` | shared singleton |
+| Proxy network | `docker-operator-proxynet` | shared singleton (agents + shared services; **not** the operator) |
 | DB network | `docker-operator-dbnet` | shared singleton |
+| Operator network | `docker-operator-operatornet` | singleton, operator only — no agent joins it |
 
-Every resource above (except the two shared singleton networks, which no
-single agent owns) carries three labels —
+Every resource above (except the shared singleton networks and the
+operator's own network, which no single agent owns) carries three labels —
 `ai-sandbox.docker-operator/{managed,agent-id,role}` — the mechanism
 `internal/agent.Reconcile` uses to tell an operator-owned resource from
 anything else on the same Docker host.
@@ -132,6 +140,25 @@ anything else on the same Docker host.
 | `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
 | `GET`/`POST`/`DELETE` | `/api/anthropic/login` | Status / start / stop the `claude setup-token` helper container. `POST` returns `{"active":true,"ws":"/ws/anthropic/login/terminal"}`. |
 | `GET` | `/ws/anthropic/login/terminal` | Terminal bridge into the login helper container (same frame protocol as the agent terminal). |
+
+### Authenticating the API
+
+Set `OPERATOR_API_TOKEN` (env / `--api-token`) to a long random string and
+every `/api/*` request and both `/ws/*` terminal connections require it:
+
+- **curl / scripts:** `-H "Authorization: Bearer $OPERATOR_API_TOKEN"`.
+- **browser:** open the UI once as `http://127.0.0.1:8000/?token=<value>` —
+  `web/auth.js` saves it to `localStorage`, strips it from the address bar,
+  and attaches it to every request (and, as `?token=`, to the terminal
+  WebSocket, which a browser cannot give a header). A `401` re-prompts.
+- **`GET /healthz`** and the static web-UI assets (`/`, `/app.js`, …) stay
+  open — they carry no data and ship no secret.
+
+Leaving `OPERATOR_API_TOKEN` unset disables the check; the operator logs a
+`SECURITY:` warning at startup. The token is **not** `AGENT_TOKEN` (that one
+is git-proxy's, handed to agents); agents never receive `OPERATOR_API_TOKEN`
+and — since the operator is on its own network — cannot reach this API at
+all.
 
 ## Choosing a backend
 
@@ -208,6 +235,9 @@ can read it here, CI ran it.
 
 ```sh quickstart
 export AGENT_TOKEN=agent-token-1
+# Gate the operator's own API + terminals. Optional (blank = open, with a
+# startup warning); generate a fresh random value rather than hardcoding one.
+export OPERATOR_API_TOKEN="$(openssl rand -hex 32)"
 # GITHUB_REPO is optional -- the default repo agents fall back to. Unset it
 # and agents boot as bare terminals; each can still be pinned to its own repo
 # on the create form.
@@ -228,7 +258,7 @@ button and an empty agent list (`0 of 5 agents`).
 **3 — the API the UI drives**
 
 ```sh quickstart
-curl -fsS http://127.0.0.1:8000/api/agents
+curl -fsS -H "Authorization: Bearer $OPERATOR_API_TOKEN" http://127.0.0.1:8000/api/agents
 curl -fsS http://127.0.0.1:8000/ | grep -o '<title>[^<]*</title>'
 ```
 
@@ -242,8 +272,8 @@ at `/`.
 
 Clicking **+ New Agent** in the UI — filling in the form (name, description,
 optional [repo](#choosing-a-repo), [backend](#choosing-a-backend), and for
-Ollama the two model names) — or
-`curl -X POST http://127.0.0.1:8000/api/agents -d '{"backend":"ollama"}'` —
+Ollama the two model names) — or `curl -X POST -H "Authorization: Bearer
+$OPERATOR_API_TOKEN" http://127.0.0.1:8000/api/agents -d '{"backend":"ollama"}'` —
 creates the two containers, three volumes and private network described in
 [Architecture](#architecture) above, then opens a live terminal running
 `claude` inside a `tmux` session. For an `anthropic` agent, set the shared

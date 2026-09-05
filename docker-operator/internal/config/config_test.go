@@ -65,6 +65,7 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		DbnetName:              "docker-operator-dbnet",
 		GithubRepo:             "psenna/ai-sandbox.git",
 		AgentToken:             Secret("agent-token-1"),
+		APIToken:               Secret(""),
 		GitProxyURL:            "http://git-proxy:8080",
 		GitProxyBrokerURL:      "http://git-proxy:8090",
 		DependaproxyURL:        "http://dependaproxy:8080/npm",
@@ -115,6 +116,8 @@ var fieldCases = []struct {
 		func(c Config) string { return c.GithubRepo }},
 	{"AgentToken", "AGENT_TOKEN", "agent-token", "env-bearer", "flag-bearer",
 		func(c Config) string { return c.AgentToken.Reveal() }},
+	{"APIToken", "OPERATOR_API_TOKEN", "api-token", "env-api-token", "flag-api-token",
+		func(c Config) string { return c.APIToken.Reveal() }},
 	{"GitProxyURL", "GIT_PROXY_URL", "git-proxy-url", "http://env-proxy:1", "http://flag-proxy:1",
 		func(c Config) string { return c.GitProxyURL }},
 	{"GitProxyBrokerURL", "GIT_PROXY_BROKER_URL", "git-proxy-broker-url", "http://env-broker:1", "http://flag-broker:1",
@@ -358,6 +361,7 @@ func TestLoadValidate_NeverPanics(t *testing.T) {
 	names := []string{
 		"MAX_AGENTS", "LISTEN_ADDR", "STATE_DB_PATH", "AGENT_IMAGE",
 		"PROXYNET_NAME", "DBNET_NAME", "GITHUB_REPO", "AGENT_TOKEN",
+		"OPERATOR_API_TOKEN",
 		"GIT_PROXY_URL", "GIT_PROXY_BROKER_URL", "DEPENDAPROXY_URL",
 		"DEPENDAPROXY_PYPI_URL", "DEPENDAPROXY_GOPROXY_URL", "DOCKER_RUNTIME",
 		"OLLAMA_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
@@ -403,23 +407,31 @@ func TestLoad_HelpIsReportedAsErrHelp(t *testing.T) {
 
 // TestAgentToken_NeverLeaksThroughStringification mirrors
 // operator/internal/storage's credentials_test.go: every rendering path a
-// log line or an error message could plausibly take must redact.
+// log line or an error message could plausibly take must redact. Both Secret
+// fields loaded from the environment (AgentToken and APIToken) are exercised.
 func TestAgentToken_NeverLeaksThroughStringification(t *testing.T) {
 	sentinel := "correct-horse-battery-staple"
+	apiSentinel := "hunter2-operator-api-sentinel"
 
-	c, err := Load(nil, envWith(map[string]string{"AGENT_TOKEN": sentinel}))
+	c, err := Load(nil, envWith(map[string]string{"AGENT_TOKEN": sentinel, "OPERATOR_API_TOKEN": apiSentinel}))
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
 	if got := c.AgentToken.Reveal(); got != sentinel {
 		t.Fatalf("Reveal() = %q, want the real value %q", got, sentinel)
 	}
+	if got := c.APIToken.Reveal(); got != apiSentinel {
+		t.Fatalf("APIToken.Reveal() = %q, want the real value %q", got, apiSentinel)
+	}
 
 	jsonSecret, err := json.Marshal(c.AgentToken)
 	if err != nil {
 		t.Fatalf("json.Marshal(Secret): %v", err)
 	}
-	jsonConfig, err := json.Marshal(c)
+	// G117 flags a *-Token/-Key struct field being marshaled; here that is the
+	// property under test -- config.Secret.MarshalJSON redacts, and the
+	// assertions below prove neither sentinel survives.
+	jsonConfig, err := json.Marshal(c) //nolint:gosec // G117: Secret.MarshalJSON redacts every credential field; this test verifies it
 	if err != nil {
 		t.Fatalf("json.Marshal(Config): %v", err)
 	}
@@ -449,6 +461,9 @@ func TestAgentToken_NeverLeaksThroughStringification(t *testing.T) {
 	for path, out := range renderings {
 		if strings.Contains(out, sentinel) {
 			t.Errorf("%s leaked the agent token: %s", path, out)
+		}
+		if strings.Contains(out, apiSentinel) {
+			t.Errorf("%s leaked the operator API token: %s", path, out)
 		}
 		if !strings.Contains(out, redacted) {
 			t.Errorf("%s = %s, want it to contain %s", path, out, redacted)

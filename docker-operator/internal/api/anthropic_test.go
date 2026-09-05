@@ -112,7 +112,7 @@ func TestAnthropicAuth_PutThenGet(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "oat-secret"})
+	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-secret"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d, want 200; body: %s", rec.Code, rec.Body)
 	}
@@ -130,7 +130,7 @@ func TestAnthropicAuth_PutThenGet(t *testing.T) {
 	}
 
 	// The secret must never appear in any response body.
-	if strings.Contains(rec.Body.String(), "oat-secret") {
+	if strings.Contains(rec.Body.String(), "sk-ant-oat01-secret") {
 		t.Errorf("GET body leaked the credential value: %s", rec.Body.String())
 	}
 }
@@ -144,6 +144,7 @@ func TestAnthropicAuth_PutValidation(t *testing.T) {
 		{"unknown kind", map[string]any{"kind": "bearer", "value": "x"}, CodeInvalidParam},
 		{"empty value", map[string]any{"kind": "oauth", "value": "  "}, CodeMissingField},
 		{"api key without sk-ant- prefix", map[string]any{"kind": "api_key", "value": "nope"}, CodeInvalidParam},
+		{"oauth token without sk-ant-oat01- prefix", map[string]any{"kind": "oauth", "value": "oat-nope"}, CodeInvalidParam},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -296,7 +297,7 @@ func TestAnthropicAuth_PutTearsDownLogin(t *testing.T) {
 	mgr.loginActive = true
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "oat-x"})
+	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-x"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d, want 200; body: %s", rec.Code, rec.Body)
 	}
@@ -313,7 +314,7 @@ func TestAnthropicAuth_PutSucceedsEvenIfLoginTeardownFails(t *testing.T) {
 	mgr.loginStopErr = errors.New("daemon hiccup")
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "oat-x"})
+	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-x"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d, want 200 despite the teardown failure; body: %s", rec.Code, rec.Body)
 	}
