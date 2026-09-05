@@ -4,12 +4,13 @@
 // the tmux pipe-pane capture log that tmux-boot.sh writes to the agent's own
 // workspace volume.
 //
-// Output capture (#70) is implemented: ReadOutput execs `tail`/`cat` against
-// OutputLogPath inside an agent container and returns the captured bytes, so
-// the operator can read an agent's terminal output without a browser
-// attached and without depending on tmux's own bounded scrollback.
-// internal/api's GET /api/agents/{id}/output (#71) is the first caller.
-//
-// The terminal bridge itself -- the WebSocket handler, the TTY exec and its
-// resize control frames -- is still pending (#72).
+// Both are implemented. ReadOutput (#70) execs `tail`/`cat` against
+// OutputLogPath inside an agent container and returns the captured bytes;
+// internal/api's GET /api/agents/{id}/output is its caller.
+// NewTerminalHandler (#72) serves GET /ws/agents/{id}/terminal: one
+// WebSocket per connection, binary frames carrying raw PTY bytes each way
+// and a small JSON control envelope on TEXT frames for resize. Closing the
+// WebSocket ends only the exec, never the agent's container -- tmux keeps
+// running, so a refresh or a second tab just opens a fresh exec onto the
+// same session and shows tmux's own repainted screen.
 package wsbridge
