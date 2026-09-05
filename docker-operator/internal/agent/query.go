@@ -31,6 +31,42 @@ func (m *Manager) MaxAgents() int {
 	return m.store.MaxAgents()
 }
 
+// MarkUnexpectedExit records that an agent's own container stopped or died
+// without going through Delete -- the reactive correction
+// cmd/docker-operator's Docker-events goroutine applies when it observes
+// that container leave the running state on its own.
+//
+// A no-op if the record is not currently StatusRunning: an agent already
+// StatusDeleting is mid-teardown (Delete marks that BEFORE removing any
+// container, so the "stop"/"die" event this same removal generates arrives
+// against an already-non-running record and correctly changes nothing), and
+// one already StatusStopped/StatusError has nothing left to correct. This is
+// what lets the caller subscribe to every managed container's events without
+// distinguishing an expected shutdown from an unexpected one itself.
+//
+// The record is read once to short-circuit the common case (nothing to do)
+// without writing a spurious UpdatedAt bump; the actual status change still
+// happens inside store.Update's own transaction, so a status change racing
+// this check is not lost, only possibly redone.
+func (m *Manager) MarkUnexpectedExit(ctx context.Context, id string, newStatus store.Status, message string) error {
+	a, err := m.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if a.Status != store.StatusRunning {
+		return nil
+	}
+	_, err = m.store.Update(ctx, id, func(ag *store.Agent) error {
+		if ag.Status != store.StatusRunning {
+			return nil
+		}
+		ag.Status = newStatus
+		ag.ErrorMessage = message
+		return nil
+	})
+	return err
+}
+
 // Rename updates an agent's Name and/or Description. A nil pointer leaves
 // the corresponding field unchanged; a non-nil pointer sets it, including to
 // an empty string. At least one of name or description must be non-nil.
