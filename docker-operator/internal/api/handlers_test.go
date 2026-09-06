@@ -40,6 +40,7 @@ type fakeManager struct {
 	defaultRepo      string
 
 	anthropicKind      string
+	anthropicValue     string
 	anthropicUpdatedAt time.Time
 	anthropicSet       bool
 	anthropicGetErr    error
@@ -148,6 +149,7 @@ func (f *fakeManager) SetAnthropicAuth(_ context.Context, kind, value string) er
 		return fmt.Errorf("fakeManager: bad SetAnthropicAuth args kind=%q value-empty=%v", kind, value == "")
 	}
 	f.anthropicKind = kind
+	f.anthropicValue = value
 	f.anthropicUpdatedAt = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	f.anthropicSet = true
 	return nil
@@ -161,6 +163,7 @@ func (f *fakeManager) ClearAnthropicAuth(_ context.Context) error {
 	}
 	f.anthropicSet = false
 	f.anthropicKind = ""
+	f.anthropicValue = ""
 	f.anthropicUpdatedAt = time.Time{}
 	return nil
 }

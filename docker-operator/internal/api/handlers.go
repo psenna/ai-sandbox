@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
@@ -266,8 +267,22 @@ func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"kind" must be "api_key" or "oauth"`, "kind")
 		return
 	}
-	if strings.TrimSpace(req.Value) == "" {
+	// A credential pasted from a terminal (the setup-token helper's tmux pane,
+	// a shell) almost always arrives with a trailing newline, and an 80-column
+	// pane can hard-wrap the ~100-char OAuth token so the paste has a newline
+	// mid-string. Neither survives as a usable bearer: it is injected verbatim
+	// as CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY, Claude Code sends the
+	// mangled value, the API 401s, and the agent silently drops to an
+	// interactive login. Trim the outside; reject interior whitespace (no valid
+	// Anthropic key or token contains any) rather than store a value that
+	// cannot work.
+	req.Value = strings.TrimSpace(req.Value)
+	if req.Value == "" {
 		writeError(w, http.StatusBadRequest, CodeMissingField, `"value" must not be empty`, "value")
+		return
+	}
+	if strings.ContainsFunc(req.Value, unicode.IsSpace) {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"value" must not contain whitespace (a wrapped or truncated paste?)`, "value")
 		return
 	}
 	// Cheap shape checks. Both credentials go into every anthropic-backend

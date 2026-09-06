@@ -143,8 +143,11 @@ func TestAnthropicAuth_PutValidation(t *testing.T) {
 	}{
 		{"unknown kind", map[string]any{"kind": "bearer", "value": "x"}, CodeInvalidParam},
 		{"empty value", map[string]any{"kind": "oauth", "value": "  "}, CodeMissingField},
+		{"whitespace-only value", map[string]any{"kind": "oauth", "value": "\n\t "}, CodeMissingField},
 		{"api key without sk-ant- prefix", map[string]any{"kind": "api_key", "value": "nope"}, CodeInvalidParam},
 		{"oauth token without sk-ant-oat01- prefix", map[string]any{"kind": "oauth", "value": "oat-nope"}, CodeInvalidParam},
+		{"oauth token with an interior newline (wrapped paste)", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-aaa\nbbb"}, CodeInvalidParam},
+		{"api key with an interior space", map[string]any{"kind": "api_key", "value": "sk-ant-aaa bbb"}, CodeInvalidParam},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,6 +177,22 @@ func TestAnthropicAuth_PutAcceptsAValidAPIKey(t *testing.T) {
 	}
 	if !mgr.anthropicSet || mgr.anthropicKind != store.AnthropicKindAPIKey {
 		t.Errorf("manager state = set=%v kind=%q, want set with api_key", mgr.anthropicSet, mgr.anthropicKind)
+	}
+}
+
+// A credential pasted from a terminal typically carries a trailing newline;
+// the handler must store the trimmed value so what lands in an agent's
+// environment is a usable bearer, not "sk-ant-oat01-…\n".
+func TestAnthropicAuth_PutTrimsSurroundingWhitespace(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "  sk-ant-oat01-secret\n"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	if mgr.anthropicValue != "sk-ant-oat01-secret" {
+		t.Errorf("stored value = %q, want it trimmed to %q", mgr.anthropicValue, "sk-ant-oat01-secret")
 	}
 }
 
