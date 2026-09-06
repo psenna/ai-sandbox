@@ -53,9 +53,14 @@ func IsExists(err error) bool { return errors.Is(err, ErrExists) }
 // directory (or a non-regular file as a downloadable one).
 func IsNotDir(err error) bool { return errors.Is(err, ErrNotDir) }
 
-// AgentsDir is the single top-level directory under the store root; every
-// agent's files live at AgentsDir/<id>/.
-const AgentsDir = "agents"
+// AgentsDir is the top-level directory under the store root that holds every
+// agent's private files, at AgentsDir/<id>/. SharedDir is the other top-level
+// directory: a common area mounted read-only into every agent and writable
+// only by the operator (through this package's own API).
+const (
+	AgentsDir = "agents"
+	SharedDir = "shared"
+)
 
 // maxSegmentLen and maxPathLen bound a single path segment and the whole
 // joined relative path.
@@ -112,7 +117,31 @@ func New(root string) (*Store, error) {
 	_ = probe.Close()
 	_ = os.Remove(probeName)
 
-	return &Store{root: root, r: r}, nil
+	s := &Store{root: root, r: r}
+
+	// shared/ must exist before any agent container is created: the agent
+	// mounts it as a read-only volume subpath, and the daemon requires a
+	// subpath to already exist. Created here (not per agent) because it is a
+	// singleton common area, not per-agent.
+	if err := s.EnsureSharedDir(); err != nil {
+		_ = r.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// EnsureSharedDir creates the shared/ common area if it does not exist. It is
+// idempotent and never touches existing contents. Mode 0o755: every agent
+// mounts it read-only, so only the operator (running as root, writing through
+// this package) ever needs to write here.
+func (s *Store) EnsureSharedDir() error {
+	if err := s.r.MkdirAll(SharedDir, 0o755); err != nil {
+		return fmt.Errorf("creating the shared file-store directory %q: %w", SharedDir, err)
+	}
+	if err := s.r.Chmod(SharedDir, 0o755); err != nil {
+		return fmt.Errorf("setting the mode of the shared file-store directory %q: %w", SharedDir, err)
+	}
+	return nil
 }
 
 // Close releases the store's directory handle.
@@ -335,8 +364,8 @@ func (s *Store) Remove(rel string) error {
 	if len(segs) == 0 {
 		return fmt.Errorf("refusing to remove the store root: %w", ErrInvalidPath)
 	}
-	if len(segs) == 1 && segs[0] == AgentsDir {
-		return fmt.Errorf("refusing to remove the top-level %q directory: %w", AgentsDir, ErrInvalidPath)
+	if len(segs) == 1 && (segs[0] == AgentsDir || segs[0] == SharedDir) {
+		return fmt.Errorf("refusing to remove the top-level %q directory: %w", segs[0], ErrInvalidPath)
 	}
 	if err := s.r.RemoveAll(openName(segs)); err != nil {
 		return fmt.Errorf("removing %q: %w", relDisplay(segs), err)

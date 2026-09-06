@@ -37,6 +37,24 @@ func TestNew(t *testing.T) {
 		}
 	})
 
+	t.Run("creates the shared/ common area", func(t *testing.T) {
+		s := newStore(t)
+		fi, err := os.Stat(filepath.Join(s.Root(), SharedDir))
+		if err != nil || !fi.IsDir() {
+			t.Fatalf("shared/ not created: %v", err)
+		}
+		// Idempotent, and does not clobber contents.
+		if err := os.WriteFile(filepath.Join(s.Root(), SharedDir, "x"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.EnsureSharedDir(); err != nil {
+			t.Fatalf("EnsureSharedDir (idempotent): %v", err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(s.Root(), SharedDir, "x")); string(b) != "keep" {
+			t.Errorf("EnsureSharedDir clobbered shared/x")
+		}
+	})
+
 	t.Run("rejects a regular-file root", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "afile")
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
@@ -180,15 +198,16 @@ func TestSymlinkEscape(t *testing.T) {
 func TestList(t *testing.T) {
 	s := newStore(t)
 
+	// A fresh store's root holds exactly the shared/ common area New made.
 	got, err := s.List("")
 	if err != nil {
 		t.Fatalf("List(root): %v", err)
 	}
 	if got == nil {
-		t.Fatal("List(root) = nil, want a non-nil empty slice")
+		t.Fatal("List(root) = nil, want a non-nil slice")
 	}
-	if len(got) != 0 {
-		t.Fatalf("List(root) = %v, want empty", got)
+	if len(got) != 1 || got[0].Name != SharedDir || !got[0].IsDir {
+		t.Fatalf("List(root) = %v, want just the shared/ dir", got)
 	}
 
 	if err := s.Mkdir("agents/agt_1/sub"); err != nil {
@@ -372,6 +391,16 @@ func TestRemove(t *testing.T) {
 	}
 	if err := s.Remove("agents"); !IsInvalidPath(err) {
 		t.Errorf("Remove(\"agents\") err = %v, want ErrInvalidPath", err)
+	}
+	if err := s.Remove("shared"); !IsInvalidPath(err) {
+		t.Errorf("Remove(\"shared\") err = %v, want ErrInvalidPath", err)
+	}
+	// Contents of shared/ are still removable.
+	if _, err := s.Save("shared/note.txt", strings.NewReader("hi"), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("shared/note.txt"); err != nil {
+		t.Errorf("Remove(shared/note.txt) = %v, want nil", err)
 	}
 }
 

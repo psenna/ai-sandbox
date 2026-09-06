@@ -122,6 +122,13 @@ const (
 	// present when the file store is enabled.
 	agentStoreMount = "/workspace/store"
 
+	// agentSharedMount is where the file store's shared/ common area is
+	// mounted -- READ-ONLY -- in every agent container. Handed to the agent
+	// as AGENT_SHARED_DIR. Only the operator can write here (through the
+	// /api/files endpoints); agents read shared inputs from it. Only present
+	// when the file store is enabled.
+	agentSharedMount = "/workspace/shared"
+
 	// tmuxBootPath is where agent/Dockerfile bakes tmux-boot.sh, and what the
 	// agent container's Cmd is overridden to at create time.
 	tmuxBootPath = "/usr/local/bin/tmux-boot.sh"
@@ -459,6 +466,13 @@ func (m *Manager) ensureAgentFiles(_ context.Context, a store.Agent) error {
 		return fmt.Errorf("creating the file-store directory for agent %q (dir %q, volume %q): %w",
 			a.ID, m.cfg.FilestoreDir, m.cfg.FilestoreVolume, err)
 	}
+	// filestore.New already created shared/, but the agent's read-only
+	// subpath mount needs it to exist right now -- re-assert it cheaply in
+	// case it was removed out of band.
+	if err := m.files.EnsureSharedDir(); err != nil {
+		return fmt.Errorf("creating the shared file-store directory (dir %q, volume %q): %w",
+			m.cfg.FilestoreDir, m.cfg.FilestoreVolume, err)
+	}
 	return nil
 }
 
@@ -642,16 +656,28 @@ func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend) dockerclient.Cont
 		TTY:       true,
 		OpenStdin: true,
 	}
-	// The centralized file store, mounted as a per-agent subpath of the
-	// shared filestore volume (ensureAgentFiles pre-created the subpath).
+	// The centralized file store, as two subpath mounts of the shared
+	// filestore volume (ensureAgentFiles pre-created both subpaths).
 	// Appended AFTER the two volume mounts above.
+	//   - agents/<id>/ -> /workspace/store, read-write, private to this agent.
+	//   - shared/      -> /workspace/shared, READ-ONLY, common to every agent;
+	//                     only the operator writes it (via /api/files).
 	if m.files != nil {
-		spec.Mounts = append(spec.Mounts, dockerclient.Mount{
-			Type:    dockerclient.MountTypeVolume,
-			Source:  m.cfg.FilestoreVolume,
-			Target:  agentStoreMount,
-			Subpath: filestore.AgentSubpath(a.ID),
-		})
+		spec.Mounts = append(spec.Mounts,
+			dockerclient.Mount{
+				Type:    dockerclient.MountTypeVolume,
+				Source:  m.cfg.FilestoreVolume,
+				Target:  agentStoreMount,
+				Subpath: filestore.AgentSubpath(a.ID),
+			},
+			dockerclient.Mount{
+				Type:     dockerclient.MountTypeVolume,
+				Source:   m.cfg.FilestoreVolume,
+				Target:   agentSharedMount,
+				Subpath:  filestore.SharedDir,
+				ReadOnly: true,
+			},
+		)
 	}
 	return spec
 }
@@ -705,10 +731,11 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 		env["DEPENDAPROXY_DINERNET_IP"] = a.DependaproxyDinernetIP.String()
 	}
 
-	// The centralized file store's mount point, only when it is enabled.
-	// entrypoint.sh keys the store-file skill install off this variable.
+	// The centralized file store's mount points, only when it is enabled.
+	// entrypoint.sh keys the store-file skill install off AGENT_STORE_DIR.
 	if m.files != nil {
 		env["AGENT_STORE_DIR"] = agentStoreMount
+		env["AGENT_SHARED_DIR"] = agentSharedMount
 	}
 
 	m.applyBackendEnv(env, rb)

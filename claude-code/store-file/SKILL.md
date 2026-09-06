@@ -1,6 +1,6 @@
 ---
 name: store-file
-description: Use when asked to save/store a file somewhere permanent, persist an artifact, put something in the store, or recover/load a previously stored file — anything that must outlive this agent. /workspace/store ($AGENT_STORE_DIR) is a central file store on a shared Docker volume that survives this agent being deleted, is browsable/downloadable by the human operator through the operator web UI, and is private to this agent. Covers the cp commands to save and recover, what does and does not persist, and when NOT to use it.
+description: Use when asked to save/store a file somewhere permanent, persist an artifact, put something in the store, recover/load a previously stored file, or pick up a shared input the operator left for you — anything that must outlive this agent or is shared across agents. /workspace/store ($AGENT_STORE_DIR) is a private central file store on a shared Docker volume that survives this agent being deleted; /workspace/shared ($AGENT_SHARED_DIR) is a read-only common area the human operator fills. Both are browsable through the operator web UI. Covers the cp commands to save and recover, the shared area, what does and does not persist, and when NOT to use it.
 ---
 
 # Store a file
@@ -10,6 +10,12 @@ per-agent directory (`agents/<your-id>/`) inside the shared
 `docker-operator-filestore` Docker volume, mounted into your container by the
 docker-operator. Per-agent isolation is enforced by Docker — you only ever see
 your own subtree.
+
+`/workspace/shared` (also `$AGENT_SHARED_DIR`) is a **read-only common area** in
+the same volume, mounted into **every** agent. Only the human operator writes to
+it (through the web UI); you can read shared inputs from it but cannot modify it.
+To share a file with other agents, ask the human to put it there (or to move it
+from your `/workspace/store`).
 
 ## What persists, and what does not
 
@@ -38,6 +44,18 @@ cp -a "$AGENT_STORE_DIR/report.md" ./             # bring one back
 cp -a "$AGENT_STORE_DIR/artifacts" ./build/       # bring a directory back
 ```
 
+## Read a shared input (from the common area)
+
+`/workspace/shared` (`$AGENT_SHARED_DIR`) is **read-only** — the human operator
+puts files there for every agent to use.
+
+```sh
+ls -la "$AGENT_SHARED_DIR"                        # what the operator shared
+cp -a "$AGENT_SHARED_DIR/dataset.csv" ./          # copy it into your workspace
+# Writing straight into it fails (read-only mount). To share something of your
+# own, put it in $AGENT_STORE_DIR and ask the human to move it to shared/.
+```
+
 ## When the store is not available
 
 The operator can run with the file store **disabled**, in which case
@@ -51,10 +69,14 @@ else
 fi
 ```
 
+(`$AGENT_SHARED_DIR` is unset in the same situation — the whole file store is
+off.)
+
 ## When NOT to use it
 
 - **Not a scratch directory.** Use `/workspace` for working files; only copy
   the finished artifact into the store.
-- **Not for secrets.** The human can browse and download everything here.
+- **Not for secrets.** The human can browse and download everything here, and
+  `/workspace/shared` is visible to every other agent.
 - Not a substitute for `git` — push code through git-proxy as usual; the store
   is for artifacts that do not belong in a repo.

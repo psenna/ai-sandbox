@@ -30,8 +30,12 @@ func TestFilestore_DisabledByDefault(t *testing.T) {
 	if total != 2 || storeMounts != 0 {
 		t.Errorf("mounts = %d (store %d), want exactly 2 and none targeting %q", total, storeMounts, agentStoreMount)
 	}
-	if _, ok := m.agentEnv(a, resolvedBackend{kind: "ollama"})["AGENT_STORE_DIR"]; ok {
+	env := m.agentEnv(a, resolvedBackend{kind: "ollama"})
+	if _, ok := env["AGENT_STORE_DIR"]; ok {
 		t.Error("AGENT_STORE_DIR set with the file store disabled")
+	}
+	if _, ok := env["AGENT_SHARED_DIR"]; ok {
+		t.Error("AGENT_SHARED_DIR set with the file store disabled")
 	}
 	if err := m.PurgeAgentFiles(context.Background(), "agt_disabled"); err != nil {
 		t.Errorf("PurgeAgentFiles (disabled) = %v, want nil", err)
@@ -45,16 +49,26 @@ func TestFilestore_EnabledSpecAndEnv(t *testing.T) {
 
 	spec := m.agentSpec(a, resolvedBackend{kind: "ollama"})
 	total, storeMounts := storeMountCount(spec)
-	if total != 3 || storeMounts != 1 {
-		t.Fatalf("mounts = %d (store %d), want 3 with one file-store mount", total, storeMounts)
+	if total != 4 || storeMounts != 1 {
+		t.Fatalf("mounts = %d (store %d), want 4 (workspace, config, store, shared)", total, storeMounts)
 	}
-	last := spec.Mounts[2]
-	if last.Type != dockerclient.MountTypeVolume || last.Source != cfg.FilestoreVolume ||
-		last.Target != "/workspace/store" || last.Subpath != "agents/agt_enabled" {
-		t.Errorf("file-store mount = %+v", last)
+	priv := spec.Mounts[2]
+	if priv.Type != dockerclient.MountTypeVolume || priv.Source != cfg.FilestoreVolume ||
+		priv.Target != "/workspace/store" || priv.Subpath != "agents/agt_enabled" || priv.ReadOnly {
+		t.Errorf("private store mount = %+v, want rw agents/agt_enabled -> /workspace/store", priv)
 	}
-	if got := m.agentEnv(a, resolvedBackend{kind: "ollama"})["AGENT_STORE_DIR"]; got != "/workspace/store" {
+	shared := spec.Mounts[3]
+	if shared.Type != dockerclient.MountTypeVolume || shared.Source != cfg.FilestoreVolume ||
+		shared.Target != "/workspace/shared" || shared.Subpath != "shared" || !shared.ReadOnly {
+		t.Errorf("shared mount = %+v, want read-only shared -> /workspace/shared", shared)
+	}
+
+	env := m.agentEnv(a, resolvedBackend{kind: "ollama"})
+	if got := env["AGENT_STORE_DIR"]; got != "/workspace/store" {
 		t.Errorf("AGENT_STORE_DIR = %q, want /workspace/store", got)
+	}
+	if got := env["AGENT_SHARED_DIR"]; got != "/workspace/shared" {
+		t.Errorf("AGENT_SHARED_DIR = %q, want /workspace/shared", got)
 	}
 }
 

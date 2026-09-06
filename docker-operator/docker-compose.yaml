@@ -179,7 +179,7 @@ services:
       # resolves each agent's subpath mount against) are TWO NAMES FOR THE
       # SAME STORAGE -- the `- filestore:...` volume mount below pairs them.
       # Set FILESTORE_DIR to "" to disable the feature (no file API, no
-      # /workspace/store mount).
+      # /workspace/store or /workspace/shared mount).
       FILESTORE_DIR: "/var/lib/docker-operator/filestore"
       FILESTORE_VOLUME: "docker-operator-filestore"
     volumes:

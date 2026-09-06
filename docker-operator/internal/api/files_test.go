@@ -290,9 +290,35 @@ func TestFiles_Delete(t *testing.T) {
 		t.Errorf("delete already-gone status = %d, want 200", rec.Code)
 	}
 	// Structural paths -> 400.
-	for _, p := range []string{"", "agents"} {
+	for _, p := range []string{"", "agents", "shared"} {
 		if rec := doJSON(t, h, "DELETE", "/api/files?path="+p, nil); rec.Code != http.StatusBadRequest {
 			t.Errorf("delete path=%q status = %d, want 400", p, rec.Code)
 		}
+	}
+}
+
+// TestFiles_SharedWritableByOperator: the shared/ common area (read-only for
+// agents) is written through the same endpoints -- that is how the operator
+// fills it from the web UI.
+func TestFiles_SharedWritableByOperator(t *testing.T) {
+	fs := newFilestore(t)
+	h := newTestHandlerFiles(newFakeManager(5), dockerclienttest.New(), fs, 1<<20)
+
+	if rec := doJSON(t, h, "POST", "/api/files/mkdir", mkdirRequest{Path: "shared/datasets"}); rec.Code != http.StatusOK {
+		t.Fatalf("mkdir shared/datasets status = %d; body %s", rec.Code, rec.Body)
+	}
+	ct, body := uploadBody(t, map[string]string{"a.csv": "col\n1\n"})
+	r := httptest.NewRequest("POST", "/api/files/upload?path=shared/datasets", body)
+	r.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload into shared status = %d; body %s", rec.Code, rec.Body)
+	}
+	if b, err := os.ReadFile(filepath.Join(fs.Root(), "shared", "datasets", "a.csv")); err != nil || string(b) != "col\n1\n" {
+		t.Errorf("shared/datasets/a.csv = %q / %v, want the uploaded bytes", b, err)
+	}
+	if rec := doJSON(t, h, "GET", "/api/files/download?path=shared/datasets/a.csv", nil); rec.Code != http.StatusOK || rec.Body.String() != "col\n1\n" {
+		t.Errorf("download from shared: status %d body %q", rec.Code, rec.Body.String())
 	}
 }

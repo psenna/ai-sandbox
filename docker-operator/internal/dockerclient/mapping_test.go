@@ -100,10 +100,11 @@ func TestToMounts(t *testing.T) {
 		{Type: MountTypeBind, Source: "/host", Target: "/container"},
 		{Type: MountTypeVolume, Source: "fs", Target: "/workspace/store", Subpath: "agents/agt_1"},
 		{Type: MountTypeVolume, Source: "fs", Target: "/whole", Subpath: ""},
+		{Type: MountTypeVolume, Source: "fs", Target: "/workspace/shared", Subpath: "shared", ReadOnly: true},
 	}
 	got := toMounts(in)
-	if len(got) != 4 {
-		t.Fatalf("len(toMounts) = %d, want 4", len(got))
+	if len(got) != 5 {
+		t.Fatalf("len(toMounts) = %d, want 5", len(got))
 	}
 	if string(got[0].Type) != "volume" || got[0].Source != "vol1" || got[0].Target != "/data" || !got[0].ReadOnly {
 		t.Errorf("toMounts[0] = %#v", got[0])
@@ -126,6 +127,11 @@ func TestToMounts(t *testing.T) {
 	// An empty Subpath leaves VolumeOptions nil.
 	if got[3].VolumeOptions != nil {
 		t.Errorf("toMounts[3].VolumeOptions = %#v, want nil for an empty Subpath", got[3].VolumeOptions)
+	}
+	// A read-only subpath mount (the shared/ common area) carries both the
+	// Subpath and ReadOnly.
+	if !got[4].ReadOnly || got[4].VolumeOptions == nil || got[4].VolumeOptions.Subpath != "shared" {
+		t.Errorf("toMounts[4] = %#v, want ReadOnly with Subpath=shared", got[4])
 	}
 }
 
