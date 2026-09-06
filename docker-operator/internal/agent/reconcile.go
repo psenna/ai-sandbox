@@ -57,6 +57,12 @@ type Report struct {
 // a per-agent teardown failure: one stuck agent must not prevent the others
 // from being cleaned up. Whatever it could not remove is still labelled, so the
 // next pass finds it again.
+//
+// The centralized file store is out of scope here: its volume carries no
+// managed label, so findUnmanaged (which filters server-side by that label)
+// never sees it, and an orphan agents/<id>/ directory left behind for a gone
+// record is left alone by design -- the operator removes it via the web UI
+// (or DELETE /api/agents/{id}?purge_files=true before the record is gone).
 func (m *Manager) Reconcile(ctx context.Context) (Report, error) {
 	agents, err := m.store.List(ctx)
 	if err != nil {

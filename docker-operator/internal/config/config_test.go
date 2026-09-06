@@ -57,28 +57,31 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 	}
 
 	want := Config{
-		MaxAgents:              5,
-		ListenAddr:             ":8080",
-		StateDBPath:            "/var/lib/docker-operator/state.db",
-		AgentImage:             "ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev",
-		ProxynetName:           "docker-operator-proxynet",
-		DbnetName:              "docker-operator-dbnet",
-		GithubRepo:             "psenna/ai-sandbox.git",
-		AgentToken:             Secret("agent-token-1"),
-		APIToken:               Secret(""),
-		GitProxyURL:            "http://git-proxy:8080",
-		GitProxyBrokerURL:      "http://git-proxy:8090",
-		DependaproxyURL:        "http://dependaproxy:8080/npm",
-		DependaproxyPyPIURL:    "http://dependaproxy:8080/pypi",
-		DependaproxyGoproxyURL: "http://dependaproxy:8080/goproxy",
-		DockerRuntime:          "sysbox-runc",
-		DefaultBackend:         "ollama",
-		OllamaURL:              "http://ollama:11434",
-		AnthropicAuthToken:     Secret("ollama"),
-		AnthropicAPIKey:        Secret(""),
-		AgentModel:             "glm-5.3:cloud",
-		AgentFastModel:         "glm-5.3-flash:cloud",
-		DependaproxyContainer:  "docker-operator-dependaproxy",
+		MaxAgents:               5,
+		ListenAddr:              ":8080",
+		StateDBPath:             "/var/lib/docker-operator/state.db",
+		AgentImage:              "ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev",
+		ProxynetName:            "docker-operator-proxynet",
+		DbnetName:               "docker-operator-dbnet",
+		GithubRepo:              "psenna/ai-sandbox.git",
+		AgentToken:              Secret("agent-token-1"),
+		APIToken:                Secret(""),
+		GitProxyURL:             "http://git-proxy:8080",
+		GitProxyBrokerURL:       "http://git-proxy:8090",
+		DependaproxyURL:         "http://dependaproxy:8080/npm",
+		DependaproxyPyPIURL:     "http://dependaproxy:8080/pypi",
+		DependaproxyGoproxyURL:  "http://dependaproxy:8080/goproxy",
+		DockerRuntime:           "sysbox-runc",
+		DefaultBackend:          "ollama",
+		OllamaURL:               "http://ollama:11434",
+		AnthropicAuthToken:      Secret("ollama"),
+		AnthropicAPIKey:         Secret(""),
+		AgentModel:              "glm-5.3:cloud",
+		AgentFastModel:          "glm-5.3-flash:cloud",
+		DependaproxyContainer:   "docker-operator-dependaproxy",
+		FilestoreDir:            "/var/lib/docker-operator/filestore",
+		FilestoreVolume:         "docker-operator-filestore",
+		FilestoreMaxUploadBytes: 104857600,
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -144,6 +147,12 @@ var fieldCases = []struct {
 		func(c Config) string { return c.AgentFastModel }},
 	{"DependaproxyContainer", "DEPENDAPROXY_CONTAINER", "dependaproxy-container", "env-dependaproxy", "flag-dependaproxy",
 		func(c Config) string { return c.DependaproxyContainer }},
+	{"FilestoreDir", "FILESTORE_DIR", "filestore-dir", "/env/filestore", "/flag/filestore",
+		func(c Config) string { return c.FilestoreDir }},
+	{"FilestoreVolume", "FILESTORE_VOLUME", "filestore-volume", "env-filestore-vol", "flag-filestore-vol",
+		func(c Config) string { return c.FilestoreVolume }},
+	{"FilestoreMaxUploadBytes", "FILESTORE_MAX_UPLOAD_BYTES", "filestore-max-upload-bytes", "1048576", "2097152",
+		func(c Config) string { return strconv.FormatInt(c.FilestoreMaxUploadBytes, 10) }},
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -211,6 +220,71 @@ func TestLoad_MaxAgentsEnvParsing(t *testing.T) {
 			}
 			if c.MaxAgents != tc.want {
 				t.Errorf("MaxAgents = %d, want %d", c.MaxAgents, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_FilestoreMaxUploadEnvParsing(t *testing.T) {
+	if _, err := Load(nil, envWith(map[string]string{"FILESTORE_MAX_UPLOAD_BYTES": "abc"})); err == nil {
+		t.Fatal("Load with FILESTORE_MAX_UPLOAD_BYTES=abc: expected error, got nil")
+	} else if !strings.Contains(err.Error(), "FILESTORE_MAX_UPLOAD_BYTES") {
+		t.Errorf("Load error = %v, want it to name FILESTORE_MAX_UPLOAD_BYTES", err)
+	}
+}
+
+func TestFilestoreEnabled(t *testing.T) {
+	enabled, err := Load(nil, envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !enabled.FilestoreEnabled() {
+		t.Errorf("FilestoreEnabled() = false with the default FILESTORE_DIR, want true")
+	}
+	disabled, err := Load([]string{"--filestore-dir="}, envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if disabled.FilestoreEnabled() {
+		t.Errorf("FilestoreEnabled() = true with an empty FILESTORE_DIR, want false")
+	}
+}
+
+func TestValidate_Filestore(t *testing.T) {
+	// Rejected when enabled.
+	bad := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"relative dir", []string{"--filestore-dir=relative/store"}, "filestore-dir"},
+		{"invalid volume name", []string{"--filestore-volume=-bad"}, "filestore-volume"},
+		{"max upload zero", []string{"--filestore-max-upload-bytes=0"}, "filestore-max-upload-bytes"},
+		{"max upload negative", []string{"--filestore-max-upload-bytes=-1"}, "filestore-max-upload-bytes"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(tc.args, envFrom(requiredEnv()))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want an error mentioning %q", err, tc.want)
+			}
+		})
+	}
+
+	// All of the above pass once the file store is disabled (FilestoreDir "").
+	// The trailing --filestore-dir= wins over any --filestore-dir in tc.args.
+	for _, tc := range bad {
+		t.Run(tc.name+" ignored when disabled", func(t *testing.T) {
+			args := append(append([]string{}, tc.args...), "--filestore-dir=")
+			c, err := Load(args, envFrom(requiredEnv()))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := c.Validate(); err != nil {
+				t.Errorf("Validate() with the file store disabled = %v, want nil", err)
 			}
 		})
 	}

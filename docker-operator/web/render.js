@@ -137,6 +137,104 @@
 		return '<span class="anthropic-panel__status anthropic-panel__status--set">' + escapeHTML(kind) + escapeHTML(whenText) + '</span>';
 	}
 
+	// formatBytes renders a byte count as a short human string. A negative or
+	// non-finite input renders as an em dash.
+	function formatBytes(n) {
+		if (typeof n !== 'number' || !isFinite(n) || n < 0) return '—';
+		if (n < 1024) return n + ' B';
+		var units = ['KiB', 'MiB', 'GiB', 'TiB'];
+		var v = n;
+		for (var i = 0; i < units.length; i++) {
+			v = v / 1024;
+			if (v < 1024 || i === units.length - 1) return v.toFixed(1) + ' ' + units[i];
+		}
+		return v.toFixed(1) + ' TiB';
+	}
+
+	// formatModTime renders an ISO timestamp as "YYYY-MM-DD HH:MM". An
+	// unparseable value renders as an em dash.
+	function formatModTime(iso) {
+		var d = new Date(iso);
+		if (isNaN(d.getTime())) return '—';
+		return d.toISOString().slice(0, 16).replace('T', ' ');
+	}
+
+	// renderBreadcrumb renders the file browser's path breadcrumb. The root
+	// crumb (data-path="") is labelled "Files"; each accumulated segment is a
+	// button, except the last, which is the current, non-button crumb.
+	function renderBreadcrumb(path) {
+		var parts = String(path || '').split('/').filter(function (p) { return p !== ''; });
+		var html = '<nav class="file-browser__breadcrumb">';
+		if (parts.length === 0) {
+			html += '<span class="crumb crumb--current">Files</span>';
+			return html + '</nav>';
+		}
+		html += '<button class="crumb" data-path="">Files</button>';
+		var acc = '';
+		for (var i = 0; i < parts.length; i++) {
+			acc = acc ? acc + '/' + parts[i] : parts[i];
+			if (i === parts.length - 1) {
+				html += '<span class="crumb crumb--current">' + escapeHTML(parts[i]) + '</span>';
+			} else {
+				html += '<button class="crumb" data-path="' + escapeHTML(acc) + '">' + escapeHTML(parts[i]) + '</button>';
+			}
+		}
+		return html + '</nav>';
+	}
+
+	// renderFileTable renders the entries of one directory (GET /api/files'
+	// `entries`). Directories open on click; files get download + delete
+	// actions. An empty list renders a one-line empty state.
+	function renderFileTable(entries) {
+		if (!entries || entries.length === 0) {
+			return '<p class="file-table__empty">This folder is empty.</p>';
+		}
+		var rows = entries.map(function (e) {
+			var p = escapeHTML(e.path);
+			var name = escapeHTML(e.name);
+			var nameCell = e.is_dir
+				? '<button class="file-table__open" data-path="' + p + '">' + name + '</button>'
+				: name;
+			var sizeCell = e.is_dir ? '—' : escapeHTML(formatBytes(e.size));
+			var actions = (e.is_dir ? '' : '<button class="file-table__download" data-path="' + p + '">Download</button>') +
+				'<button class="file-table__delete" data-path="' + p + '">Delete</button>';
+			return (
+				'<tr class="file-table__row" data-path="' + p + '" data-is-dir="' + (e.is_dir ? 'true' : 'false') + '">' +
+					'<td class="file-table__name">' + nameCell + '</td>' +
+					'<td class="file-table__size">' + sizeCell + '</td>' +
+					'<td class="file-table__modified">' + escapeHTML(formatModTime(e.mod_time)) + '</td>' +
+					'<td class="file-table__actions">' + actions + '</td>' +
+				'</tr>'
+			);
+		}).join('');
+		return (
+			'<table class="file-table">' +
+				'<thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>' +
+				'<tbody>' + rows + '</tbody>' +
+			'</table>'
+		);
+	}
+
+	// renderFileBrowser renders the whole browser: breadcrumb, a toolbar (new
+	// folder + upload, with a hidden multi-file input), and a dropzone
+	// wrapping the file table, plus a hidden error line.
+	function renderFileBrowser(path, entries) {
+		return (
+			'<div class="file-browser">' +
+				renderBreadcrumb(path) +
+				'<div class="file-browser__toolbar">' +
+					'<button class="file-browser__new-folder" type="button">New folder</button>' +
+					'<button class="file-browser__upload" type="button">Upload</button>' +
+					'<input type="file" class="file-browser__file-input" multiple hidden>' +
+				'</div>' +
+				'<div class="file-browser__dropzone">' +
+					renderFileTable(entries) +
+				'</div>' +
+				'<p class="file-browser__error" role="alert" hidden></p>' +
+			'</div>'
+		);
+	}
+
 	var Render = {
 		escapeHTML: escapeHTML,
 		statusLabel: statusLabel,
@@ -146,6 +244,11 @@
 		renderCapacity: renderCapacity,
 		renderCreateForm: renderCreateForm,
 		renderAnthropicStatus: renderAnthropicStatus,
+		formatBytes: formatBytes,
+		formatModTime: formatModTime,
+		renderBreadcrumb: renderBreadcrumb,
+		renderFileTable: renderFileTable,
+		renderFileBrowser: renderFileBrowser,
 	};
 
 	if (typeof module !== 'undefined' && module.exports) {

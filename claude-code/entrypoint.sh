@@ -89,6 +89,16 @@ fi
 mkdir -p /workspace/.claude/skills/implement-issue
 cp /opt/skills/implement-issue/SKILL.md /workspace/.claude/skills/implement-issue/SKILL.md
 
+# store-file: the docker-operator's centralized file store, mounted at
+# $AGENT_STORE_DIR (/workspace/store). Double-guarded: the variable is only
+# set by the docker-operator when the store is enabled, and the skill is only
+# baked into the docker-operator agent image -- the root image has neither, so
+# this is a no-op there.
+if [ -n "${AGENT_STORE_DIR:-}" ] && [ -f /opt/skills/store-file/SKILL.md ]; then
+  mkdir -p /workspace/.claude/skills/store-file
+  cp /opt/skills/store-file/SKILL.md /workspace/.claude/skills/store-file/SKILL.md
+fi
+
 # Route ALL npm/pip/go through DependaProxy: write the config files from env.
 # The use-docker skill tells the agent to pass these into DinD workload
 # containers. DependaProxy auth is DISABLED in this stack (see dependaproxy.yaml:

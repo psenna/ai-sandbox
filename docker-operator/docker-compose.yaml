@@ -173,10 +173,20 @@ services:
       OLLAMA_URL: "http://ollama:11434"
       AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.3:cloud}"
       AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-glm-5.3-flash:cloud}"
+
+      # Centralized per-agent file store. FILESTORE_DIR (the path the operator
+      # sees it at) and FILESTORE_VOLUME (the Docker volume name the daemon
+      # resolves each agent's subpath mount against) are TWO NAMES FOR THE
+      # SAME STORAGE -- the `- filestore:...` volume mount below pairs them.
+      # Set FILESTORE_DIR to "" to disable the feature (no file API, no
+      # /workspace/store or /workspace/shared mount).
+      FILESTORE_DIR: "/var/lib/docker-operator/filestore"
+      FILESTORE_VOLUME: "docker-operator-filestore"
     volumes:
       # The trusted control-plane credential -- see the header comment.
       - /var/run/docker.sock:/var/run/docker.sock
       - operator-state:/var/lib/docker-operator
+      - filestore:/var/lib/docker-operator/filestore
     networks:
       # operatornet ONLY -- deliberately no proxynet. See the header comment:
       # the operator talks to agents through the Docker socket, not the
@@ -207,3 +217,11 @@ networks:
 volumes:
   pgdata: {}
   operator-state: {}
+  # The centralized per-agent file store. Explicit `name:` so it lands under
+  # exactly the name FILESTORE_VOLUME expects (compose would otherwise prefix
+  # it with this directory's name) and so every agent's per-agent subpath
+  # mount resolves. Deliberately NOT labelled ai-sandbox.docker-operator/
+  # managed: like the shared singleton networks, this is shared infra no
+  # single agent record owns. `docker compose down -v` DOES delete it.
+  filestore:
+    name: docker-operator-filestore

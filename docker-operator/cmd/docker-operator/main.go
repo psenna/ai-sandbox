@@ -21,6 +21,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/authmw"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/webui"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/wsbridge"
@@ -121,6 +122,22 @@ func run(log *slog.Logger) error {
 	stopLoginJanitor := startAnthropicLoginJanitor(mgr, log)
 	defer stopLoginJanitor()
 
+	// The centralized per-agent file store. Empty FILESTORE_DIR disables it
+	// entirely (no /api/files* routes, no /workspace/store mount); an open
+	// failure is a warning, not fatal -- agents still run, just without it.
+	var files *filestore.Store
+	if cfg.FilestoreDir == "" {
+		log.Info("centralized file store disabled (FILESTORE_DIR is empty)")
+	} else if files, err = filestore.New(cfg.FilestoreDir); err != nil {
+		log.Warn("could not open the centralized file store; continuing without it",
+			"filestore_dir", cfg.FilestoreDir, "error", err)
+		files = nil
+	} else {
+		log.Info("centralized file store enabled",
+			"dir", cfg.FilestoreDir, "volume", cfg.FilestoreVolume, "max_upload_bytes", cfg.FilestoreMaxUploadBytes)
+		defer func() { _ = files.Close() }()
+	}
+
 	webHandler, err := webui.Handler()
 	if err != nil {
 		return fmt.Errorf("building the web UI handler: %w", err)
@@ -140,7 +157,7 @@ func run(log *slog.Logger) error {
 	mux := http.NewServeMux()
 	// /healthz stays open: it carries no data and is the liveness probe.
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.Handle("/api/", protect(api.NewHandler(mgr, docker, log)))
+	mux.Handle("/api/", protect(api.NewHandler(mgr, docker, files, cfg.FilestoreMaxUploadBytes, log)))
 	mux.Handle("GET /ws/agents/{id}/terminal", protect(wsbridge.NewTerminalHandler(mgr, docker, log)))
 	mux.Handle("GET /ws/anthropic/login/terminal", protect(wsbridge.NewContainerTerminalHandler(
 		docker, agent.AnthropicLoginContainerName,

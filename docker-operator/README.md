@@ -63,6 +63,7 @@ A single Go binary (`docker-operator`) that:
        │  shared singletons (created once, reused by every agent)  │
        │  ollama · git-proxy · postgres · dependaproxy               │
        │  networks: proxynet, dbnet   (operator NOT on either)      │
+       │  volume: docker-operator-filestore (per-agent subpaths)    │
        └─────────────────────────────────────────────────────────┘
                                     │
                                     │ per agent, on demand
@@ -74,6 +75,9 @@ A single Go binary (`docker-operator`) that:
        │                          AND this dinernet)                 │
        │  dind-<id>             (docker:27-dind, sysbox-runc)        │
        │  volumes: <id>-workspace, <id>-claude-config, <id>-dind-cache│
+       │  /workspace/store  ── agents/<id>/ subpath (RW) of the shared │
+       │  /workspace/shared ── shared/ subpath (RO) of the same       │
+       │                       docker-operator-filestore volume       │
        │  dependaproxy is connected into this dinernet at create      │
        │  time, so DinD workload containers can reach it too          │
        └─────────────────────────────────────────────────────────┘
@@ -119,9 +123,11 @@ snapshot-based freeze/wake.
 | Proxy network | `docker-operator-proxynet` | shared singleton (agents + shared services; **not** the operator) |
 | DB network | `docker-operator-dbnet` | shared singleton |
 | Operator network | `docker-operator-operatornet` | singleton, operator only — no agent joins it |
+| File-store volume | `docker-operator-filestore` | shared singleton; per-agent `agents/<id>/` (RW) + `shared/` (RO in every agent) subpaths, **unlabelled** |
 
-Every resource above (except the shared singleton networks and the
-operator's own network, which no single agent owns) carries three labels —
+Every resource above (except the shared singleton networks, the operator's own
+network, and the shared file-store volume, none of which a single agent owns)
+carries three labels —
 `ai-sandbox.docker-operator/{managed,agent-id,role}` — the mechanism
 `internal/agent.Reconcile` uses to tell an operator-owned resource from
 anything else on the same Docker host.
@@ -134,7 +140,12 @@ anything else on the same Docker host.
 | `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model` are for `ollama` only (`400` with `anthropic`). `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
 | `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `repo`). |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
-| `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. |
+| `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
+| `GET` | `/api/files?path=` | List a file-store directory (`path=""` is the root). `501 filestore_disabled` when unconfigured. |
+| `DELETE` | `/api/files?path=` | Delete a file or directory tree. Already-gone is `200`. `""`, `"agents"` and `"shared"` are `400`. `501` when unconfigured. |
+| `GET` | `/api/files/download?path=` | Download one file (`application/octet-stream`). A directory is `400`. `501` when unconfigured. |
+| `POST` | `/api/files/upload?path=<dir>` | Upload one or more files (`multipart/form-data`, each part named `file`). Over `FILESTORE_MAX_UPLOAD_BYTES` is `413`. `501` when unconfigured. |
+| `POST` | `/api/files/mkdir` | Create a directory. Body `{"path":"…"}`. `501` when unconfigured. |
 | `GET` | `/api/agents/{id}/output?tail=N` | The agent's captured pane output (raw text, not JSON-wrapped). Unused by the UI today; exists for future automation. |
 | `GET` | `/ws/agents/{id}/terminal` | WebSocket terminal bridge — binary frames are raw PTY bytes each way, a JSON text frame is `{"type":"resize","cols":N,"rows":N}`. |
 | `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
@@ -218,6 +229,62 @@ The credential lives in the operator's BoltDB state file (0600, same volume
 and trust boundary as every agent record); no API response ever returns its
 value. `bash ../scripts/check-no-secrets.sh` still passes — nothing lands in
 a tracked file.
+
+## Centralized file store
+
+Every agent gets a private directory it can use to **persist files past its own
+deletion** — mounted at `/workspace/store` (and handed to the agent as
+`$AGENT_STORE_DIR`) — plus a **read-only common area** at `/workspace/shared`
+(`$AGENT_SHARED_DIR`) that every agent sees and only the operator writes. The
+rest of `/workspace` is destroyed when the agent is deleted; neither of these
+is.
+
+**Topology.** One shared Docker volume, `docker-operator-filestore`, holds an
+`agents/<id>/` subtree per agent plus a single `shared/` tree. The operator
+pre-creates those before the agent is created, then mounts them into the agent
+container as volume **subpaths**:
+
+```
+docker-operator-filestore   (one shared volume)
+├── agents/
+│   ├── agt_7f3a9c2d/   ─── mounted RW at /workspace/store in agent agt_7f3a9c2d
+│   └── agt_1b2c3d4e/   ─── mounted RW at /workspace/store in agent agt_1b2c3d4e
+└── shared/             ─── mounted READ-ONLY at /workspace/shared in EVERY agent
+```
+
+Docker enforces the isolation: an agent sees only its own `agents/<id>/`
+subtree (never the volume root or another agent's) and a read-only view of
+`shared/`. Agents never touch the operator API — the file API below is the
+operator's, behind the same `OPERATOR_API_TOKEN`, and it is also how the
+operator writes `shared/` (`POST /api/files/upload?path=shared`, etc.).
+
+**`FILESTORE_DIR` and `FILESTORE_VOLUME` are two names for the same storage.**
+`FILESTORE_DIR` is the path the *operator* sees the volume at (where it
+pre-creates `agents/<id>/`); `FILESTORE_VOLUME` is the volume *name* the daemon
+resolves each agent's subpath mount against. `docker-compose.yaml` pairs them
+with a single `- filestore:/var/lib/docker-operator/filestore` mount. A
+mismatch surfaces at agent-create time as `container create: subpath not
+found`.
+
+**Persistence contract.** An agent's files survive `DELETE /api/agents/{id}`,
+create-failure rollback, and the startup reconcile pass. They are removed only
+by `DELETE /api/agents/{id}?purge_files=true` or the web UI's file browser
+(sidebar **Files**). An orphan `agents/<id>/` left by a lost record is left
+alone — clean it up from the web UI.
+
+**Requires Docker Engine >= 26.0 (API v1.45).** Volume-subpath mounts landed
+there; an older daemon **silently ignores the subpath** and mounts the whole
+volume, so every agent would see every other agent's files. Check `docker
+version` before relying on this.
+
+A single upload is capped at 100 MiB (`FILESTORE_MAX_UPLOAD_BYTES`). Set
+`FILESTORE_DIR=""` to disable the whole feature: no `/api/files*` routes (they
+answer `501 filestore_disabled`), no `/workspace/store` or `/workspace/shared`
+mount, no `AGENT_STORE_DIR` / `AGENT_SHARED_DIR`. `docker compose down -v`
+**does** delete the volume.
+
+Agents working with the store get the `store-file` skill (baked into the
+docker-operator agent image only) describing the `cp` recipes both ways.
 
 ## Quickstart
 

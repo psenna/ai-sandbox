@@ -119,9 +119,9 @@ agent-image:
 agent-image-smoke:
 	@echo "--- tmux is installed ---"
 	docker run --rm --entrypoint tmux $(AGENT_IMAGE) -V
-	@echo "--- /opt/skills holds exactly the 4 expected skills ---"
+	@echo "--- /opt/skills holds exactly the 5 expected skills ---"
 	@actual=$$(docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'ls -1 /opt/skills' | sort); \
-	expected=$$(printf 'implement-issue\nuse-dependaproxy\nuse-docker\nuse-git-proxy'); \
+	expected=$$(printf 'implement-issue\nstore-file\nuse-dependaproxy\nuse-docker\nuse-git-proxy'); \
 	if [ "$$actual" != "$$expected" ]; then \
 		echo "FAIL: /opt/skills mismatch"; \
 		printf 'want:\n%s\ngot:\n%s\n' "$$expected" "$$actual"; \
@@ -154,7 +154,7 @@ dind-init-check:
 # IN_CONTAINER=1 (CI) runs node directly, since ubuntu-latest already ships
 # one; NODE_RUN wraps it locally.
 web-test:
-	$(NODE_RUN) node --test web/render.test.js web/terminal.test.js web/auth.test.js
+	$(NODE_RUN) node --test web/render.test.js web/terminal.test.js web/auth.test.js web/files.test.js
 
 # web/ is the single source of truth for the frontend; internal/webui embeds
 # a COMMITTED COPY at internal/webui/web because go:embed cannot reach

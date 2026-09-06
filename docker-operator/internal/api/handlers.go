@@ -14,6 +14,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/wsbridge"
 )
@@ -31,6 +32,12 @@ import (
 type AgentManager interface {
 	Create(ctx context.Context, req agent.CreateRequest) (store.Agent, error)
 	Delete(ctx context.Context, id string) error
+
+	// PurgeAgentFiles removes the agent's directory in the centralized file
+	// store. A no-op when the store is disabled; idempotent. Called by
+	// handleDelete only when ?purge_files=true.
+	PurgeAgentFiles(ctx context.Context, id string) error
+
 	Get(ctx context.Context, id string) (store.Agent, error)
 	List(ctx context.Context) ([]store.Agent, error)
 	MaxAgents() int
@@ -72,18 +79,25 @@ type Handler struct {
 	mgr    AgentManager
 	docker dockerclient.ExecClient
 	log    *slog.Logger
+	// files is the centralized file store, or nil when it is disabled -- in
+	// which case every /api/files* route answers 501 filestore_disabled.
+	files *filestore.Store
+	// maxUpload caps a single uploaded file (POST /api/files/upload).
+	maxUpload int64
 }
 
 // NewHandler builds the docker-operator's HTTP handler. mgr is the agent
 // lifecycle (create/delete/list/rename); docker is used only for the output
 // endpoint's exec into a running agent container -- the narrowest interface
-// that works, matching internal/wsbridge.ReadOutput's own signature. A nil
-// log falls back to slog.Default.
-func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logger) http.Handler {
+// that works, matching internal/wsbridge.ReadOutput's own signature. files is
+// the centralized file store (nil disables the /api/files* routes, which then
+// answer 501); maxUpload is the per-file upload cap. A nil log falls back to
+// slog.Default.
+func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filestore.Store, maxUpload int64, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	h := &Handler{mgr: mgr, docker: docker, log: log}
+	h := &Handler{mgr: mgr, docker: docker, log: log, files: files, maxUpload: maxUpload}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/agents", h.handleList)
@@ -92,6 +106,12 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 	mux.HandleFunc("PATCH /api/agents/{id}", h.handleRename)
 	mux.HandleFunc("DELETE /api/agents/{id}", h.handleDelete)
 	mux.HandleFunc("GET /api/agents/{id}/output", h.handleOutput)
+
+	mux.HandleFunc("GET /api/files", h.handleFilesList)
+	mux.HandleFunc("DELETE /api/files", h.handleFilesDelete)
+	mux.HandleFunc("GET /api/files/download", h.handleFilesDownload)
+	mux.HandleFunc("POST /api/files/upload", h.handleFilesUpload)
+	mux.HandleFunc("POST /api/files/mkdir", h.handleFilesMkdir)
 
 	mux.HandleFunc("GET /api/anthropic/auth", h.handleAnthropicAuthGet)
 	mux.HandleFunc("PUT /api/anthropic/auth", h.handleAnthropicAuthPut)
@@ -114,6 +134,10 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, log *slog.Logg
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/login", methodNotAllowed)
+	mux.HandleFunc("/api/files", methodNotAllowed)
+	mux.HandleFunc("/api/files/download", methodNotAllowed)
+	mux.HandleFunc("/api/files/upload", methodNotAllowed)
+	mux.HandleFunc("/api/files/mkdir", methodNotAllowed)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "no such endpoint: "+r.Method+" "+r.URL.Path, "")
@@ -412,11 +436,30 @@ func (h *Handler) handleRename(w http.ResponseWriter, r *http.Request) {
 // state (no such agent) already holds.
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	purge := false
+	if raw := r.URL.Query().Get("purge_files"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, "purge_files must be a boolean, got "+strconv.Quote(raw), "purge_files")
+			return
+		}
+		purge = v
+	}
+
 	if err := h.mgr.Delete(r.Context(), id); err != nil {
 		h.internalError(w, "deleting agent "+id, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "deleted"})
+	// Purge AFTER the agent is torn down, and only when asked: the agent's
+	// files in the centralized store otherwise survive a delete by design.
+	if purge {
+		if err := h.mgr.PurgeAgentFiles(r.Context(), id); err != nil {
+			h.internalError(w, "purging files for agent "+id, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted", "files_purged": purge})
 }
 
 // handleOutput serves GET /api/agents/{id}/output?tail=N as raw bytes
