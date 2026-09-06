@@ -134,6 +134,35 @@ printf 'GOPROXY=%s\n' "$DEPENDAPROXY_GOPROXY_URL" > /workspace/go.env
 # a run: --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)".
 printf '%s\n' "$DEPENDAPROXY_DINERNET_IP" > /workspace/dependaproxy-ip
 
+# --- Claude Code first-run state ---
+# Every agent gets a FRESH, isolated CLAUDE_CONFIG_DIR (a per-agent volume under
+# the docker-operator; a named volume in the compose stack). On a first launch
+# there, `claude` runs its interactive first-run wizard -- theme picker, then
+# "Do you trust the files in this folder?" -- and blocks on it before it will do
+# anything, which for a tmux-driven agent looks like "the agent is stuck / keeps
+# asking me to log in". Seed the wizard as already-done so a new agent comes up
+# ready. Auth is NOT seeded here: it rides in on ANTHROPIC_API_KEY /
+# CLAUDE_CODE_OAUTH_TOKEN, and a missing/invalid one still surfaces normally.
+#
+# Guarded two ways: only when CLAUDE_CONFIG_DIR is set (the sandbox's isolated
+# layout -- where .claude.json lives at $CLAUDE_CONFIG_DIR/.claude.json), and
+# only when that file does not already exist, so a persistent config volume
+# carrying real state is never clobbered.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ ! -e "${CLAUDE_CONFIG_DIR}/.claude.json" ]; then
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  cat > "${CLAUDE_CONFIG_DIR}/.claude.json" <<'EOF'
+{
+  "hasCompletedOnboarding": true,
+  "projects": {
+    "/workspace": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+EOF
+  chmod 600 "${CLAUDE_CONFIG_DIR}/.claude.json"
+fi
+
 # The compose `command` / `docker compose exec` args become $@. With no args the
 # default CMD (`bash`) keeps the container alive for interactive `docker compose
 # exec claude claude`. Pass `claude -p "<prompt>"` for a headless run.

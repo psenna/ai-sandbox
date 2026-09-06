@@ -210,6 +210,10 @@ after). Two kinds:
   helper container is torn down once the token is stored, on an explicit
   cancel, after a 20-minute idle timeout, and at operator startup.
 
+Either value is whitespace-trimmed before it is stored; a paste that still
+contains interior whitespace (a token hard-wrapped by an 80-column terminal,
+say) is rejected rather than silently injected as an unusable bearer.
+
 The credential lives in the operator's BoltDB state file (0600, same volume
 and trust boundary as every agent record); no API response ever returns its
 value. `bash ../scripts/check-no-secrets.sh` still passes — nothing lands in
