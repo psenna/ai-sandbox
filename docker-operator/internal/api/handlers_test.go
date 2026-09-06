@@ -16,6 +16,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -33,6 +34,9 @@ type fakeManager struct {
 
 	createErr error
 	deleteErr error
+
+	purgedIDs []string
+	purgeErr  error
 
 	defaultBackend   string
 	defaultModel     string
@@ -97,6 +101,16 @@ func (f *fakeManager) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.agents, id) // matches agent.Manager.Delete: removing an absent agent is still success
+	return nil
+}
+
+func (f *fakeManager) PurgeAgentFiles(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.purgeErr != nil {
+		return f.purgeErr
+	}
+	f.purgedIDs = append(f.purgedIDs, id)
 	return nil
 }
 
@@ -214,7 +228,11 @@ func (f *fakeManager) Rename(_ context.Context, id string, name, description *st
 // --- test helpers -----------------------------------------------------------
 
 func newTestHandler(mgr AgentManager, docker dockerclient.ExecClient) http.Handler {
-	return NewHandler(mgr, docker, nil)
+	return NewHandler(mgr, docker, nil, 0, nil)
+}
+
+func newTestHandlerFiles(mgr AgentManager, docker dockerclient.ExecClient, fs *filestore.Store, max int64) http.Handler {
+	return NewHandler(mgr, docker, fs, max, nil)
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -530,6 +548,65 @@ func TestDelete_Idempotent(t *testing.T) {
 	if first.Code != http.StatusOK || second.Code != http.StatusOK {
 		t.Fatalf("status = %d, %d, want %d both times", first.Code, second.Code, http.StatusOK)
 	}
+}
+
+func TestDelete_PurgeFiles(t *testing.T) {
+	t.Run("no flag: files are not purged", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.seed(store.Agent{ID: "x"})
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "DELETE", "/api/agents/x", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+		}
+		if len(mgr.purgedIDs) != 0 {
+			t.Errorf("purgedIDs = %v, want empty", mgr.purgedIDs)
+		}
+	})
+
+	t.Run("purge_files=true: PurgeAgentFiles is called", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.seed(store.Agent{ID: "x"})
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "DELETE", "/api/agents/x?purge_files=true", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+		}
+		if len(mgr.purgedIDs) != 1 || mgr.purgedIDs[0] != "x" {
+			t.Errorf("purgedIDs = %v, want [x]", mgr.purgedIDs)
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte(`"files_purged":true`)) {
+			t.Errorf("body = %s, want files_purged:true", rec.Body.String())
+		}
+	})
+
+	t.Run("purge_files=nope: 400 invalid_param", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "DELETE", "/api/agents/x?purge_files=nope", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+		}
+		env := decodeEnvelope(t, rec)
+		if env.Error.Code != CodeInvalidParam || env.Error.Field != "purge_files" {
+			t.Errorf("error = %+v, want invalid_param/purge_files", env.Error)
+		}
+	})
+
+	t.Run("purge error: 500", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.seed(store.Agent{ID: "x"})
+		mgr.purgeErr = errors.New("disk on fire")
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "DELETE", "/api/agents/x?purge_files=1", nil)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+		}
+	})
 }
 
 // --- GET /api/agents/{id}/output ---------------------------------------------

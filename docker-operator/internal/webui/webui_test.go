@@ -30,7 +30,7 @@ func TestHandler_ServesTopLevelAssets(t *testing.T) {
 		t.Fatalf("Handler() error = %v", err)
 	}
 
-	for _, path := range []string{"/style.css", "/auth.js", "/render.js", "/app.js", "/terminal.js"} {
+	for _, path := range []string{"/style.css", "/auth.js", "/render.js", "/app.js", "/terminal.js", "/files.js"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
@@ -63,7 +63,7 @@ func TestHandler_ExcludesTestFiles(t *testing.T) {
 		t.Fatalf("Handler() error = %v", err)
 	}
 
-	for _, path := range []string{"/render.test.js", "/terminal.test.js", "/auth.test.js"} {
+	for _, path := range []string{"/render.test.js", "/terminal.test.js", "/auth.test.js", "/files.test.js"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusNotFound {

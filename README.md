@@ -398,6 +398,7 @@ claude plugin install code-simplifier@claude-plugins-official
 - `claude-code/use-docker/SKILL.md` — rootless DinD skill with mysql/minio/postgres recipes + mandatory npm/pip/go → DependaProxy.
 - `claude-code/use-sandbox/SKILL.md` — ai-sandbox operator sidecar control API (`/v1/wait`, `/v1/done`, `/v1/progress`, `/v1/status`) — only relevant inside an operator-managed SandboxEnvironment pod.
 - `claude-code/implement-issue/SKILL.md` — tiered-model issue pipeline (Opus plans, Sonnet implements, Opus validates & fixes → PR).
+- `claude-code/store-file/SKILL.md` — the docker-operator's centralized `/workspace/store` file store (`cp` recipes, persistence contract); baked into the docker-operator agent image only.
 - `config.yaml` — git-proxy config (github upstream, broker, policy, audit).
 - `credentials.yaml` — GitHub PAT profile (PLACEHOLDERS ONLY — never commit a real PAT).
 - `dependaproxy.yaml` — DependaProxy config (npm/pypi/goproxy registries, token placeholder, postgres DSN).

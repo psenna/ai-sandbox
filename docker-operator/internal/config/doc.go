@@ -22,6 +22,13 @@
 // break the property that one .env file drives both the compose stack and
 // the docker-operator.
 //
+// The centralized file store (issue #122) adds three variables:
+// FILESTORE_DIR (the path the operator sees the shared store at) and
+// FILESTORE_VOLUME (the Docker volume name the daemon resolves each agent's
+// per-agent subpath mount against) are two names for the same storage, and
+// FILESTORE_MAX_UPLOAD_BYTES caps a single upload (default 100 MiB). An empty
+// FILESTORE_DIR disables the whole feature.
+//
 // There is deliberately no DockerHost field. The moby SDK's client.FromEnv
 // resolves DOCKER_HOST together with DOCKER_TLS_VERIFY, DOCKER_CERT_PATH and
 // DOCKER_API_VERSION as one set; re-parsing only DOCKER_HOST here would

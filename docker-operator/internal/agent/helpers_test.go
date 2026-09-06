@@ -89,6 +89,17 @@ func newDependaproxy(t *testing.T, f *dockerclienttest.Fake, name string) {
 	}
 }
 
+// testConfigWithFilestore is testConfig plus an enabled centralized file
+// store rooted at a fresh t.TempDir().
+func testConfigWithFilestore(t *testing.T, maxAgents int) config.Config {
+	t.Helper()
+	cfg := testConfig(maxAgents)
+	cfg.FilestoreDir = t.TempDir()
+	cfg.FilestoreVolume = "test-filestore"
+	cfg.FilestoreMaxUploadBytes = 1 << 20
+	return cfg
+}
+
 // newTestManager wires a Manager against a fresh Fake docker client and a
 // fresh BoltDB store, with the shared dependaproxy container already running
 // and both images pre-seeded as present. Tests that specifically want to
@@ -96,13 +107,20 @@ func newDependaproxy(t *testing.T, f *dockerclienttest.Fake, name string) {
 // instead of using this helper.
 func newTestManager(t *testing.T, maxAgents int) (*Manager, *dockerclienttest.Fake, *store.Store) {
 	t.Helper()
+	return newTestManagerCfg(t, testConfig(maxAgents))
+}
+
+// newTestManagerCfg is newTestManager with the config supplied by the
+// caller, so a test can enable the file store (or any other field) without a
+// second helper per combination.
+func newTestManagerCfg(t *testing.T, cfg config.Config) (*Manager, *dockerclienttest.Fake, *store.Store) {
+	t.Helper()
 	f := dockerclienttest.New()
 	f.AutoHealthy = true
-	cfg := testConfig(maxAgents)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
 	f.AddImage(cfg.AgentImage)
-	st := newTestStore(t, maxAgents)
+	st := newTestStore(t, cfg.MaxAgents)
 	m := NewManager(f, st, cfg, testLogger(), testOptions())
 	return m, f, st
 }

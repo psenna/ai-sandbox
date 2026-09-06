@@ -371,3 +371,125 @@ html, body {
 	cursor: pointer;
 	flex: 0 0 auto;
 }
+
+/* --- file browser (issue #122) ------------------------------------------- */
+
+.files-btn {
+	background: var(--bg-item);
+	color: var(--fg);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 8px 10px;
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+	margin-bottom: 12px;
+}
+.files-btn:hover { border-color: var(--accent); }
+.files-btn:disabled { opacity: 0.6; cursor: default; }
+
+.file-browser {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 16px;
+	height: 100%;
+	box-sizing: border-box;
+	overflow: auto;
+}
+
+.file-browser__breadcrumb {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	font-size: 13px;
+}
+.file-browser__breadcrumb .crumb {
+	background: none;
+	border: none;
+	color: var(--accent);
+	cursor: pointer;
+	padding: 2px 4px;
+	font-size: 13px;
+}
+.file-browser__breadcrumb .crumb::after { content: '/'; margin-left: 6px; color: var(--fg-dim); }
+.file-browser__breadcrumb .crumb--current { color: var(--fg-dim); padding: 2px 4px; }
+.file-browser__breadcrumb .crumb--current::after { content: ''; }
+
+.file-browser__toolbar {
+	display: flex;
+	gap: 8px;
+}
+.file-browser__toolbar button {
+	background: var(--bg-item);
+	color: var(--fg);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 6px 12px;
+	font-size: 13px;
+	cursor: pointer;
+}
+.file-browser__toolbar button:hover { border-color: var(--accent); }
+.file-browser__toolbar button:disabled { opacity: 0.5; cursor: default; }
+
+.file-browser__dropzone {
+	border: 1px dashed var(--border);
+	border-radius: 6px;
+	padding: 8px;
+	min-height: 80px;
+}
+.file-browser__dropzone--active { border-color: var(--accent); background: var(--bg-item); }
+
+.file-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+.file-table th {
+	text-align: left;
+	color: var(--fg-dim);
+	font-weight: 600;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+}
+.file-table__row td {
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+}
+.file-table__empty {
+	color: var(--fg-dim);
+	font-style: italic;
+	padding: 12px 8px;
+}
+.file-table__open {
+	background: none;
+	border: none;
+	color: var(--accent);
+	cursor: pointer;
+	font-size: 13px;
+	padding: 0;
+}
+.file-table__actions { text-align: right; white-space: nowrap; }
+.file-table__download,
+.file-table__delete {
+	background: var(--bg-item);
+	color: var(--fg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 3px 8px;
+	font-size: 12px;
+	cursor: pointer;
+	margin-left: 6px;
+}
+.file-table__download:hover { border-color: var(--accent); }
+.file-table__delete { color: var(--status-error); }
+.file-table__delete:hover { background: var(--status-error); color: #fff; }
+
+.file-browser__error {
+	color: var(--status-error);
+	border: 1px solid var(--status-error);
+	border-radius: 6px;
+	padding: 8px 10px;
+	font-size: 13px;
+}

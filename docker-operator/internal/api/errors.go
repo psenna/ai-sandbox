@@ -36,6 +36,14 @@ const (
 	CodeNoAnthropicAuth  = "no_anthropic_auth"
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeInternal         = "internal"
+
+	// CodeFilestoreDisabled is returned by every /api/files* route when the
+	// operator runs with no centralized file store configured (FILESTORE_DIR
+	// empty). The HTTP status is 501.
+	CodeFilestoreDisabled = "filestore_disabled"
+	// CodePayloadTooLarge is returned (413) when an uploaded file exceeds
+	// FILESTORE_MAX_UPLOAD_BYTES.
+	CodePayloadTooLarge = "payload_too_large"
 )
 
 // writeJSON writes body as status with a JSON content type. Encode errors

@@ -15,10 +15,13 @@
 #  1. tmux. The operator runs `claude` inside a detachable tmux session so the
 #     web UI terminal survives the operator/browser restarting; the WS bridge
 #     is a `docker exec ... tmux attach -t main` (see internal/wsbridge).
-#  2. Four skills, not seven. use-sandbox / freeze / unfreeze describe the
+#  2. Five skills, not eight. use-sandbox / freeze / unfreeze describe the
 #     Kubernetes operator's sidecar control API and its snapshot-based
 #     freeze/wake -- neither exists here, and a docker-operator agent that read
-#     them would be actively misled. use-docker is the LOCAL fork
+#     them would be actively misled. This image DOES bake store-file (the
+#     docker-operator's centralized /workspace/store file store), which the
+#     root image does not, since the k8s operator has no such store.
+#     use-docker is the LOCAL fork
 #     (docker-operator/agent/skills/use-docker/SKILL.md): each agent gets a
 #     private dinernet, so the compose stack's static dependaproxy IP is
 #     meaningless and the fork reads /workspace/dependaproxy-ip instead.
@@ -47,6 +50,7 @@ COPY claude-code/use-git-proxy/SKILL.md                /opt/skills/use-git-proxy
 COPY docker-operator/agent/skills/use-docker/SKILL.md  /opt/skills/use-docker/SKILL.md
 COPY claude-code/use-dependaproxy/SKILL.md             /opt/skills/use-dependaproxy/SKILL.md
 COPY claude-code/implement-issue/SKILL.md              /opt/skills/implement-issue/SKILL.md
+COPY claude-code/store-file/SKILL.md                   /opt/skills/store-file/SKILL.md
 COPY claude-code/agent-context/CLAUDE.md               /opt/agent-context/CLAUDE.md
 
 COPY claude-code/entrypoint.sh /entrypoint.sh

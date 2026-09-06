@@ -20,6 +20,7 @@
 	var sidebarList = document.getElementById('agent-list');
 	var capacityEl = document.getElementById('agent-capacity');
 	var newAgentBtn = document.getElementById('new-agent-btn');
+	var filesBtn = document.getElementById('files-btn');
 	var mainArea = document.getElementById('main-area');
 	var anthropicPanel = document.getElementById('anthropic-panel');
 
@@ -220,6 +221,17 @@
 	});
 
 	newAgentBtn.addEventListener('click', showCreateForm);
+
+	if (filesBtn) {
+		filesBtn.addEventListener('click', function () {
+			if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
+			state.selectedID = null;
+			renderSidebar();
+			if (typeof window.renderFileBrowser === 'function') {
+				window.renderFileBrowser(mainArea);
+			}
+		});
+	}
 
 	// onAgentDeleted is called by terminal.js after a successful DELETE.
 	window.onAgentDeleted = function (id) {

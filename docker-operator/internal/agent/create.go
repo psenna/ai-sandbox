@@ -13,6 +13,7 @@ import (
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -115,6 +116,12 @@ const (
 	configMount    = "/home/node/.claude-sandbox"
 	dindCacheMount = "/var/lib/docker"
 
+	// agentStoreMount is where the centralized file store's per-agent
+	// subpath (agents/<id>/ inside the shared filestore volume) is mounted
+	// in the agent container. Handed to the agent as AGENT_STORE_DIR. Only
+	// present when the file store is enabled.
+	agentStoreMount = "/workspace/store"
+
 	// tmuxBootPath is where agent/Dockerfile bakes tmux-boot.sh, and what the
 	// agent container's Cmd is overridden to at create time.
 	tmuxBootPath = "/usr/local/bin/tmux-boot.sh"
@@ -182,14 +189,31 @@ type Manager struct {
 	cfg    config.Config
 	log    *slog.Logger
 	opts   Options
+	// files is the centralized per-agent file store. nil when the file
+	// store is disabled (config.FilestoreDir == "") or could not be opened.
+	files *filestore.Store
 }
 
 // NewManager returns a Manager. A nil log falls back to slog.Default.
+//
+// When cfg enables the centralized file store (cfg.FilestoreDir != "") the
+// store is opened here; a failure is logged and the manager keeps running
+// without it (agents are then created with no /workspace/store mount).
 func NewManager(docker dockerclient.Client, st *store.Store, cfg config.Config, log *slog.Logger, opts Options) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{docker: docker, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
+	m := &Manager{docker: docker, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
+	if cfg.FilestoreDir != "" {
+		fs, err := filestore.New(cfg.FilestoreDir)
+		if err != nil {
+			log.Warn("the centralized file store is configured but unusable; agents will be created without /workspace/store",
+				"filestore_dir", cfg.FilestoreDir, "error", err)
+		} else {
+			m.files = fs
+		}
+	}
+	return m
 }
 
 // CreateRequest is the caller-supplied part of a new agent: everything else is
@@ -326,6 +350,9 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 	if err := m.createVolumes(ctx, *a); err != nil {
 		return err
 	}
+	if err := m.ensureAgentFiles(ctx, *a); err != nil {
+		return err
+	}
 	if err := m.createDinernet(ctx, a); err != nil {
 		return err
 	}
@@ -412,6 +439,25 @@ func (m *Manager) createVolumes(ctx context.Context, a store.Agent) error {
 		}); err != nil {
 			return fmt.Errorf("creating volume %q: %w", v.name, err)
 		}
+	}
+	return nil
+}
+
+// ensureAgentFiles pre-creates agents/<id>/ under the shared file-store
+// directory, so the daemon can resolve the per-agent subpath when it mounts
+// it into the agent container. A no-op when the file store is disabled.
+//
+// It runs after the volumes and before the network/containers: the directory
+// must exist before agentSpec's subpath mount is created, and leaving it out
+// of the container-dependency chain keeps a file-store failure from ever
+// half-building a container.
+func (m *Manager) ensureAgentFiles(_ context.Context, a store.Agent) error {
+	if m.files == nil {
+		return nil
+	}
+	if err := m.files.EnsureAgentDir(a.ID); err != nil {
+		return fmt.Errorf("creating the file-store directory for agent %q (dir %q, volume %q): %w",
+			a.ID, m.cfg.FilestoreDir, m.cfg.FilestoreVolume, err)
 	}
 	return nil
 }
@@ -573,7 +619,7 @@ func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb re
 // overridden, to tmux-boot.sh -- which is why the image's own CMD can stay
 // ["bash"] and a plain `docker run` of it remains an ordinary shell.
 func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend) dockerclient.ContainerSpec {
-	return dockerclient.ContainerSpec{
+	spec := dockerclient.ContainerSpec{
 		Name:   a.ContainerName,
 		Image:  m.cfg.AgentImage,
 		Cmd:    []string{tmuxBootPath},
@@ -596,6 +642,18 @@ func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend) dockerclient.Cont
 		TTY:       true,
 		OpenStdin: true,
 	}
+	// The centralized file store, mounted as a per-agent subpath of the
+	// shared filestore volume (ensureAgentFiles pre-created the subpath).
+	// Appended AFTER the two volume mounts above.
+	if m.files != nil {
+		spec.Mounts = append(spec.Mounts, dockerclient.Mount{
+			Type:    dockerclient.MountTypeVolume,
+			Source:  m.cfg.FilestoreVolume,
+			Target:  agentStoreMount,
+			Subpath: filestore.AgentSubpath(a.ID),
+		})
+	}
+	return spec
 }
 
 // agentEnv assembles the agent container's environment.
@@ -645,6 +703,12 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 
 	if a.DependaproxyDinernetIP.IsValid() {
 		env["DEPENDAPROXY_DINERNET_IP"] = a.DependaproxyDinernetIP.String()
+	}
+
+	// The centralized file store's mount point, only when it is enabled.
+	// entrypoint.sh keys the store-file skill install off this variable.
+	if m.files != nil {
+		env["AGENT_STORE_DIR"] = agentStoreMount
 	}
 
 	m.applyBackendEnv(env, rb)

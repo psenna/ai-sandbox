@@ -269,6 +269,19 @@ type Mount struct {
 	Source   string
 	Target   string
 	ReadOnly bool
+
+	// Subpath mounts only this path from inside the volume, instead of the
+	// whole volume. It is relative to the volume root and carries no leading
+	// slash. The daemon requires the subpath to already exist inside the
+	// volume (internal/agent pre-creates it through internal/filestore before
+	// the container is created). It is only meaningful for MountTypeVolume.
+	//
+	// Requires Docker Engine >= 26.0 (API v1.45): an older daemon SILENTLY
+	// IGNORES it and mounts the whole volume, which for the per-agent
+	// file-store mount would let every agent see every other agent's files.
+	// Empty leaves the mount unchanged (the whole volume, the pre-Subpath
+	// behaviour).
+	Subpath string
 }
 
 // NetworkAttachment joins a container to a network at creation time. Aliases
@@ -861,12 +874,19 @@ func toMounts(in []Mount) []mount.Mount {
 	}
 	out := make([]mount.Mount, 0, len(in))
 	for _, m := range in {
-		out = append(out, mount.Mount{
+		mm := mount.Mount{
 			Type:     mount.Type(m.Type),
 			Source:   m.Source,
 			Target:   m.Target,
 			ReadOnly: m.ReadOnly,
-		})
+		}
+		// Set VolumeOptions ONLY when a subpath is requested: a non-nil
+		// VolumeOptions on the existing bind/volume mounts changes their wire
+		// format and breaks them.
+		if m.Subpath != "" {
+			mm.VolumeOptions = &mount.VolumeOptions{Subpath: m.Subpath}
+		}
+		out = append(out, mm)
 	}
 	return out
 }

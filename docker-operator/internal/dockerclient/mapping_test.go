@@ -98,16 +98,34 @@ func TestToMounts(t *testing.T) {
 	in := []Mount{
 		{Type: MountTypeVolume, Source: "vol1", Target: "/data", ReadOnly: true},
 		{Type: MountTypeBind, Source: "/host", Target: "/container"},
+		{Type: MountTypeVolume, Source: "fs", Target: "/workspace/store", Subpath: "agents/agt_1"},
+		{Type: MountTypeVolume, Source: "fs", Target: "/whole", Subpath: ""},
 	}
 	got := toMounts(in)
-	if len(got) != 2 {
-		t.Fatalf("len(toMounts) = %d, want 2", len(got))
+	if len(got) != 4 {
+		t.Fatalf("len(toMounts) = %d, want 4", len(got))
 	}
 	if string(got[0].Type) != "volume" || got[0].Source != "vol1" || got[0].Target != "/data" || !got[0].ReadOnly {
 		t.Errorf("toMounts[0] = %#v", got[0])
 	}
+	// Existing mounts must keep VolumeOptions nil -- a non-nil one changes
+	// the daemon wire format and breaks a plain volume/bind mount.
+	if got[0].VolumeOptions != nil {
+		t.Errorf("toMounts[0].VolumeOptions = %#v, want nil", got[0].VolumeOptions)
+	}
 	if string(got[1].Type) != "bind" || got[1].Source != "/host" || got[1].ReadOnly {
 		t.Errorf("toMounts[1] = %#v", got[1])
+	}
+	if got[1].VolumeOptions != nil {
+		t.Errorf("toMounts[1].VolumeOptions = %#v, want nil", got[1].VolumeOptions)
+	}
+	// A non-empty Subpath yields a VolumeOptions carrying exactly it.
+	if got[2].VolumeOptions == nil || got[2].VolumeOptions.Subpath != "agents/agt_1" {
+		t.Errorf("toMounts[2].VolumeOptions = %#v, want Subpath=agents/agt_1", got[2].VolumeOptions)
+	}
+	// An empty Subpath leaves VolumeOptions nil.
+	if got[3].VolumeOptions != nil {
+		t.Errorf("toMounts[3].VolumeOptions = %#v, want nil for an empty Subpath", got[3].VolumeOptions)
 	}
 }
 

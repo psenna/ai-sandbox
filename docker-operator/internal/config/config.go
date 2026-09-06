@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,6 +47,13 @@ const (
 	defaultDependaproxyContainer = "docker-operator-dependaproxy"
 
 	defaultAgentBackend = BackendOllama
+
+	// The centralized file store (issue #122). FilestoreDir and
+	// FilestoreVolume are two names for the SAME storage -- see the Config
+	// field docs. defaultFilestoreMaxUploadBytes is 100 MiB.
+	defaultFilestoreDir            = "/var/lib/docker-operator/filestore"
+	defaultFilestoreVolume         = "docker-operator-filestore"
+	defaultFilestoreMaxUploadBytes = int64(100 << 20)
 )
 
 // The two LLM backends an agent can be created against. BackendOllama routes
@@ -234,7 +242,35 @@ type Config struct {
 	// DependaproxyContainer is the name of the shared DependaProxy container
 	// the create flow connects to each new agent's private dinernet.
 	DependaproxyContainer string
+
+	// FilestoreDir and FilestoreVolume are TWO NAMES FOR THE SAME STORAGE:
+	// the centralized per-agent file store (issue #122). FilestoreDir is the
+	// path the operator sees it at (a directory it opens directly, and under
+	// which it pre-creates agents/<id>/ before each agent is created);
+	// FilestoreVolume is the Docker volume name the daemon resolves the
+	// per-agent subpath mount against when it mounts agents/<id>/ into the
+	// agent container at /workspace/store. The docker-compose stack pairs the
+	// two with a single `- filestore:/var/lib/docker-operator/filestore`
+	// mount plus a named volume; a MISMATCH between them surfaces at agent
+	// create time as "container create: subpath not found".
+	//
+	// An empty FilestoreDir DISABLES the whole feature: no /api/files* routes,
+	// no per-agent /workspace/store mount, and no AGENT_STORE_DIR in the agent
+	// environment. FilestoreEnabled reports this.
+	FilestoreDir    string
+	FilestoreVolume string
+
+	// FilestoreMaxUploadBytes caps a single uploaded file (POST
+	// /api/files/upload). A larger part is rejected with 413. Must be >= 1
+	// when the file store is enabled.
+	FilestoreMaxUploadBytes int64
 }
+
+// FilestoreEnabled reports whether the centralized file store is configured.
+// When false, internal/api serves no /api/files* routes, internal/agent
+// mounts no /workspace/store and sets no AGENT_STORE_DIR, and
+// cmd/docker-operator opens no filestore.Store.
+func (c Config) FilestoreEnabled() bool { return c.FilestoreDir != "" }
 
 // Load parses args (typically os.Args[1:]) into a Config, falling back to
 // the environment (via getenv) and then to built-in defaults for any flag
@@ -254,6 +290,11 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	var anthropicAPIKey string
 
 	maxAgents, err := envInt(getenv, "MAX_AGENTS", defaultMaxAgents)
+	if err != nil {
+		return Config{}, err
+	}
+
+	maxUpload, err := envInt64(getenv, "FILESTORE_MAX_UPLOAD_BYTES", defaultFilestoreMaxUploadBytes)
 	if err != nil {
 		return Config{}, err
 	}
@@ -326,6 +367,15 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.DependaproxyContainer, "dependaproxy-container",
 		envOr(getenv, "DEPENDAPROXY_CONTAINER", defaultDependaproxyContainer),
 		"name of the shared DependaProxy container the create flow connects to each new agent's private dinernet (env DEPENDAPROXY_CONTAINER)")
+	fs.StringVar(&c.FilestoreDir, "filestore-dir",
+		envOr(getenv, "FILESTORE_DIR", defaultFilestoreDir),
+		"absolute path the operator sees the centralized per-agent file store at; empty disables the whole file-store feature (env FILESTORE_DIR)")
+	fs.StringVar(&c.FilestoreVolume, "filestore-volume",
+		envOr(getenv, "FILESTORE_VOLUME", defaultFilestoreVolume),
+		"Docker volume name the daemon resolves each agent's file-store subpath mount against; the same storage as filestore-dir (env FILESTORE_VOLUME)")
+	fs.Int64Var(&c.FilestoreMaxUploadBytes, "filestore-max-upload-bytes",
+		maxUpload,
+		"maximum size in bytes of a single file uploaded through POST /api/files/upload (env FILESTORE_MAX_UPLOAD_BYTES)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parsing flags: %w", err)
@@ -360,7 +410,31 @@ func (c Config) Validate() error {
 	if err := c.validateURLs(); err != nil {
 		return err
 	}
+	if err := c.validateFilestore(); err != nil {
+		return err
+	}
 	return c.validateModelRouting()
+}
+
+// validateFilestore checks the centralized file store's three fields, all of
+// which are skipped when FilestoreDir is empty (the feature is disabled).
+// FilestoreDir and FilestoreVolume are two names for the same storage, so
+// both must be well-formed for the operator-side pre-create and the
+// daemon-side subpath mount to agree.
+func (c Config) validateFilestore() error {
+	if c.FilestoreDir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(c.FilestoreDir) {
+		return fmt.Errorf("filestore-dir: %q must be an absolute path", c.FilestoreDir)
+	}
+	if err := validateDockerName("filestore-volume", c.FilestoreVolume); err != nil {
+		return err
+	}
+	if c.FilestoreMaxUploadBytes < 1 {
+		return fmt.Errorf("filestore-max-upload-bytes: must be >= 1, got %d", c.FilestoreMaxUploadBytes)
+	}
+	return nil
 }
 
 // validateRequired covers AGENT_TOKEN (required, no default) and the shape of
@@ -537,6 +611,21 @@ func envInt(getenv func(string) string, name string, def int) (int, error) {
 		return def, nil
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a valid integer: %w", name, v, err)
+	}
+	return n, nil
+}
+
+// envInt64 is envInt for an int64-valued variable (FILESTORE_MAX_UPLOAD_BYTES).
+// It takes the same "an unparseable value is an error, not a silent fallback
+// to the default" stance: a mistyped size cap is worth failing loudly over.
+func envInt64(getenv func(string) string, name string, def int64) (int64, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s: %q is not a valid integer: %w", name, v, err)
 	}

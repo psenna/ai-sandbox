@@ -119,6 +119,14 @@ func (m *Manager) teardown(ctx context.Context, a store.Agent) error {
 
 	// Volumes last: this is the step that actually destroys the agent's data,
 	// and Docker will refuse it outright if any container above survived.
+	//
+	// The shared centralized file-store volume is DELIBERATELY ABSENT here:
+	// it is shared infrastructure, and an agent's agents/<id>/ subtree in it
+	// is meant to outlive the agent (files survive Delete). teardown is
+	// shared by Delete, create-failure rollback and Reconcile, so removing
+	// the subtree here would silently destroy files a create retry, a
+	// rollback or a reconcile pass had no business touching. PurgeAgentFiles
+	// removes it explicitly, only when the caller asked for it.
 	for _, v := range []string{a.WorkspaceVolume, a.ClaudeConfigVolume, a.DindCacheVolume} {
 		if v == "" {
 			continue
@@ -129,6 +137,25 @@ func (m *Manager) teardown(ctx context.Context, a store.Agent) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// PurgeAgentFiles removes the agent's agents/<id>/ subtree from the shared
+// centralized file store. It is the one path that deletes those files --
+// teardown deliberately does not (see its volume-removal block) -- so an
+// agent's stored files survive Delete unless a caller asks for this
+// explicitly (DELETE /api/agents/{id}?purge_files=true, or the web UI).
+//
+// A no-op returning nil when the file store is disabled. Idempotent:
+// purging an agent whose directory is already gone is success.
+func (m *Manager) PurgeAgentFiles(ctx context.Context, id string) error {
+	if m.files == nil {
+		return nil
+	}
+	if err := m.files.RemoveAgentDir(id); err != nil {
+		return fmt.Errorf("purging the file-store directory for agent %q: %w", id, err)
+	}
+	m.log.InfoContext(ctx, "purged an agent's file-store directory", "agent_id", id)
+	return nil
 }
 
 // withDerivedNames fills in any resource name the record is missing from the
