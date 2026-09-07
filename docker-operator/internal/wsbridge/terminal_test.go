@@ -68,6 +68,45 @@ func TestTerminal_NoContainerYet(t *testing.T) {
 	}
 }
 
+// TestTerminal_EnablesMouseBeforeAttaching pins the exact command the bridge
+// execs: `tmux set-option -g mouse on \; attach-session -t main`. The mouse
+// option is what lets a web viewer wheel-scroll the pane; without it xterm.js
+// turns the wheel into history-walking arrow keys. The fake keys its seeded
+// output by the joined argv, so output only reaches the client if serveTerminal
+// ran precisely this command.
+func TestTerminal_EnablesMouseBeforeAttaching(t *testing.T) {
+	docker := dockerclienttest.New()
+	cid, err := docker.ContainerCreate(context.Background(), dockerclient.ContainerSpec{Name: "c", Image: "i"})
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	docker.ExecOutput = map[string][]byte{
+		"tmux set-option -g mouse on ; attach-session -t main": []byte("MOUSE-ON-MARKER"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ws/agents/{id}/terminal",
+		NewTerminalHandler(fakeGetter{"agt_a": {ID: "agt_a", ContainerID: cid}}, docker, discardLog))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/agents/agt_a/terminal"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	mt, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	if mt != websocket.BinaryMessage || !strings.Contains(string(data), "MOUSE-ON-MARKER") {
+		t.Fatalf("first frame = (type %d) %q, want the output seeded for the mouse-on attach command", mt, data)
+	}
+}
+
 // --- handleControl (pure logic, no WebSocket or real exec needed) -----------
 
 func TestHandleControl_Resize(t *testing.T) {
