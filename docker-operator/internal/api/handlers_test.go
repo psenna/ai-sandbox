@@ -41,6 +41,7 @@ type fakeManager struct {
 	defaultBackend   string
 	defaultModel     string
 	defaultFastModel string
+	defaultOllamaURL string
 	defaultRepo      string
 
 	anthropicKind      string
@@ -63,6 +64,7 @@ func newFakeManager(maxAgents int) *fakeManager {
 		defaultBackend:   config.BackendOllama,
 		defaultModel:     "glm-5.3:cloud",
 		defaultFastModel: "glm-5.3-flash:cloud",
+		defaultOllamaURL: "http://ollama:11434",
 		defaultRepo:      "psenna/ai-sandbox.git",
 	}
 }
@@ -87,6 +89,7 @@ func (f *fakeManager) Create(_ context.Context, req agent.CreateRequest) (store.
 		Backend:     req.Backend,
 		Model:       req.Model,
 		FastModel:   req.FastModel,
+		OllamaURL:   req.OllamaURL,
 		Repo:        req.Repo,
 		Status:      store.StatusCreating,
 	}
@@ -139,6 +142,7 @@ func (f *fakeManager) MaxAgents() int { return f.maxAgents }
 func (f *fakeManager) DefaultBackend() string   { return f.defaultBackend }
 func (f *fakeManager) DefaultModel() string     { return f.defaultModel }
 func (f *fakeManager) DefaultFastModel() string { return f.defaultFastModel }
+func (f *fakeManager) DefaultOllamaURL() string { return f.defaultOllamaURL }
 func (f *fakeManager) DefaultRepo() string      { return f.defaultRepo }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
@@ -320,6 +324,50 @@ func TestCreate_Repo(t *testing.T) {
 	})
 }
 
+func TestCreate_OllamaURL(t *testing.T) {
+	t.Run("a valid per-agent ollama_url is passed through and recorded", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Backend: "ollama", OllamaURL: "http://gpu-box:11434"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+		}
+		if a := decodeAgent(t, rec); a.OllamaURL != "http://gpu-box:11434" {
+			t.Errorf("created agent OllamaURL = %q, want the requested override", a.OllamaURL)
+		}
+	})
+
+	t.Run("a malformed ollama_url is a 400 before the manager is called", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.createErr = errors.New("Create must not be reached")
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{OllamaURL: "gpu-box:11434"})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+		}
+		env := decodeEnvelope(t, rec)
+		if env.Error.Code != CodeInvalidParam || env.Error.Field != "ollama_url" {
+			t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "ollama_url")
+		}
+	})
+
+	t.Run("ollama_url with the anthropic backend is a 400", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.createErr = errors.New("Create must not be reached")
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Backend: "anthropic", OllamaURL: "http://gpu-box:11434"})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+		}
+		if got := decodeEnvelope(t, rec).Error.Code; got != CodeInvalidParam {
+			t.Errorf("error code = %q, want %q", got, CodeInvalidParam)
+		}
+	})
+}
+
 func TestCreate_EmptyBodyIsValid(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
@@ -416,6 +464,9 @@ func TestList(t *testing.T) {
 	}
 	if resp.DefaultRepo != "psenna/ai-sandbox.git" {
 		t.Errorf("DefaultRepo = %q, want the operator's configured repo", resp.DefaultRepo)
+	}
+	if resp.DefaultOllamaURL != "http://ollama:11434" {
+		t.Errorf("DefaultOllamaURL = %q, want the operator's configured Ollama URL", resp.DefaultOllamaURL)
 	}
 }
 

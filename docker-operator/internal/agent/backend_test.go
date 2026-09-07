@@ -51,6 +51,40 @@ func TestResolveBackend(t *testing.T) {
 		}
 	})
 
+	t.Run("ollama: no ollama_url in the request uses the operator default", func(t *testing.T) {
+		m, _, _ := newTestManager(t, 5)
+		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendOllama})
+		if err != nil {
+			t.Fatalf("resolveBackend: %v", err)
+		}
+		if rb.ollamaURL != "http://ollama:11434" {
+			t.Errorf("ollamaURL = %q, want the operator default", rb.ollamaURL)
+		}
+	})
+
+	t.Run("ollama: a per-agent ollama_url overrides the operator default", func(t *testing.T) {
+		m, _, _ := newTestManager(t, 5)
+		rb, err := m.resolveBackend(ctx, CreateRequest{
+			Backend: config.BackendOllama, OllamaURL: "http://gpu-box:11434",
+		})
+		if err != nil {
+			t.Fatalf("resolveBackend: %v", err)
+		}
+		if rb.ollamaURL != "http://gpu-box:11434" {
+			t.Errorf("ollamaURL = %q, want the request override", rb.ollamaURL)
+		}
+	})
+
+	t.Run("ollama: a malformed ollama_url is ErrInvalidOllamaURL", func(t *testing.T) {
+		m, _, _ := newTestManager(t, 5)
+		_, err := m.resolveBackend(ctx, CreateRequest{
+			Backend: config.BackendOllama, OllamaURL: "gpu-box:11434",
+		})
+		if !IsInvalidOllamaURL(err) {
+			t.Fatalf("resolveBackend err = %v, want IsInvalidOllamaURL", err)
+		}
+	})
+
 	t.Run("anthropic with a stored api key", func(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
 		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
@@ -106,7 +140,7 @@ func TestAgentEnv_Backend(t *testing.T) {
 	base := store.Agent{ID: "agt_env", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
 
 	t.Run("ollama routes every tier and blanks the api key", func(t *testing.T) {
-		env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m"})
+		env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m", ollamaURL: "http://ollama:11434"})
 		wantEq(t, env, "ANTHROPIC_BASE_URL", "http://ollama:11434")
 		wantEq(t, env, "ANTHROPIC_AUTH_TOKEN", "test-anthropic-auth")
 		wantEq(t, env, "ANTHROPIC_MODEL", "opus-m")
@@ -117,6 +151,12 @@ func TestAgentEnv_Backend(t *testing.T) {
 		if _, ok := env["CLAUDE_CODE_OAUTH_TOKEN"]; ok {
 			t.Errorf("CLAUDE_CODE_OAUTH_TOKEN is set for an ollama agent, want it absent")
 		}
+	})
+
+	t.Run("ollama: a per-agent ollama_url becomes ANTHROPIC_BASE_URL", func(t *testing.T) {
+		env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m", ollamaURL: "http://gpu-box:11434"})
+		wantEq(t, env, "ANTHROPIC_BASE_URL", "http://gpu-box:11434")
+		wantEq(t, env, "ANTHROPIC_API_KEY", "")
 	})
 
 	t.Run("anthropic api-key: only the api key, no oauth token, no model overrides", func(t *testing.T) {
@@ -159,6 +199,20 @@ func TestCreate_PersistsBackend(t *testing.T) {
 		}
 		if got.Backend != config.BackendOllama || got.Model != "test-opus-model" || got.FastModel != "test-fast-model" {
 			t.Errorf("record = backend %q model %q/%q, want the ollama defaults", got.Backend, got.Model, got.FastModel)
+		}
+		if got.OllamaURL != "http://ollama:11434" {
+			t.Errorf("record OllamaURL = %q, want the operator default", got.OllamaURL)
+		}
+	})
+
+	t.Run("ollama with a per-agent ollama_url override", func(t *testing.T) {
+		m, _, _ := newTestManager(t, 5)
+		got, err := m.Create(ctx, CreateRequest{Backend: config.BackendOllama, OllamaURL: "http://gpu-box:11434"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if got.OllamaURL != "http://gpu-box:11434" {
+			t.Errorf("record OllamaURL = %q, want the request override", got.OllamaURL)
 		}
 	})
 

@@ -208,11 +208,14 @@ type Config struct {
 	// create form / an API request with no "backend" field.
 	DefaultBackend string
 
-	// OllamaURL is the shared Ollama daemon's Anthropic-compatible endpoint,
-	// templated into each BackendOllama agent as ANTHROPIC_BASE_URL. Empty
-	// is an explicit escape hatch: omit the whole Ollama/model-routing block
-	// and let Claude Code talk to the real Anthropic API using only
-	// AnthropicAPIKey. A BackendAnthropic agent ignores this field entirely.
+	// OllamaURL is the default Ollama daemon's Anthropic-compatible endpoint,
+	// templated into each BackendOllama agent as ANTHROPIC_BASE_URL. It is
+	// the fallback: a create request may override it per agent (the create
+	// form's "Ollama server" field / POST /api/agents' "ollama_url"). Empty
+	// is an explicit escape hatch: with no per-agent override either, omit
+	// the whole Ollama/model-routing block and let Claude Code talk to the
+	// real Anthropic API using only AnthropicAPIKey. A BackendAnthropic agent
+	// ignores this field entirely.
 	OllamaURL string
 
 	// AnthropicAuthToken is the fixed placeholder token Claude Code sends to
@@ -524,6 +527,12 @@ func (c Config) validateModelRouting() error {
 	}
 	return nil
 }
+
+// ValidOllamaURL reports whether s is a plausible http/https base URL for a
+// per-agent Ollama-server override (POST /api/agents' "ollama_url"). The empty
+// string is not valid here; callers that treat an empty override as "use the
+// operator's OLLAMA_URL default" check for that themselves.
+func ValidOllamaURL(s string) bool { return validateHTTPURL("ollama-url", s) == nil }
 
 // githubRepoRE matches a bare "owner/repo" or "owner/repo.git" reference:
 // exactly one slash, and only the characters GitHub allows in an owner or a

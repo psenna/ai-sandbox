@@ -123,6 +123,13 @@ type Agent struct {
 	Model     string `json:"model,omitempty"`
 	FastModel string `json:"fast_model,omitempty"`
 
+	// OllamaURL is the Ollama server this agent's model traffic is routed to,
+	// templated into the container as ANTHROPIC_BASE_URL. Only meaningful for
+	// a BackendOllama agent; empty for a BackendAnthropic one (and for an
+	// ollama agent on a deployment that cleared OLLAMA_URL entirely). Set once
+	// at create time from the request or the operator's OLLAMA_URL default.
+	OllamaURL string `json:"ollama_url,omitempty"`
+
 	// Repo is the owner/repo.git this agent works, templated into its
 	// container as GITHUB_REPO. Set once at create time from the request or
 	// the operator's GithubRepo default; empty means the agent boots as a
@@ -187,13 +194,14 @@ type CreateSpec struct {
 	Name string
 	// Description is the initial free-form description. May be empty.
 	Description string
-	// Backend, Model, FastModel and Repo are recorded on the new agent
-	// verbatim. internal/agent resolves them (request value or operator
+	// Backend, Model, FastModel, OllamaURL and Repo are recorded on the new
+	// agent verbatim. internal/agent resolves them (request value or operator
 	// default) and validates them before calling Create; the store only
 	// persists what it is given.
 	Backend   string
 	Model     string
 	FastModel string
+	OllamaURL string
 	Repo      string
 }
 
@@ -351,6 +359,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		Backend:     spec.Backend,
 		Model:       spec.Model,
 		FastModel:   spec.FastModel,
+		OllamaURL:   spec.OllamaURL,
 		Repo:        spec.Repo,
 		Status:      StatusCreating,
 		CreatedAt:   now,

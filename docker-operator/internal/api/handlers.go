@@ -43,13 +43,15 @@ type AgentManager interface {
 	MaxAgents() int
 	Rename(ctx context.Context, id string, name, description *string) (store.Agent, error)
 
-	// DefaultBackend/DefaultModel/DefaultFastModel/DefaultRepo are the
-	// operator-configured defaults the create form pre-fills; they ride
-	// along on the list response so the UI needs no second request.
-	// DefaultRepo is "" when the operator configured no GITHUB_REPO.
+	// DefaultBackend/DefaultModel/DefaultFastModel/DefaultOllamaURL/DefaultRepo
+	// are the operator-configured defaults the create form pre-fills; they
+	// ride along on the list response so the UI needs no second request.
+	// DefaultRepo is "" when the operator configured no GITHUB_REPO;
+	// DefaultOllamaURL is "" when the operator cleared OLLAMA_URL.
 	DefaultBackend() string
 	DefaultModel() string
 	DefaultFastModel() string
+	DefaultOllamaURL() string
 	DefaultRepo() string
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
@@ -159,6 +161,10 @@ type createAgentRequest struct {
 	Backend     string `json:"backend"`
 	Model       string `json:"model"`
 	FastModel   string `json:"fast_model"`
+	// OllamaURL overrides the operator's OLLAMA_URL for this one agent (the
+	// Ollama server its model traffic is routed to). Empty falls back to that
+	// default; only valid for the ollama backend.
+	OllamaURL string `json:"ollama_url"`
 	// Repo is this agent's owner/repo.git, overriding the operator's
 	// GITHUB_REPO default. Empty falls back to that default; empty with no
 	// default means the agent boots as a bare terminal. Nothing clones it.
@@ -183,6 +189,7 @@ type agentListResponse struct {
 	DefaultBackend   string        `json:"default_backend"`
 	DefaultModel     string        `json:"default_model"`
 	DefaultFastModel string        `json:"default_fast_model"`
+	DefaultOllamaURL string        `json:"default_ollama_url"`
 	DefaultRepo      string        `json:"default_repo"`
 }
 
@@ -225,6 +232,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		DefaultBackend:   h.mgr.DefaultBackend(),
 		DefaultModel:     h.mgr.DefaultModel(),
 		DefaultFastModel: h.mgr.DefaultFastModel(),
+		DefaultOllamaURL: h.mgr.DefaultOllamaURL(),
 		DefaultRepo:      h.mgr.DefaultRepo(),
 	})
 }
@@ -239,8 +247,12 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
 		return
 	}
-	if req.Backend == config.BackendAnthropic && (req.Model != "" || req.FastModel != "") {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"model" and "fast_model" are not valid for the anthropic backend`, "model")
+	if req.Backend == config.BackendAnthropic && (req.Model != "" || req.FastModel != "" || req.OllamaURL != "") {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"model", "fast_model" and "ollama_url" are not valid for the anthropic backend`, "model")
+		return
+	}
+	if req.OllamaURL != "" && !config.ValidOllamaURL(req.OllamaURL) {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
 		return
 	}
 	if req.Repo != "" && !config.ValidGithubRepo(req.Repo) {
@@ -251,7 +263,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	a, err := h.mgr.Create(r.Context(), agent.CreateRequest{
 		Name: req.Name, Description: req.Description,
 		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
-		Repo: req.Repo,
+		OllamaURL: req.OllamaURL, Repo: req.Repo,
 	})
 	if err != nil {
 		switch {
@@ -261,6 +273,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before creating an agent that uses it", "backend")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
+		case agent.IsInvalidOllamaURL(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
 		case agent.IsInvalidRepo(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
 		default:
