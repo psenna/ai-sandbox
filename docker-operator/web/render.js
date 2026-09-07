@@ -85,15 +85,18 @@
 	}
 
 	// renderCreateForm renders the "New Agent" form. defaults pre-fills the
-	// backend choice, the two Ollama model fields and the repo from the
-	// operator's configuration (GET /api/agents' default_* fields). The
-	// caller wires the backend radio to show/hide .create-form__ollama and
-	// submits the form's values to POST /api/agents.
+	// backend choice, the Ollama server + two model fields and the repo from
+	// the operator's configuration (GET /api/agents' default_* fields). The
+	// Ollama server field is left blank with the operator's default shown as
+	// its placeholder, so submitting it untouched means "use the operator
+	// default". The caller wires the backend radio to show/hide
+	// .create-form__ollama and submits the form's values to POST /api/agents.
 	function renderCreateForm(defaults) {
 		defaults = defaults || {};
 		var backend = defaults.backend === 'anthropic' ? 'anthropic' : 'ollama';
 		var model = escapeHTML(defaults.model || '');
 		var fastModel = escapeHTML(defaults.fastModel || '');
+		var ollamaURL = escapeHTML(defaults.ollamaUrl || '');
 		var repo = escapeHTML(defaults.repo || '');
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		return (
@@ -110,6 +113,9 @@
 					'<label><input type="radio" name="backend" value="anthropic"' + (backend === 'anthropic' ? ' checked' : '') + '> Anthropic account</label>' +
 				'</fieldset>' +
 				'<div class="create-form__ollama"' + ollamaHidden + '>' +
+					'<label class="create-form__row">Ollama server' +
+						'<input class="create-form__ollama-url" type="text" placeholder="' + (ollamaURL || 'operator default') + '">' +
+					'</label>' +
 					'<label class="create-form__row">Opus-tier model<input class="create-form__model" type="text" value="' + model + '"></label>' +
 					'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +
 				'</div>' +

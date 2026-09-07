@@ -14,7 +14,7 @@
 		agents: [],
 		maxAgents: 0,
 		selectedID: null,
-		defaults: { backend: 'ollama', model: '', fastModel: '' },
+		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '' },
 	};
 
 	var sidebarList = document.getElementById('agent-list');
@@ -63,6 +63,7 @@
 			backend: data.default_backend || 'ollama',
 			model: data.default_model || '',
 			fastModel: data.default_fast_model || '',
+			ollamaUrl: data.default_ollama_url || '',
 			repo: data.default_repo || '',
 		};
 		renderSidebar();
@@ -117,6 +118,8 @@
 			if (backend === 'ollama') {
 				body.model = form.querySelector('.create-form__model').value.trim();
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();
+				var ollamaURL = form.querySelector('.create-form__ollama-url').value.trim();
+				if (ollamaURL) body.ollama_url = ollamaURL;
 			}
 			errorEl.hidden = true;
 			submitBtn.disabled = true;

@@ -30,11 +30,17 @@ var ErrInvalidBackend = errors.New("invalid agent backend")
 // that is not a plausible owner/repo(.git) reference.
 var ErrInvalidRepo = errors.New("invalid agent repo")
 
-// IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo let internal/api map
-// the create-time request errors without importing the sentinels by name.
-func IsNoAnthropicAuth(err error) bool { return errors.Is(err, ErrNoAnthropicAuth) }
-func IsInvalidBackend(err error) bool  { return errors.Is(err, ErrInvalidBackend) }
-func IsInvalidRepo(err error) bool     { return errors.Is(err, ErrInvalidRepo) }
+// ErrInvalidOllamaURL is returned by Create for a non-empty
+// CreateRequest.OllamaURL that is not a plausible http/https base URL.
+var ErrInvalidOllamaURL = errors.New("invalid agent ollama_url")
+
+// IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo / IsInvalidOllamaURL
+// let internal/api map the create-time request errors without importing the
+// sentinels by name.
+func IsNoAnthropicAuth(err error) bool  { return errors.Is(err, ErrNoAnthropicAuth) }
+func IsInvalidBackend(err error) bool   { return errors.Is(err, ErrInvalidBackend) }
+func IsInvalidRepo(err error) bool      { return errors.Is(err, ErrInvalidRepo) }
+func IsInvalidOllamaURL(err error) bool { return errors.Is(err, ErrInvalidOllamaURL) }
 
 // resolvedBackend is everything about an agent's LLM backend that its
 // container environment needs, worked out once in Create from the request,
@@ -45,6 +51,7 @@ type resolvedBackend struct {
 	kind      string // config.BackendOllama | config.BackendAnthropic
 	model     string // ollama only: the default/opus tier
 	fastModel string // ollama only: the sonnet/haiku tier
+	ollamaURL string // ollama only: base URL (request override, else operator default)
 	// anthropic only: exactly one is non-empty.
 	apiKey     string
 	oauthToken string
@@ -238,6 +245,11 @@ type CreateRequest struct {
 	// "use the operator default". Ignored for the anthropic backend.
 	Model     string
 	FastModel string
+	// OllamaURL overrides the operator's OLLAMA_URL for this one agent (the
+	// Ollama server the agent's model traffic is routed to). Empty means "use
+	// the operator default". Ignored for the anthropic backend. Create
+	// validates its shape when non-empty.
+	OllamaURL string
 	// Repo is the owner/repo.git this agent works, overriding the operator's
 	// GithubRepo default for this one agent. Empty falls back to that
 	// default; if that is empty too the agent boots with no repo. Nothing
@@ -291,7 +303,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	a, err := m.store.Create(ctx, store.CreateSpec{
 		ID: id, Name: req.Name, Description: req.Description,
 		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
-		Repo: repo,
+		OllamaURL: rb.ollamaURL, Repo: repo,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -321,6 +333,10 @@ func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest) (resolv
 	case config.BackendOllama:
 		rb.model = firstNonEmpty(req.Model, m.cfg.AgentModel)
 		rb.fastModel = firstNonEmpty(req.FastModel, m.cfg.AgentFastModel)
+		rb.ollamaURL = firstNonEmpty(req.OllamaURL, m.cfg.OllamaURL)
+		if rb.ollamaURL != "" && !config.ValidOllamaURL(rb.ollamaURL) {
+			return resolvedBackend{}, fmt.Errorf("%w: %q", ErrInvalidOllamaURL, rb.ollamaURL)
+		}
 	case config.BackendAnthropic:
 		auth, ok, err := m.store.GetAnthropicAuth(ctx)
 		if err != nil {
@@ -777,12 +793,16 @@ func (m *Manager) applyBackendEnv(env map[string]string, rb resolvedBackend) {
 		}
 
 	case config.BackendOllama:
-		if m.cfg.OllamaURL == "" {
+		// rb.ollamaURL is the per-agent override if the request carried one,
+		// else the operator's OllamaURL. Empty only when the operator cleared
+		// OLLAMA_URL entirely and the request named none -- the historical
+		// "just use the real cloud with a static key" escape hatch.
+		if rb.ollamaURL == "" {
 			env["ANTHROPIC_API_KEY"] = m.cfg.AnthropicAPIKey.Reveal()
 			return
 		}
 		env["ANTHROPIC_API_KEY"] = ""
-		env["ANTHROPIC_BASE_URL"] = m.cfg.OllamaURL
+		env["ANTHROPIC_BASE_URL"] = rb.ollamaURL
 		env["ANTHROPIC_AUTH_TOKEN"] = m.cfg.AnthropicAuthToken.Reveal()
 		env["ANTHROPIC_MODEL"] = rb.model
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = rb.model

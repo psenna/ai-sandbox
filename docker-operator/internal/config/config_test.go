@@ -424,6 +424,27 @@ func TestValidGithubRepo(t *testing.T) {
 	}
 }
 
+func TestValidOllamaURL(t *testing.T) {
+	valid := []string{
+		"http://ollama:11434", "https://gpu-box.internal:11434",
+		"http://127.0.0.1:11434/v1", "https://ollama.example.com",
+	}
+	for _, s := range valid {
+		if !ValidOllamaURL(s) {
+			t.Errorf("ValidOllamaURL(%q) = false, want true", s)
+		}
+	}
+	invalid := []string{
+		"", "ollama:11434", "gpu-box.internal", "ftp://ollama:11434",
+		"://ollama", "http://", " ",
+	}
+	for _, s := range invalid {
+		if ValidOllamaURL(s) {
+			t.Errorf("ValidOllamaURL(%q) = true, want false", s)
+		}
+	}
+}
+
 // TestLoadValidate_NeverPanics is the acceptance criterion's "clear error,
 // not a panic" stated directly: every variable gets every hostile value, and
 // the only acceptable outcomes are a Config or an error.

@@ -121,10 +121,29 @@ test('renderCreateForm: defaults pre-fill the model fields and select the backen
 	assert.match(html, /create-form__ollama"(?!\s*hidden)/);
 });
 
-test('renderCreateForm: an anthropic default hides the ollama model block', () => {
+test('renderCreateForm: an anthropic default hides the ollama block (server + model fields)', () => {
 	const html = Render.renderCreateForm({ backend: 'anthropic' });
 	assert.match(html, /name="backend" value="anthropic" checked/);
 	assert.match(html, /class="create-form__ollama" hidden/);
+	// The Ollama server field lives inside that block, so it hides with it.
+	assert.match(html, /class="create-form__ollama-url"/);
+});
+
+test('renderCreateForm: the Ollama server field is blank with the operator default as its placeholder', () => {
+	const html = Render.renderCreateForm({ backend: 'ollama', ollamaUrl: 'http://ollama:11434' });
+	assert.match(html, /class="create-form__ollama-url" type="text" placeholder="http:\/\/ollama:11434"/);
+	// Blank value: submitting it untouched means "use the operator default".
+	assert.doesNotMatch(html, /class="create-form__ollama-url"[^>]*value=/);
+});
+
+test('renderCreateForm: the Ollama server placeholder falls back when the operator set no default', () => {
+	const html = Render.renderCreateForm({ backend: 'ollama' });
+	assert.match(html, /class="create-form__ollama-url" type="text" placeholder="operator default"/);
+});
+
+test('renderCreateForm: an ollama_url default containing HTML is escaped in the placeholder', () => {
+	const html = Render.renderCreateForm({ ollamaUrl: '"><script>x</script>' });
+	assert.doesNotMatch(html, /<script>x<\/script>/);
 });
 
 test('renderCreateForm: handles missing defaults without throwing', () => {

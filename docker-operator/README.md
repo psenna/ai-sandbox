@@ -136,9 +136,9 @@ anything else on the same Docker host.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_repo` (so the create form needs no second request). |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model` are for `ollama` only (`400` with `anthropic`). `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
-| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `repo`). |
+| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` (so the create form needs no second request). |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","ollama_url","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `ollama_url`, `repo`). |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
 | `GET` | `/api/files?path=` | List a file-store directory (`path=""` is the root). `501 filestore_disabled` when unconfigured. |
@@ -176,21 +176,24 @@ all.
 Every agent is created against one LLM backend, picked on the **New Agent**
 form:
 
-- **Ollama** (the default) — the agent's model traffic goes through the
-  shared `ollama` daemon. The form pre-fills two model names from the
-  operator's `OLLAMA_MODEL` / `OLLAMA_FAST_MODEL`
-  (`glm-5.3:cloud` / `glm-5.3-flash:cloud` by default) for the
-  default/"opus" tier and the "sonnet"+"haiku" tiers; edit them per agent.
-  The daemon authenticates `:cloud` models to ollama.com with the SSH
-  keypair in `../.ollama` — no per-agent key.
+- **Ollama** (the default) — the agent's model traffic goes through an
+  Ollama server. The form has an **Ollama server** field, blank with the
+  operator's `OLLAMA_URL` shown as its placeholder — leave it blank to use
+  that default, or point one agent at a different server (any `http(s)` URL).
+  It also pre-fills two model names from the operator's `OLLAMA_MODEL` /
+  `OLLAMA_FAST_MODEL` (`glm-5.3:cloud` / `glm-5.3-flash:cloud` by default)
+  for the default/"opus" tier and the "sonnet"+"haiku" tiers; edit them per
+  agent. The shared daemon authenticates `:cloud` models to ollama.com with
+  the SSH keypair in `../.ollama` — no per-agent key.
 - **Anthropic** — the agent talks to the real Anthropic API using the
   operator's **one shared credential** (see [Anthropic
   login](#anthropic-login)). Creating an `anthropic` agent before a
   credential is configured fails with `409 no_anthropic_auth`.
 
-The backend and models are fixed once an agent is created (changing them
-would need the container's environment rebuilt). `DEFAULT_AGENT_BACKEND`
-sets which one the form (and an API request that names none) starts on.
+The backend, Ollama server and models are fixed once an agent is created
+(changing them would need the container's environment rebuilt).
+`DEFAULT_AGENT_BACKEND` sets which one the form (and an API request that
+names none) starts on.
 
 ## Choosing a repo
 
@@ -335,7 +338,8 @@ curl -fsS http://127.0.0.1:8000/ | grep -o '<title>[^<]*</title>'
 
 The first line prints an empty agent list plus `max_agents` and the
 operator's create-form defaults (`default_backend` / `default_model` /
-`default_fast_model` / `default_repo`) on a fresh operator; the second
+`default_fast_model` / `default_ollama_url` / `default_repo`) on a fresh
+operator; the second
 confirms the embedded web UI (not a 404 or an error page) is being served
 at `/`.
 
@@ -343,7 +347,7 @@ at `/`.
 
 Clicking **+ New Agent** in the UI — filling in the form (name, description,
 optional [repo](#choosing-a-repo), [backend](#choosing-a-backend), and for
-Ollama the two model names) — or `curl -X POST -H "Authorization: Bearer
+Ollama the server URL and two model names) — or `curl -X POST -H "Authorization: Bearer
 $OPERATOR_API_TOKEN" http://127.0.0.1:8000/api/agents -d '{"backend":"ollama"}'` —
 creates the two containers, three volumes and private network described in
 [Architecture](#architecture) above, then opens a live terminal running
