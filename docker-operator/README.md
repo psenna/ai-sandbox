@@ -110,6 +110,14 @@ tab) restarting; it honestly does **not** survive the agent *container*
 itself stopping or restarting, unlike the Kubernetes operator's
 snapshot-based freeze/wake.
 
+A mouse-wheel / two-finger scroll over that terminal is **not** turned into
+history-walking arrow keys the way a raw xterm.js on an alt-screen TUI
+would (`shouldForwardWheel` in `web/terminal.js`). To read or search back
+through a session, the detail header's **View context** button opens the
+agent's whole captured transcript (`GET /api/agents/{id}/output`, ANSI
+stripped) in a searchable overlay — type to filter and highlight, Enter /
+Shift+Enter to walk matches, Esc to close.
+
 ## Resource naming reference
 
 | Resource | Name | Scope |
@@ -146,7 +154,7 @@ anything else on the same Docker host.
 | `GET` | `/api/files/download?path=` | Download one file (`application/octet-stream`). A directory is `400`. `501` when unconfigured. |
 | `POST` | `/api/files/upload?path=<dir>` | Upload one or more files (`multipart/form-data`, each part named `file`). Over `FILESTORE_MAX_UPLOAD_BYTES` is `413`. `501` when unconfigured. |
 | `POST` | `/api/files/mkdir` | Create a directory. Body `{"path":"…"}`. `501` when unconfigured. |
-| `GET` | `/api/agents/{id}/output?tail=N` | The agent's captured pane output (raw text, not JSON-wrapped). Unused by the UI today; exists for future automation. |
+| `GET` | `/api/agents/{id}/output?tail=N` | The agent's captured pane output (raw text, not JSON-wrapped). Drives the detail view's **View context** overlay (whole log, ANSI stripped, client-side search); also there for automation. |
 | `GET` | `/ws/agents/{id}/terminal` | WebSocket terminal bridge — binary frames are raw PTY bytes each way, a JSON text frame is `{"type":"resize","cols":N,"rows":N}`. |
 | `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
 | `GET`/`POST`/`DELETE` | `/api/anthropic/login` | Status / start / stop the `claude setup-token` helper container. `POST` returns `{"active":true,"ws":"/ws/anthropic/login/terminal"}`. |

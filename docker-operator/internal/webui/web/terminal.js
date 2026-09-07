@@ -12,10 +12,14 @@
 	'use strict';
 
 	// current holds the live view's teardown, so a new selection always
-	// starts from a clean slate.
+	// starts from a clean slate. contextOverlay holds the "View context"
+	// overlay's teardown when one is open -- it lives on document.body, not
+	// inside the detail view, so it is torn down explicitly here too.
 	var current = null;
+	var contextOverlay = null;
 
 	function teardownCurrent() {
+		closeContextOverlay();
 		if (current) {
 			current.teardown();
 			current = null;
@@ -37,6 +41,26 @@
 			throw new Error(msg);
 		}
 		return text ? JSON.parse(text) : null;
+	}
+
+	// fetchText is fetchJSON's sibling for endpoints that return raw text --
+	// GET /api/agents/{id}/output serves text/plain (its bytes are not
+	// guaranteed valid UTF-8-safe JSON), so it must not be JSON-parsed.
+	async function fetchText(url) {
+		var doFetch = (typeof window !== 'undefined' && window.OperatorAuth && window.OperatorAuth.fetch) || fetch;
+		var resp = await doFetch(url);
+		var text = await resp.text();
+		if (!resp.ok) {
+			var msg = 'request failed (' + resp.status + ')';
+			try {
+				var env = JSON.parse(text);
+				if (env && env.error && env.error.message) msg = env.error.message;
+			} catch (e) {
+				// body wasn't JSON; keep the generic message.
+			}
+			throw new Error(msg);
+		}
+		return text;
 	}
 
 	function wsURL(path) {
@@ -65,6 +89,22 @@
 		term.loadAddon(fitAddon);
 		term.open(termEl);
 		fitAddon.fit();
+
+		// A trackpad two-finger scroll (or a mouse wheel) over a full-screen
+		// TUI -- tmux, and `claude` inside it -- gets turned by xterm.js into
+		// arrow-key presses ("alternate scroll mode"), which the shell reads as
+		// "walk my command history". That is never what the viewer wants, and
+		// the alternate screen has no scrollback to move anyway. Swallow the
+		// wheel in exactly that state; leave it alone when there IS scrollback
+		// (normal buffer) or when the app is tracking the mouse itself and can
+		// scroll on its own. See shouldForwardWheel.
+		if (typeof term.attachCustomWheelEventHandler === 'function') {
+			term.attachCustomWheelEventHandler(function () {
+				var bufferType = term.buffer && term.buffer.active ? term.buffer.active.type : 'normal';
+				var mouseMode = term.modes ? term.modes.mouseTrackingMode : 'none';
+				return shouldForwardWheel(bufferType, mouseMode);
+			});
+		}
 
 		var socket = new WebSocket(wsURL(wsPath));
 		socket.binaryType = 'arraybuffer';
@@ -124,6 +164,61 @@
 		return new TextEncoder().encode(data);
 	}
 
+	// shouldForwardWheel decides whether xterm.js should process a wheel event
+	// (return true) or ignore it entirely (return false). It is ignored only on
+	// the alternate screen with no mouse tracking active -- the one state where
+	// xterm.js would otherwise synthesise history-walking arrow keys. Pure so
+	// terminal.test.js can cover the truth table without a DOM.
+	function shouldForwardWheel(bufferType, mouseTrackingMode) {
+		return !(bufferType === 'alternate' && (mouseTrackingMode || 'none') === 'none');
+	}
+
+	var HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+	function escapeHTML(s) {
+		return String(s).replace(/[&<>"']/g, function (c) { return HTML_ESCAPES[c]; });
+	}
+
+	// terminalTextToPlain turns the raw captured pane bytes (GET
+	// /api/agents/{id}/output -- ANSI colours, cursor moves, OSC titles,
+	// progress-bar carriage returns and all) into a plain-text transcript that
+	// reads and searches cleanly in the View context overlay. It is a
+	// best-effort flattening, not a terminal emulator: a redrawn TUI frame
+	// still leaves its text behind, which is fine for reading and Ctrl-F.
+	function terminalTextToPlain(raw) {
+		var s = String(raw == null ? '' : raw);
+		s = s.replace(/\r\n/g, '\n');
+		// OSC (window title, etc.) and DCS/PM/APC strings: ESC ] / P / ^ / _
+		// ... terminated by BEL or ESC \.
+		s = s.replace(/\x1b[\]P^_][\s\S]*?(?:\x07|\x1b\\)/g, '');
+		// CSI: ESC [ params intermediates final.
+		s = s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+		// Any other short ESC sequence (charset selection, save/restore, ...).
+		s = s.replace(/\x1b[ -/]*[0-~]/g, '');
+		s = s.replace(/\x1b/g, '');
+		// Resolve carriage returns: what a viewer would have seen is whatever
+		// was on the line after the last CR.
+		s = s.split('\n').map(function (line) {
+			var cr = line.lastIndexOf('\r');
+			return cr === -1 ? line : line.slice(cr + 1);
+		}).join('\n');
+		// Drop the remaining C0 controls (keep TAB and NEWLINE) and DEL.
+		s = s.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+		s = s.split('\n').map(function (l) { return l.replace(/[ \t]+$/, ''); }).join('\n');
+		s = s.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
+		return s.replace(/\s+$/, '');
+	}
+
+	// buildContextHTML renders text as escaped HTML with every case-insensitive
+	// occurrence of query wrapped in <mark>. Pure -- the overlay then walks the
+	// <mark> nodes for prev/next navigation.
+	function buildContextHTML(text, query) {
+		var escaped = escapeHTML(text);
+		var q = String(query == null ? '' : query).trim();
+		if (!q) return escaped;
+		var needle = escapeHTML(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		return escaped.replace(new RegExp(needle, 'gi'), function (m) { return '<mark>' + m + '</mark>'; });
+	}
+
 	function renderAgentDetail(container, agentID) {
 		teardownCurrent();
 
@@ -134,6 +229,7 @@
 					'<input class="detail__description" type="text" placeholder="Add a description…" aria-label="Agent description">' +
 					'<span class="detail__repo" title="repository this agent works"></span>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
+					'<button class="detail__context-btn" type="button">View context</button>' +
 					'<button class="detail__delete-btn" type="button">Delete</button>' +
 				'</div>' +
 				'<div class="detail__terminal"></div>' +
@@ -143,6 +239,7 @@
 		var descInput = container.querySelector('.detail__description');
 		var repoEl = container.querySelector('.detail__repo');
 		var saveStatus = container.querySelector('.detail__save-status');
+		var contextBtn = container.querySelector('.detail__context-btn');
 		var deleteBtn = container.querySelector('.detail__delete-btn');
 		var termEl = container.querySelector('.detail__terminal');
 
@@ -181,6 +278,8 @@
 			});
 		});
 
+		contextBtn.addEventListener('click', function () { openContextOverlay(agentID); });
+
 		deleteBtn.addEventListener('click', function () {
 			var label = nameInput.value || agentID;
 			var confirmed = window.confirm(
@@ -208,6 +307,138 @@
 				t.teardown();
 			},
 		};
+	}
+
+	// --- View context overlay --------------------------------------------------
+
+	// CONTEXT_MAX_CHARS caps how much of a long-running agent's transcript the
+	// overlay holds in one <pre> -- enough for a full session, bounded so the
+	// highlight pass and the browser stay responsive.
+	var CONTEXT_MAX_CHARS = 2000000;
+
+	function clampContext(s) {
+		if (s.length <= CONTEXT_MAX_CHARS) return s;
+		return '[… earlier output truncated; showing the last ' + CONTEXT_MAX_CHARS +
+			' characters …]\n\n' + s.slice(s.length - CONTEXT_MAX_CHARS);
+	}
+
+	// openContextOverlay shows the agent's whole captured transcript (GET
+	// /api/agents/{id}/output) in a searchable full-screen overlay: type to
+	// filter/highlight, Enter / Shift+Enter (or the arrows) to walk matches,
+	// Esc or Close to dismiss. Only one is ever open; it is torn down on close
+	// and whenever the detail view is swapped (teardownCurrent).
+	function openContextOverlay(agentID) {
+		closeContextOverlay();
+
+		var overlay = document.createElement('div');
+		overlay.className = 'context-overlay';
+		overlay.innerHTML =
+			'<div class="context-overlay__panel" role="dialog" aria-label="Agent context">' +
+				'<div class="context-overlay__bar">' +
+					'<strong class="context-overlay__title">Context</strong>' +
+					'<input class="context-overlay__search" type="search" placeholder="Search transcript…" aria-label="Search transcript">' +
+					'<span class="context-overlay__count" aria-live="polite"></span>' +
+					'<button class="context-overlay__prev" type="button" title="Previous match (Shift+Enter)" disabled>▲</button>' +
+					'<button class="context-overlay__next" type="button" title="Next match (Enter)" disabled>▼</button>' +
+					'<button class="context-overlay__refresh" type="button">Refresh</button>' +
+					'<button class="context-overlay__close" type="button">Close</button>' +
+				'</div>' +
+				'<pre class="context-overlay__body" tabindex="0">Loading…</pre>' +
+			'</div>';
+		document.body.appendChild(overlay);
+
+		var bodyEl = overlay.querySelector('.context-overlay__body');
+		var searchEl = overlay.querySelector('.context-overlay__search');
+		var countEl = overlay.querySelector('.context-overlay__count');
+		var prevBtn = overlay.querySelector('.context-overlay__prev');
+		var nextBtn = overlay.querySelector('.context-overlay__next');
+
+		var plain = '';
+		var matches = [];
+		var currentMatch = -1;
+
+		function renderBody(preserveBottom) {
+			var atBottom = bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight < 4;
+			bodyEl.innerHTML = buildContextHTML(plain, searchEl.value);
+			matches = Array.prototype.slice.call(bodyEl.getElementsByTagName('mark'));
+			currentMatch = matches.length ? 0 : -1;
+			prevBtn.disabled = nextBtn.disabled = matches.length === 0;
+			updateCount();
+			if (matches.length) paintCurrent(true);
+			else if (preserveBottom && atBottom) bodyEl.scrollTop = bodyEl.scrollHeight;
+		}
+
+		function updateCount() {
+			if (!searchEl.value.trim()) { countEl.textContent = ''; return; }
+			countEl.textContent = matches.length ? (currentMatch + 1) + ' / ' + matches.length : 'no matches';
+		}
+
+		function paintCurrent(scroll) {
+			for (var i = 0; i < matches.length; i++) {
+				matches[i].className = i === currentMatch ? 'is-current' : '';
+			}
+			if (scroll && currentMatch >= 0) {
+				matches[currentMatch].scrollIntoView({ block: 'center' });
+			}
+		}
+
+		function step(delta) {
+			if (!matches.length) return;
+			currentMatch = (currentMatch + delta + matches.length) % matches.length;
+			paintCurrent(true);
+			updateCount();
+		}
+
+		function load() {
+			bodyEl.textContent = 'Loading…';
+			fetchText('/api/agents/' + encodeURIComponent(agentID) + '/output')
+				.then(function (raw) {
+					plain = clampContext(terminalTextToPlain(raw)) || '(no output captured yet)';
+					renderBody(true);
+					if (!searchEl.value) bodyEl.scrollTop = bodyEl.scrollHeight;
+				})
+				.catch(function (e) {
+					bodyEl.textContent = 'Failed to load context: ' + (e && e.message ? e.message : e);
+				});
+		}
+
+		function onKeydown(ev) {
+			if (ev.key === 'Escape') {
+				closeContextOverlay();
+			} else if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'f' || ev.key === 'F')) {
+				ev.preventDefault();
+				searchEl.focus();
+				searchEl.select();
+			}
+		}
+
+		searchEl.addEventListener('input', function () { renderBody(false); });
+		searchEl.addEventListener('keydown', function (ev) {
+			if (ev.key === 'Enter') { ev.preventDefault(); step(ev.shiftKey ? -1 : 1); }
+		});
+		prevBtn.addEventListener('click', function () { step(-1); });
+		nextBtn.addEventListener('click', function () { step(1); });
+		overlay.querySelector('.context-overlay__refresh').addEventListener('click', load);
+		overlay.querySelector('.context-overlay__close').addEventListener('click', closeContextOverlay);
+		overlay.addEventListener('mousedown', function (ev) {
+			if (ev.target === overlay) closeContextOverlay();
+		});
+		document.addEventListener('keydown', onKeydown);
+
+		contextOverlay = {
+			teardown: function () {
+				document.removeEventListener('keydown', onKeydown);
+				if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+				contextOverlay = null;
+			},
+		};
+
+		load();
+		searchEl.focus();
+	}
+
+	function closeContextOverlay() {
+		if (contextOverlay) contextOverlay.teardown();
 	}
 
 	// renderAnthropicLogin renders the "Log in with your Claude subscription"
@@ -279,7 +510,13 @@
 	// Exported for terminal.test.js only -- renderAgentDetail itself needs a
 	// real DOM/xterm/WebSocket and is verified by manual review plus the
 	// integration test against a running backend instead (see PR notes).
-	var TerminalProtocol = { resizeFrame: resizeFrame, encodeKeystroke: encodeKeystroke };
+	var TerminalProtocol = {
+		resizeFrame: resizeFrame,
+		encodeKeystroke: encodeKeystroke,
+		shouldForwardWheel: shouldForwardWheel,
+		terminalTextToPlain: terminalTextToPlain,
+		buildContextHTML: buildContextHTML,
+	};
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = TerminalProtocol;
 	} else {
