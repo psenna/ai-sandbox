@@ -114,9 +114,13 @@ A mouse-wheel / two-finger scroll over that terminal is **not** turned into
 history-walking arrow keys the way a raw xterm.js on an alt-screen TUI
 would (`shouldForwardWheel` in `web/terminal.js`). To read or search back
 through a session, the detail header's **View context** button opens the
-agent's whole captured transcript (`GET /api/agents/{id}/output`, ANSI
-stripped) in a searchable overlay — type to filter and highlight, Enter /
-Shift+Enter to walk matches, Esc to close.
+agent's captured transcript (`GET /api/agents/{id}/output`) in a searchable
+overlay. The raw capture is mostly TUI redraw frames, so it is first
+replayed through a headless xterm.js (`replayCaptureToText`) — the redraws
+collapse to their final on-screen state and the scrolled-off conversation
+lands in scrollback — then read back as plain text (bounded to the last
+`MAX_CONTEXT_LINES`). Type to filter and highlight, Enter / Shift+Enter to
+walk matches, Refresh to re-pull, Esc to close.
 
 ## Resource naming reference
 

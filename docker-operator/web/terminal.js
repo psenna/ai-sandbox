@@ -219,6 +219,94 @@
 		return escaped.replace(new RegExp(needle, 'gi'), function (m) { return '<mark>' + m + '</mark>'; });
 	}
 
+	// clampToLastLines keeps the last `max` lines of text, prefixing a one-line
+	// notice when it had to drop earlier ones. The View context overlay is a
+	// "what has this agent been doing lately" view, not a full archive, and a
+	// bounded line count is what keeps the <pre> render (and the per-keystroke
+	// search highlight) instant on a long-lived agent.
+	function clampToLastLines(text, max) {
+		var lines = String(text == null ? '' : text).split('\n');
+		if (lines.length <= max) return String(text == null ? '' : text);
+		var hidden = lines.length - max;
+		return '[… ' + hidden + ' earlier line' + (hidden === 1 ? '' : 's') + ' hidden …]\n\n' +
+			lines.slice(lines.length - max).join('\n');
+	}
+
+	// readBufferLines turns one xterm.js buffer (viewport + its scrollback) into
+	// an array of trimmed text lines.
+	function readBufferLines(buf) {
+		var out = [];
+		var n = buf.length;
+		for (var i = 0; i < n; i++) {
+			var ln = buf.getLine(i);
+			out.push(ln ? ln.translateToString(true) : '');
+		}
+		return out;
+	}
+
+	// replayCaptureToText feeds the raw captured PTY bytes through a headless
+	// xterm.js so the agent's TUI redraws resolve to their final on-screen
+	// state -- and genuinely scrolled-off history lands in scrollback --
+	// instead of piling up as tens of thousands of near-duplicate raw frames
+	// (a busy agent's log is ~95% redraw) with cursor-addressed words run
+	// together. The buffer is then read back as plain text: the normal buffer
+	// (which carries the scrolled conversation history), plus the alternate
+	// screen's current contents when the capture ends inside a full-screen
+	// view. Falls back to terminalTextToPlain if xterm is unavailable or the
+	// replay throws.
+	function replayCaptureToText(raw) {
+		return new Promise(function (resolve) {
+			var s = typeof raw === 'string' ? raw : String(raw == null ? '' : raw);
+			if (s === '') {
+				resolve('');
+				return;
+			}
+			if (typeof window === 'undefined' || !window.Terminal) {
+				resolve(terminalTextToPlain(s));
+				return;
+			}
+			var replay;
+			try {
+				replay = new window.Terminal({ cols: 200, rows: 50, scrollback: 50000 });
+			} catch (e) {
+				resolve(terminalTextToPlain(s));
+				return;
+			}
+			var done = false;
+			var safety = null;
+			var finish = function () {
+				if (done) return;
+				done = true;
+				if (safety) { clearTimeout(safety); safety = null; }
+				var text = '';
+				try {
+					var ns = replay.buffer;
+					var lines = readBufferLines(ns.normal);
+					if (ns.active && ns.active.type === 'alternate') {
+						lines.push('');
+						lines = lines.concat(readBufferLines(ns.active));
+					}
+					text = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\s+$/, '');
+				} catch (e) {
+					text = '';
+				}
+				try { replay.dispose(); } catch (e) { /* already disposed */ }
+				resolve(text || terminalTextToPlain(s));
+			};
+			try {
+				replay.write(s, finish);
+			} catch (e) {
+				try { replay.dispose(); } catch (e2) { /* ignore */ }
+				resolve(terminalTextToPlain(s));
+				return;
+			}
+			// Safety net: if write's callback never fires, don't leave the
+			// overlay stuck on "Loading…". Cleared by finish on the normal path
+			// so it never keeps a timer (or the event loop) alive.
+			safety = setTimeout(finish, 15000);
+		});
+	}
+
 	function renderAgentDetail(container, agentID) {
 		teardownCurrent();
 
@@ -311,16 +399,8 @@
 
 	// --- View context overlay --------------------------------------------------
 
-	// CONTEXT_MAX_CHARS caps how much of a long-running agent's transcript the
-	// overlay holds in one <pre> -- enough for a full session, bounded so the
-	// highlight pass and the browser stay responsive.
-	var CONTEXT_MAX_CHARS = 2000000;
-
-	function clampContext(s) {
-		if (s.length <= CONTEXT_MAX_CHARS) return s;
-		return '[… earlier output truncated; showing the last ' + CONTEXT_MAX_CHARS +
-			' characters …]\n\n' + s.slice(s.length - CONTEXT_MAX_CHARS);
-	}
+	// MAX_CONTEXT_LINES caps what the overlay renders (see clampToLastLines).
+	var MAX_CONTEXT_LINES = 8000;
 
 	// openContextOverlay shows the agent's whole captured transcript (GET
 	// /api/agents/{id}/output) in a searchable full-screen overlay: type to
@@ -356,11 +436,24 @@
 		var plain = '';
 		var matches = [];
 		var currentMatch = -1;
+		var searchTimer = null;
 
 		function renderBody(preserveBottom) {
 			var atBottom = bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight < 4;
-			bodyEl.innerHTML = buildContextHTML(plain, searchEl.value);
-			matches = Array.prototype.slice.call(bodyEl.getElementsByTagName('mark'));
+			var q = searchEl.value.trim();
+			if (q) {
+				// innerHTML only while searching -- it is what lets us wrap and
+				// walk <mark> nodes. Bounded by clampToLastLines, so the escape
+				// + highlight pass stays cheap per keystroke.
+				bodyEl.innerHTML = buildContextHTML(plain, q);
+				matches = Array.prototype.slice.call(bodyEl.getElementsByTagName('mark'));
+			} else {
+				// The common case: a plain text node renders an order of
+				// magnitude faster than the equivalent innerHTML and never
+				// blocks the tab, however long the transcript is.
+				bodyEl.textContent = plain;
+				matches = [];
+			}
 			currentMatch = matches.length ? 0 : -1;
 			prevBtn.disabled = nextBtn.disabled = matches.length === 0;
 			updateCount();
@@ -391,13 +484,17 @@
 
 		function load() {
 			bodyEl.textContent = 'Loading…';
+			var mine = load.token = {};
 			fetchText('/api/agents/' + encodeURIComponent(agentID) + '/output')
-				.then(function (raw) {
-					plain = clampContext(terminalTextToPlain(raw)) || '(no output captured yet)';
+				.then(function (raw) { return replayCaptureToText(raw); })
+				.then(function (text) {
+					if (load.token !== mine || !overlay.parentNode) return; // superseded / closed
+					plain = clampToLastLines(text, MAX_CONTEXT_LINES) || '(no output captured yet)';
 					renderBody(true);
 					if (!searchEl.value) bodyEl.scrollTop = bodyEl.scrollHeight;
 				})
 				.catch(function (e) {
+					if (load.token !== mine || !overlay.parentNode) return;
 					bodyEl.textContent = 'Failed to load context: ' + (e && e.message ? e.message : e);
 				});
 		}
@@ -412,9 +509,15 @@
 			}
 		}
 
-		searchEl.addEventListener('input', function () { renderBody(false); });
+		searchEl.addEventListener('input', function () {
+			clearTimeout(searchTimer);
+			searchTimer = setTimeout(function () { searchTimer = null; renderBody(false); }, 120);
+		});
 		searchEl.addEventListener('keydown', function (ev) {
-			if (ev.key === 'Enter') { ev.preventDefault(); step(ev.shiftKey ? -1 : 1); }
+			if (ev.key !== 'Enter') return;
+			ev.preventDefault();
+			if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; renderBody(false); }
+			else step(ev.shiftKey ? -1 : 1);
 		});
 		prevBtn.addEventListener('click', function () { step(-1); });
 		nextBtn.addEventListener('click', function () { step(1); });
@@ -427,6 +530,8 @@
 
 		contextOverlay = {
 			teardown: function () {
+				load.token = null;
+				clearTimeout(searchTimer);
 				document.removeEventListener('keydown', onKeydown);
 				if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
 				contextOverlay = null;
@@ -516,6 +621,8 @@
 		shouldForwardWheel: shouldForwardWheel,
 		terminalTextToPlain: terminalTextToPlain,
 		buildContextHTML: buildContextHTML,
+		clampToLastLines: clampToLastLines,
+		replayCaptureToText: replayCaptureToText,
 	};
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = TerminalProtocol;

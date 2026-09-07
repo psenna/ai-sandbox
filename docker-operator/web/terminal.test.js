@@ -16,7 +16,22 @@ const {
 	shouldForwardWheel,
 	terminalTextToPlain,
 	buildContextHTML,
+	clampToLastLines,
+	replayCaptureToText,
 } = require('./terminal.js');
+
+// replayCaptureToText uses window.Terminal when present. The vendored xterm.js
+// bundle runs headless under Node with only a `self` global (verified: no DOM
+// is touched until .open(), which the replay never calls). Shim it so the
+// replay path -- the actual fix for the "overlay is blank" bug -- is covered,
+// not just its terminalTextToPlain fallback.
+global.self = global.self || global;
+global.window = global.window || {};
+try {
+	global.window.Terminal = require('./vendor/xterm/xterm.js').Terminal;
+} catch (e) {
+	// bundle not loadable here -- the replay tests below will skip.
+}
 
 test('resizeFrame: builds the exact JSON control frame internal/wsbridge expects', () => {
 	assert.equal(resizeFrame(80, 24), '{"type":"resize","cols":80,"rows":24}');
@@ -98,4 +113,44 @@ test('buildContextHTML: a query with regex/HTML metacharacters is matched litera
 
 test('buildContextHTML: an empty query highlights nothing', () => {
 	assert.doesNotMatch(buildContextHTML('plain text', '   '), /<mark>/);
+});
+
+test('clampToLastLines: passes short text through untouched', () => {
+	assert.equal(clampToLastLines('a\nb\nc', 10), 'a\nb\nc');
+	assert.equal(clampToLastLines('', 10), '');
+	assert.equal(clampToLastLines(null, 10), '');
+});
+
+test('clampToLastLines: keeps the tail and prefixes a count when it truncates', () => {
+	const text = Array.from({ length: 20 }, (_, i) => 'line' + i).join('\n');
+	const out = clampToLastLines(text, 5);
+	assert.match(out, /^\[… 15 earlier lines hidden …\]\n\n/);
+	assert.match(out, /line15\nline16\nline17\nline18\nline19$/);
+	assert.doesNotMatch(out, /line14/);
+});
+
+test('replayCaptureToText: resolves cursor-addressed words into spaced, single-frame text', async () => {
+	if (!global.window.Terminal) return; // xterm bundle unavailable in this env
+	// Same frame written twice with cursor-home in between (a TUI redraw), and
+	// words placed by column rather than with spaces between them.
+	const frame = '\x1b[H\x1b[2J\x1b[1;1HWelcome\x1b[1;12Hto\x1b[1;20HClaude Code\x1b[2;1Hready';
+	const out = await replayCaptureToText(frame + frame);
+	assert.match(out, /Welcome {2,}to {2,}Claude Code/); // spacing reconstructed from columns
+	assert.match(out, /\nready/);
+	// The redraw collapsed: "Welcome" appears once, not once per frame.
+	assert.equal((out.match(/Welcome/g) || []).length, 1);
+});
+
+test('replayCaptureToText: keeps scrolled-off history from the normal buffer', async () => {
+	if (!global.window.Terminal) return;
+	let raw = '';
+	for (let i = 0; i < 200; i++) raw += 'history-line-' + i + '\r\n';
+	const out = await replayCaptureToText(raw);
+	assert.match(out, /history-line-0\b/);   // scrolled far off the 50-row viewport
+	assert.match(out, /history-line-199\b/);
+});
+
+test('replayCaptureToText: tolerates empty / nullish input', async () => {
+	assert.equal(await replayCaptureToText(''), '');
+	assert.equal(await replayCaptureToText(null), '');
 });
