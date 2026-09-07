@@ -110,12 +110,16 @@ tab) restarting; it honestly does **not** survive the agent *container*
 itself stopping or restarting, unlike the Kubernetes operator's
 snapshot-based freeze/wake.
 
-A mouse-wheel / two-finger scroll over that terminal is **not** turned into
-history-walking arrow keys the way a raw xterm.js on an alt-screen TUI
-would (`shouldForwardWheel` in `web/terminal.js`). To read or search back
-through a session, the detail header's **View context** button opens the
-agent's captured transcript (`GET /api/agents/{id}/output`) in a searchable
-overlay. The raw capture is mostly TUI redraw frames, so it is first
+A mouse-wheel / two-finger scroll over that terminal scrolls the pane: the
+bridge execs `tmux set-option -g mouse on` before attaching, so tmux
+forwards the wheel to a mouse-aware full-screen app (claude scrolls its own
+transcript) or, at a plain shell, scrolls tmux's history in copy-mode (which
+exits as soon as you reach the live bottom). Without that option the wheel
+would instead be turned into history-walking arrow keys, which
+`shouldForwardWheel` in `web/terminal.js` also guards against. To read or
+search back through a whole session, the detail header's **View context**
+button opens the agent's captured transcript
+(`GET /api/agents/{id}/output`) in a searchable overlay. The raw capture is mostly TUI redraw frames, so it is first
 replayed through a headless xterm.js (`replayCaptureToText`) — the redraws
 collapse to their final on-screen state and the scrolled-off conversation
 lands in scrollback — then read back as plain text (bounded to the last

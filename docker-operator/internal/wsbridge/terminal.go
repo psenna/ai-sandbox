@@ -69,7 +69,8 @@ var upgrader = websocket.Upgrader{
 
 // NewTerminalHandler returns the GET /ws/agents/{id}/terminal handler: one
 // WebSocket per connection, bridged to `docker exec ... tmux attach-session
-// -t main` inside the agent's container.
+// -t main` inside the agent's container (with mouse mode enabled first, so a
+// web viewer can scroll the pane).
 //
 // Closing the WebSocket ends only the exec, never the container -- tmux
 // keeps running, so a page refresh or a second tab is just a fresh exec onto
@@ -123,10 +124,11 @@ func NewContainerTerminalHandler(docker dockerclient.ExecClient, containerName, 
 }
 
 // serveTerminal is the shared core of both terminal handlers: upgrade the
-// connection, exec `tmux attach-session -t main` in target (a container name
-// or ID), and pump bytes until either side ends. logLabel identifies the
-// target in log lines; notReadyReason is the WebSocket close reason when the
-// exec cannot be created (the container is stopped or absent).
+// connection, exec `tmux set-option -g mouse on \; attach-session -t main` in
+// target (a container name or ID), and pump bytes until either side ends.
+// logLabel identifies the target in log lines; notReadyReason is the
+// WebSocket close reason when the exec cannot be created (the container is
+// stopped or absent).
 func serveTerminal(w http.ResponseWriter, r *http.Request, docker dockerclient.ExecClient, target, logLabel, notReadyReason string, log *slog.Logger) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -138,7 +140,19 @@ func serveTerminal(w http.ResponseWriter, r *http.Request, docker dockerclient.E
 	defer func() { _ = conn.Close() }()
 
 	execID, err := docker.ExecCreate(r.Context(), target, dockerclient.ExecSpec{
-		Cmd:   []string{"tmux", "attach-session", "-t", tmuxSession},
+		// `set-option -g mouse on` before the attach so a web viewer can
+		// wheel / two-finger-scroll the pane. Without it tmux never forwards
+		// the wheel, and xterm.js on an alt-screen TUI turns it into
+		// history-walking arrow keys instead. With it, tmux forwards the wheel
+		// to a mouse-aware full-screen app (claude scrolls its own transcript)
+		// or, for a plain shell, enters copy-mode -e to scroll its history
+		// (which exits the moment you scroll back to the live bottom).
+		//
+		// It is a global server option: harmless to re-assert on every attach,
+		// and on the Anthropic-login helper's throwaway tmux server too. `;`
+		// is tmux's own command separator (a distinct argv element, not shell
+		// syntax), so this is one exec, not a shell pipeline.
+		Cmd:   []string{"tmux", "set-option", "-g", "mouse", "on", ";", "attach-session", "-t", tmuxSession},
 		TTY:   true,
 		Stdin: true,
 	})
