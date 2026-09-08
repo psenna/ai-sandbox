@@ -301,6 +301,10 @@ html, body {
 .create-form__backend label { display: block; padding: 3px 0; color: var(--fg); font-size: 13px; }
 
 .create-form__ollama { display: flex; flex-direction: column; gap: 12px; }
+/* `.create-form__ollama` and `[hidden]` have equal specificity, so the rule
+   above would otherwise win and the Ollama block would stay visible for the
+   Anthropic backend. This compound selector outranks both. */
+.create-form__ollama[hidden] { display: none; }
 .create-form__anthropic-note { color: var(--fg-dim); font-size: 12px; margin: 0; }
 
 .create-form__actions { display: flex; gap: 8px; }
