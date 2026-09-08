@@ -38,11 +38,12 @@ type fakeManager struct {
 	purgedIDs []string
 	purgeErr  error
 
-	defaultBackend   string
-	defaultModel     string
-	defaultFastModel string
-	defaultOllamaURL string
-	defaultRepo      string
+	defaultBackend              string
+	defaultModel                string
+	defaultFastModel            string
+	defaultOllamaURL            string
+	defaultRepo                 string
+	defaultAutoCompactThreshold string
 
 	anthropicKind      string
 	anthropicValue     string
@@ -139,11 +140,12 @@ func (f *fakeManager) List(_ context.Context) ([]store.Agent, error) {
 
 func (f *fakeManager) MaxAgents() int { return f.maxAgents }
 
-func (f *fakeManager) DefaultBackend() string   { return f.defaultBackend }
-func (f *fakeManager) DefaultModel() string     { return f.defaultModel }
-func (f *fakeManager) DefaultFastModel() string { return f.defaultFastModel }
-func (f *fakeManager) DefaultOllamaURL() string { return f.defaultOllamaURL }
-func (f *fakeManager) DefaultRepo() string      { return f.defaultRepo }
+func (f *fakeManager) DefaultBackend() string              { return f.defaultBackend }
+func (f *fakeManager) DefaultModel() string                { return f.defaultModel }
+func (f *fakeManager) DefaultFastModel() string            { return f.defaultFastModel }
+func (f *fakeManager) DefaultOllamaURL() string            { return f.defaultOllamaURL }
+func (f *fakeManager) DefaultRepo() string                 { return f.defaultRepo }
+func (f *fakeManager) DefaultAutoCompactThreshold() string { return f.defaultAutoCompactThreshold }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
 	f.mu.Lock()

@@ -174,6 +174,14 @@ services:
       AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.3:cloud}"
       AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-glm-5.3-flash:cloud}"
 
+      # OPTIONAL, empty by default: the default Claude Code auto-compact
+      # threshold a create request that names none falls back to, templated
+      # into each agent as CLAUDE_AUTO_COMPACT_THRESHOLD (backend-agnostic).
+      # Per-agent values on the create form / POST /api/agents override it.
+      # Leave empty to OMIT the variable entirely so agents use Claude Code's
+      # built-in default.
+      AGENT_AUTO_COMPACT_THRESHOLD: "${AGENT_AUTO_COMPACT_THRESHOLD:-}"
+
       # Centralized per-agent file store. FILESTORE_DIR (the path the operator
       # sees it at) and FILESTORE_VOLUME (the Docker volume name the daemon
       # resolves each agent's subpath mount against) are TWO NAMES FOR THE

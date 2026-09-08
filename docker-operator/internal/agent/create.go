@@ -255,6 +255,13 @@ type CreateRequest struct {
 	// default; if that is empty too the agent boots with no repo. Nothing
 	// clones it. Create validates its shape when non-empty.
 	Repo string
+	// AutoCompactThreshold is this agent's Claude Code auto-compact threshold,
+	// templated into its environment as CLAUDE_AUTO_COMPACT_THRESHOLD. It is
+	// backend-agnostic. Empty falls back to the operator's
+	// AutoCompactThreshold default; if that is empty too the variable is
+	// omitted from the agent's environment so it uses Claude Code's built-in
+	// default.
+	AutoCompactThreshold string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -296,6 +303,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating an agent: %w: %q", ErrInvalidRepo, repo)
 	}
 
+	// Auto-compact threshold: per-agent value, else the operator default.
+	// Empty (both) means the variable is omitted from the agent's environment
+	// in agentEnv, so the agent keeps Claude Code's built-in default.
+	autoCompact := firstNonEmpty(req.AutoCompactThreshold, m.cfg.AutoCompactThreshold)
+
 	// Reserve the slot FIRST. store.Create both counts and inserts inside one
 	// bbolt read-write transaction, so N racing creates against a cap of N-1
 	// produce exactly N-1 successes. The error satisfies store.IsAtCapacity,
@@ -304,6 +316,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		ID: id, Name: req.Name, Description: req.Description,
 		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
 		OllamaURL: rb.ollamaURL, Repo: repo,
+		AutoCompactThreshold: autoCompact,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -741,6 +754,13 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 
 		// tmux needs a terminal type even for a detached session.
 		"TERM": "xterm-256color",
+	}
+
+	// Claude Code auto-compact threshold, only when a value was actually
+	// resolved. Empty (per-agent unset AND no operator default) is OMITTED --
+	// not set to "" -- so Claude Code falls back to its own built-in default.
+	if a.AutoCompactThreshold != "" {
+		env["CLAUDE_AUTO_COMPACT_THRESHOLD"] = a.AutoCompactThreshold
 	}
 
 	if a.DependaproxyDinernetIP.IsValid() {
