@@ -22,11 +22,19 @@ func TestAgentEnv_AutoCompactThreshold(t *testing.T) {
 		wantEq(t, env, "CLAUDE_AUTO_COMPACT_THRESHOLD", "85")
 	})
 
+	t.Run("a resolved max-contexts value is injected as CLAUDE_CODE_MAX_CONTEXTS_TOKENS", func(t *testing.T) {
+		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n", MaxContextsTokens: "200000"}
+		env := m.agentEnv(a, rb)
+		wantEq(t, env, "CLAUDE_CODE_MAX_CONTEXTS_TOKENS", "200000")
+	})
+
 	t.Run("an empty value omits the variable entirely", func(t *testing.T) {
 		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
 		env := m.agentEnv(a, rb)
-		if _, ok := env["CLAUDE_AUTO_COMPACT_THRESHOLD"]; ok {
-			t.Errorf("env[CLAUDE_AUTO_COMPACT_THRESHOLD] present, want absent when the value is empty")
+		for _, name := range []string{"CLAUDE_AUTO_COMPACT_THRESHOLD", "CLAUDE_CODE_MAX_CONTEXTS_TOKENS"} {
+			if _, ok := env[name]; ok {
+				t.Errorf("env[%s] present, want absent when the value is empty", name)
+			}
 		}
 	})
 }
@@ -68,6 +76,90 @@ func TestCreate_ResolvesAutoCompactThreshold(t *testing.T) {
 		}
 		if got.AutoCompactThreshold != "90" {
 			t.Errorf("record.AutoCompactThreshold = %q, want the per-agent value", got.AutoCompactThreshold)
+		}
+	})
+}
+
+// TestCreate_RejectsOutOfRangeAutoCompactThreshold pins the 50..100 rule at
+// the create layer: an out-of-range resolved value (per-agent or operator
+// default) is a caller mistake and must fail without consuming a MAX_AGENTS
+// slot.
+func TestCreate_RejectsOutOfRangeAutoCompactThreshold(t *testing.T) {
+	ctx := context.Background()
+
+	for _, bad := range []string{"49", "101", "abc", "85.5", "-20"} {
+		t.Run("per-agent value "+bad, func(t *testing.T) {
+			m, _, _ := newTestManager(t, 5)
+			_, err := m.Create(ctx, CreateRequest{AutoCompactThreshold: bad})
+			if !IsInvalidAutoCompactThreshold(err) {
+				t.Fatalf("Create with AutoCompactThreshold=%q: err = %v, want an ErrInvalidAutoCompactThreshold", bad, err)
+			}
+		})
+		t.Run("operator default "+bad, func(t *testing.T) {
+			cfg := testConfig(5)
+			cfg.AutoCompactThreshold = bad
+			m, _, _ := newTestManagerCfg(t, cfg)
+			_, err := m.Create(ctx, CreateRequest{})
+			if !IsInvalidAutoCompactThreshold(err) {
+				t.Fatalf("Create with operator default %q: err = %v, want an ErrInvalidAutoCompactThreshold", bad, err)
+			}
+		})
+	}
+
+	t.Run("the boundary values 50 and 100 are accepted", func(t *testing.T) {
+		for _, good := range []string{"50", "100"} {
+			m, _, _ := newTestManager(t, 5)
+			got, err := m.Create(ctx, CreateRequest{AutoCompactThreshold: good})
+			if err != nil {
+				t.Fatalf("Create with AutoCompactThreshold=%q: %v", good, err)
+			}
+			if got.AutoCompactThreshold != good {
+				t.Errorf("record.AutoCompactThreshold = %q, want %q", got.AutoCompactThreshold, good)
+			}
+		}
+	})
+}
+
+// TestCreate_ResolvesMaxContextsTokens pins the same resolve-and-fall-through
+// rule for the max-contexts token budget: per-agent value, else the operator
+// default, else omitted entirely.
+func TestCreate_ResolvesMaxContextsTokens(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("no request value and no operator default: omitted", func(t *testing.T) {
+		m, _, _ := newTestManager(t, 5)
+		got, err := m.Create(ctx, CreateRequest{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if got.MaxContextsTokens != "" {
+			t.Errorf("record.MaxContextsTokens = %q, want empty", got.MaxContextsTokens)
+		}
+	})
+
+	t.Run("no request value falls back to the operator default", func(t *testing.T) {
+		cfg := testConfig(5)
+		cfg.MaxContextsTokens = "150000"
+		m, _, _ := newTestManagerCfg(t, cfg)
+		got, err := m.Create(ctx, CreateRequest{})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if got.MaxContextsTokens != "150000" {
+			t.Errorf("record.MaxContextsTokens = %q, want the operator default", got.MaxContextsTokens)
+		}
+	})
+
+	t.Run("a per-agent value overrides the operator default", func(t *testing.T) {
+		cfg := testConfig(5)
+		cfg.MaxContextsTokens = "150000"
+		m, _, _ := newTestManagerCfg(t, cfg)
+		got, err := m.Create(ctx, CreateRequest{MaxContextsTokens: "200000"})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if got.MaxContextsTokens != "200000" {
+			t.Errorf("record.MaxContextsTokens = %q, want the per-agent value", got.MaxContextsTokens)
 		}
 	})
 }

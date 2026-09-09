@@ -252,8 +252,18 @@ type Config struct {
 	// empty by default: when the effective value (per-agent override, else
 	// this) is empty the variable is OMITTED from the agent's environment
 	// entirely, so the agent uses Claude Code's own built-in default rather
-	// than being pinned to a value.
+	// than being pinned to a value. When set it must be an integer between
+	// 50 and 100 (see ValidAutoCompactThreshold).
 	AutoCompactThreshold string
+
+	// MaxContextsTokens is the default Claude Code max-contexts token budget a
+	// create request that names none falls back to, templated into each agent
+	// as CLAUDE_CODE_MAX_CONTEXTS_TOKENS. It is backend-agnostic. OPTIONAL and
+	// empty by default: when the effective value (per-agent override, else
+	// this) is empty the variable is OMITTED from the agent's environment
+	// entirely, so the agent uses Claude Code's own built-in default rather
+	// than being pinned to a value.
+	MaxContextsTokens string
 
 	// DependaproxyContainer is the name of the shared DependaProxy container
 	// the create flow connects to each new agent's private dinernet.
@@ -382,7 +392,10 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 		"model every agent's \"sonnet\" and \"haiku\" tiers resolve to when ollama-url is set (env AGENT_FAST_MODEL)")
 	fs.StringVar(&c.AutoCompactThreshold, "auto-compact-threshold",
 		envOr(getenv, "AGENT_AUTO_COMPACT_THRESHOLD", ""),
-		"optional default for Claude Code's auto-compact threshold, templated into each agent as CLAUDE_AUTO_COMPACT_THRESHOLD; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_AUTO_COMPACT_THRESHOLD)")
+		"optional default for Claude Code's auto-compact threshold, an integer between 50 and 100, templated into each agent as CLAUDE_AUTO_COMPACT_THRESHOLD; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_AUTO_COMPACT_THRESHOLD)")
+	fs.StringVar(&c.MaxContextsTokens, "max-contexts-tokens",
+		envOr(getenv, "AGENT_MAX_CONTEXTS_TOKENS", ""),
+		"optional default for Claude Code's max-contexts token budget, templated into each agent as CLAUDE_CODE_MAX_CONTEXTS_TOKENS; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_MAX_CONTEXTS_TOKENS)")
 	fs.StringVar(&c.DependaproxyContainer, "dependaproxy-container",
 		envOr(getenv, "DEPENDAPROXY_CONTAINER", defaultDependaproxyContainer),
 		"name of the shared DependaProxy container the create flow connects to each new agent's private dinernet (env DEPENDAPROXY_CONTAINER)")
@@ -493,6 +506,9 @@ func (c Config) validateLimitsAndPaths() error {
 	if c.DependaproxyContainer == "" {
 		return fmt.Errorf("dependaproxy-container: must not be empty")
 	}
+	if c.AutoCompactThreshold != "" && !ValidAutoCompactThreshold(c.AutoCompactThreshold) {
+		return fmt.Errorf("auto-compact-threshold: %q must be an integer between %d and %d, or empty to use Claude Code's built-in default", c.AutoCompactThreshold, autoCompactMin, autoCompactMax)
+	}
 	return nil
 }
 
@@ -542,6 +558,28 @@ func (c Config) validateModelRouting() error {
 		return fmt.Errorf("agent-fast-model: must not be empty when ollama-url is set")
 	}
 	return nil
+}
+
+// autoCompactMin / autoCompactMax bound the auto-compact threshold. It is a
+// percentage of the context window at which Claude Code compacts: below 50 the
+// compaction fires too early to be useful, and above 100 it could never fire,
+// so both are treated as a misconfiguration rather than silently honoured.
+const (
+	autoCompactMin = 50
+	autoCompactMax = 100
+)
+
+// ValidAutoCompactThreshold reports whether s is an acceptable Claude Code
+// auto-compact threshold: a base-10 integer between 50 and 100 inclusive.
+// The empty string is not valid here -- it means "unset, use Claude Code's
+// built-in default", and callers that treat an empty value that way check for
+// that themselves.
+func ValidAutoCompactThreshold(s string) bool {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return false
+	}
+	return n >= autoCompactMin && n <= autoCompactMax
 }
 
 // ValidOllamaURL reports whether s is a plausible http/https base URL for a

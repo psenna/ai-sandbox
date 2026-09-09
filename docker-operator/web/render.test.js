@@ -152,6 +152,18 @@ test('renderCreateForm: handles missing defaults without throwing', () => {
 	assert.match(html, /class="create-form__model"/);
 });
 
+test('renderCreateForm: the auto-compact and max-contexts fields pre-fill from the operator defaults', () => {
+	const html = Render.renderCreateForm({ autoCompactThreshold: '85', maxContextsTokens: '200000' });
+	assert.match(html, /class="create-form__auto-compact"[^>]*value="85"/);
+	assert.match(html, /class="create-form__max-contexts-tokens"[^>]*value="200000"/);
+});
+
+test('renderCreateForm: the auto-compact and max-contexts fields render blank with no defaults', () => {
+	const html = Render.renderCreateForm();
+	assert.match(html, /class="create-form__auto-compact" type="text" value=""/);
+	assert.match(html, /class="create-form__max-contexts-tokens" type="text" value=""/);
+});
+
 test('renderCreateForm: a model default containing HTML is escaped in the value attribute', () => {
 	const html = Render.renderCreateForm({ model: '"><script>x</script>' });
 	assert.doesNotMatch(html, /<script>x<\/script>/);

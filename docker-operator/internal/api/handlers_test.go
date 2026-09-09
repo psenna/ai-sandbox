@@ -44,6 +44,7 @@ type fakeManager struct {
 	defaultOllamaURL            string
 	defaultRepo                 string
 	defaultAutoCompactThreshold string
+	defaultMaxContextsTokens    string
 
 	anthropicKind      string
 	anthropicValue     string
@@ -84,15 +85,17 @@ func (f *fakeManager) Create(_ context.Context, req agent.CreateRequest) (store.
 	}
 	f.nextID++
 	a := store.Agent{
-		ID:          fmt.Sprintf("agt_%08d", f.nextID),
-		Name:        req.Name,
-		Description: req.Description,
-		Backend:     req.Backend,
-		Model:       req.Model,
-		FastModel:   req.FastModel,
-		OllamaURL:   req.OllamaURL,
-		Repo:        req.Repo,
-		Status:      store.StatusCreating,
+		ID:                   fmt.Sprintf("agt_%08d", f.nextID),
+		Name:                 req.Name,
+		Description:          req.Description,
+		Backend:              req.Backend,
+		Model:                req.Model,
+		FastModel:            req.FastModel,
+		OllamaURL:            req.OllamaURL,
+		Repo:                 req.Repo,
+		AutoCompactThreshold: req.AutoCompactThreshold,
+		MaxContextsTokens:    req.MaxContextsTokens,
+		Status:               store.StatusCreating,
 	}
 	f.agents[a.ID] = a
 	return a, nil
@@ -146,6 +149,7 @@ func (f *fakeManager) DefaultFastModel() string            { return f.defaultFas
 func (f *fakeManager) DefaultOllamaURL() string            { return f.defaultOllamaURL }
 func (f *fakeManager) DefaultRepo() string                 { return f.defaultRepo }
 func (f *fakeManager) DefaultAutoCompactThreshold() string { return f.defaultAutoCompactThreshold }
+func (f *fakeManager) DefaultMaxContextsTokens() string    { return f.defaultMaxContextsTokens }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
 	f.mu.Lock()
@@ -370,6 +374,51 @@ func TestCreate_OllamaURL(t *testing.T) {
 	})
 }
 
+func TestCreate_AutoCompactThreshold(t *testing.T) {
+	t.Run("a valid per-agent auto_compact_threshold is passed through and recorded", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{AutoCompactThreshold: "85"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+		}
+		if a := decodeAgent(t, rec); a.AutoCompactThreshold != "85" {
+			t.Errorf("created agent AutoCompactThreshold = %q, want the requested value", a.AutoCompactThreshold)
+		}
+	})
+
+	for _, bad := range []string{"49", "101", "abc", "85.5", "-20"} {
+		t.Run("an out-of-range auto_compact_threshold "+bad+" is a 400 before the manager is called", func(t *testing.T) {
+			mgr := newFakeManager(5)
+			mgr.createErr = errors.New("Create must not be reached")
+			h := newTestHandler(mgr, dockerclienttest.New())
+
+			rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{AutoCompactThreshold: bad})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+			}
+			env := decodeEnvelope(t, rec)
+			if env.Error.Code != CodeInvalidParam || env.Error.Field != "auto_compact_threshold" {
+				t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "auto_compact_threshold")
+			}
+		})
+	}
+}
+
+func TestCreate_MaxContextsTokens(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{MaxContextsTokens: "200000"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+	}
+	if a := decodeAgent(t, rec); a.MaxContextsTokens != "200000" {
+		t.Errorf("created agent MaxContextsTokens = %q, want the requested value", a.MaxContextsTokens)
+	}
+}
+
 func TestCreate_EmptyBodyIsValid(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
@@ -469,6 +518,25 @@ func TestList(t *testing.T) {
 	}
 	if resp.DefaultOllamaURL != "http://ollama:11434" {
 		t.Errorf("DefaultOllamaURL = %q, want the operator's configured Ollama URL", resp.DefaultOllamaURL)
+	}
+	if resp.DefaultAutoCompactThreshold != "" || resp.DefaultMaxContextsTokens != "" {
+		t.Errorf("DefaultAutoCompactThreshold/DefaultMaxContextsTokens = %q/%q, want empty when the operator set neither default",
+			resp.DefaultAutoCompactThreshold, resp.DefaultMaxContextsTokens)
+	}
+
+	mgr.defaultAutoCompactThreshold = "85"
+	mgr.defaultMaxContextsTokens = "200000"
+	rec = doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	resp = agentListResponse{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if resp.DefaultAutoCompactThreshold != "85" || resp.DefaultMaxContextsTokens != "200000" {
+		t.Errorf("defaults = %q/%q, want the operator's configured thresholds",
+			resp.DefaultAutoCompactThreshold, resp.DefaultMaxContextsTokens)
 	}
 }
 

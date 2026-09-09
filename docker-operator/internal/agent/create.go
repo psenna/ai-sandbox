@@ -34,13 +34,20 @@ var ErrInvalidRepo = errors.New("invalid agent repo")
 // CreateRequest.OllamaURL that is not a plausible http/https base URL.
 var ErrInvalidOllamaURL = errors.New("invalid agent ollama_url")
 
-// IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo / IsInvalidOllamaURL
-// let internal/api map the create-time request errors without importing the
-// sentinels by name.
+// ErrInvalidAutoCompactThreshold is returned by Create for a non-empty
+// AutoCompactThreshold that is not an integer between 50 and 100.
+var ErrInvalidAutoCompactThreshold = errors.New("invalid agent auto_compact_threshold")
+
+// IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo / IsInvalidOllamaURL /
+// IsInvalidAutoCompactThreshold let internal/api map the create-time request
+// errors without importing the sentinels by name.
 func IsNoAnthropicAuth(err error) bool  { return errors.Is(err, ErrNoAnthropicAuth) }
 func IsInvalidBackend(err error) bool   { return errors.Is(err, ErrInvalidBackend) }
 func IsInvalidRepo(err error) bool      { return errors.Is(err, ErrInvalidRepo) }
 func IsInvalidOllamaURL(err error) bool { return errors.Is(err, ErrInvalidOllamaURL) }
+func IsInvalidAutoCompactThreshold(err error) bool {
+	return errors.Is(err, ErrInvalidAutoCompactThreshold)
+}
 
 // resolvedBackend is everything about an agent's LLM backend that its
 // container environment needs, worked out once in Create from the request,
@@ -260,8 +267,15 @@ type CreateRequest struct {
 	// backend-agnostic. Empty falls back to the operator's
 	// AutoCompactThreshold default; if that is empty too the variable is
 	// omitted from the agent's environment so it uses Claude Code's built-in
-	// default.
+	// default. When non-empty (after the fallback) it must be an integer
+	// between 50 and 100.
 	AutoCompactThreshold string
+	// MaxContextsTokens is this agent's Claude Code max-contexts token budget,
+	// templated into its environment as CLAUDE_CODE_MAX_CONTEXTS_TOKENS. It is
+	// backend-agnostic. Empty falls back to the operator's MaxContextsTokens
+	// default; if that is empty too the variable is omitted from the agent's
+	// environment so it uses Claude Code's built-in default.
+	MaxContextsTokens string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -305,8 +319,20 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 
 	// Auto-compact threshold: per-agent value, else the operator default.
 	// Empty (both) means the variable is omitted from the agent's environment
-	// in agentEnv, so the agent keeps Claude Code's built-in default.
+	// in agentEnv, so the agent keeps Claude Code's built-in default. A
+	// resolved non-empty value must be an integer between 50 and 100: like the
+	// repo above, a malformed one is a bad request and must not consume a
+	// slot.
 	autoCompact := firstNonEmpty(req.AutoCompactThreshold, m.cfg.AutoCompactThreshold)
+	if autoCompact != "" && !config.ValidAutoCompactThreshold(autoCompact) {
+		return store.Agent{}, fmt.Errorf("creating an agent: %w: %q", ErrInvalidAutoCompactThreshold, autoCompact)
+	}
+
+	// Max-contexts token budget: the same per-agent-else-operator pattern. No
+	// validation: the token budget is a plain number with no sensible fixed
+	// range (it depends on the model's context window), so any non-negative
+	// integer shape the operator or caller names is passed through.
+	maxContextsTokens := firstNonEmpty(req.MaxContextsTokens, m.cfg.MaxContextsTokens)
 
 	// Reserve the slot FIRST. store.Create both counts and inserts inside one
 	// bbolt read-write transaction, so N racing creates against a cap of N-1
@@ -317,6 +343,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
 		OllamaURL: rb.ollamaURL, Repo: repo,
 		AutoCompactThreshold: autoCompact,
+		MaxContextsTokens:    maxContextsTokens,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -761,6 +788,12 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 	// not set to "" -- so Claude Code falls back to its own built-in default.
 	if a.AutoCompactThreshold != "" {
 		env["CLAUDE_AUTO_COMPACT_THRESHOLD"] = a.AutoCompactThreshold
+	}
+
+	// Claude Code max-contexts token budget, resolved the same way and subject
+	// to the same omit-when-empty rule.
+	if a.MaxContextsTokens != "" {
+		env["CLAUDE_CODE_MAX_CONTEXTS_TOKENS"] = a.MaxContextsTokens
 	}
 
 	if a.DependaproxyDinernetIP.IsValid() {
