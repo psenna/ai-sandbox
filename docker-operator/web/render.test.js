@@ -187,6 +187,7 @@ test('renderCreateForm: a repo default containing HTML is escaped', () => {
 test('renderAgentInfo: renders both sections with the agent\'s resolved values', () => {
 	const html = Render.renderAgentInfo({
 		agent: {
+			id: 'agt_a1b2c3d4',
 			name: 'Alpha',
 			description: 'the worker',
 			backend: 'ollama',
@@ -202,6 +203,7 @@ test('renderAgentInfo: renders both sections with the agent\'s resolved values',
 	assert.match(html, /agent-info/);
 	assert.match(html, /Agent/);
 	assert.match(html, /Operator/);
+	assert.match(html, /agt_a1b2c3d4/);
 	assert.match(html, /acme\/widget\.git/);
 	assert.match(html, /ghcr\.io\/example\/agent:1\.2\.3/);
 	assert.match(html, /crun/);
@@ -220,11 +222,12 @@ test('renderAgentInfo: blank parameters render their placeholder, not an empty c
 
 test('renderAgentInfo: values containing HTML are escaped, never rendered raw', () => {
 	const html = Render.renderAgentInfo({
-		agent: { name: '<script>evil()</script>', repo: '"><img src=x>' },
+		agent: { id: '"><img src=id>', name: '<script>evil()</script>', repo: '"><img src=x>' },
 		operator: {},
 	});
 	assert.doesNotMatch(html, /<script>evil\(\)<\/script>/);
 	assert.doesNotMatch(html, /<img src=x>/);
+	assert.doesNotMatch(html, /<img src=id>/);
 });
 
 test('renderAgentInfo: missing input degrades to placeholders instead of throwing', () => {

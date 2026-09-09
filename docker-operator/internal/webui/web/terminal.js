@@ -319,7 +319,7 @@
 				'<div class="detail__header">' +
 					'<input class="detail__name" type="text" placeholder="(unnamed)" aria-label="Agent name">' +
 					'<input class="detail__description" type="text" placeholder="Add a description…" aria-label="Agent description">' +
-					'<span class="detail__repo" title="repository this agent works"></span>' +
+					'<span class="detail__id" title="agent id"></span>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
 					'<span class="detail__menu">' +
 						'<button class="detail__menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Options">⋮</button>' +
@@ -335,7 +335,7 @@
 
 		var nameInput = container.querySelector('.detail__name');
 		var descInput = container.querySelector('.detail__description');
-		var repoEl = container.querySelector('.detail__repo');
+		var idEl = container.querySelector('.detail__id');
 		var saveStatus = container.querySelector('.detail__save-status');
 		var menuBtn = container.querySelector('.detail__menu-btn');
 		var menuPanel = container.querySelector('.detail__menu-panel');
@@ -349,7 +349,7 @@
 				if (destroyed) return;
 				nameInput.value = agent.name || '';
 				descInput.value = agent.description || '';
-				repoEl.textContent = agent.repo || 'no repo';
+				idEl.textContent = agent.id;
 			})
 			.catch(function (e) {
 				if (destroyed) return;

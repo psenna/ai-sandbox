@@ -139,11 +139,12 @@
 
 	// renderAgentInfo renders the "Agent info" overlay's body from
 	// GET /api/agents/{id}/info's body ({agent, operator}): two sections —
-	// the agent's resolved create-time parameters (what the New Agent form
-	// sent, or what the operator defaults filled in for it), and the
-	// operator-level parameters that apply to every agent. A blank parameter
-	// renders its placeholder (— or "built-in default") instead of an empty
-	// cell, so a reader can tell "not set" from a rendering bug.
+	// the agent's identity (its immutable ID) and resolved create-time
+	// parameters (what the New Agent form sent, or what the operator
+	// defaults filled in for it), and the operator-level parameters that
+	// apply to every agent. A blank parameter renders its placeholder (— or
+	// "built-in default") instead of an empty cell, so a reader can tell
+	// "not set" from a rendering bug.
 	function renderAgentInfo(info) {
 		info = info || {};
 		var agent = info.agent || {};
@@ -160,6 +161,7 @@
 				'<section class="agent-info__section">' +
 					'<h3 class="agent-info__heading">Agent</h3>' +
 					'<dl class="agent-info__list">' +
+						row('ID', agent.id, '—') +
 						row('Name', agent.name, '(unnamed)') +
 						row('Description', agent.description, '—') +
 						row('Backend', agent.backend ? backendLabel(agent.backend) : '', '—') +
