@@ -98,6 +98,7 @@
 		var fastModel = escapeHTML(defaults.fastModel || '');
 		var ollamaURL = escapeHTML(defaults.ollamaUrl || '');
 		var repo = escapeHTML(defaults.repo || '');
+		var autoCompact = escapeHTML(defaults.autoCompactThreshold || '');
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		return (
 			'<form class="create-form">' +
@@ -106,6 +107,9 @@
 				'<label class="create-form__row">Description<input class="create-form__description" type="text" placeholder="(optional)"></label>' +
 				'<label class="create-form__row">Repository' +
 					'<input class="create-form__repo" type="text" value="' + repo + '" placeholder="owner/repo.git — blank for a bare terminal">' +
+				'</label>' +
+				'<label class="create-form__row">Auto-compact threshold' +
+					'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '" placeholder="Claude Code auto-compact threshold — blank to use the built-in default">' +
 				'</label>' +
 				'<fieldset class="create-form__row create-form__backend">' +
 					'<legend>Backend</legend>' +
