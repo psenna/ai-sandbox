@@ -99,6 +99,7 @@
 		var ollamaURL = escapeHTML(defaults.ollamaUrl || '');
 		var repo = escapeHTML(defaults.repo || '');
 		var autoCompact = escapeHTML(defaults.autoCompactThreshold || '');
+		var maxContextsTokens = escapeHTML(defaults.maxContextsTokens || '');
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		return (
 			'<form class="create-form">' +
@@ -110,6 +111,9 @@
 				'</label>' +
 				'<label class="create-form__row">Auto-compact threshold' +
 					'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '" placeholder="Claude Code auto-compact threshold — blank to use the built-in default">' +
+				'</label>' +
+				'<label class="create-form__row">Max-contexts tokens' +
+					'<input class="create-form__max-contexts-tokens" type="text" value="' + maxContextsTokens + '" placeholder="Claude Code max-contexts tokens — blank to use the built-in default">' +
 				'</label>' +
 				'<fieldset class="create-form__row create-form__backend">' +
 					'<legend>Backend</legend>' +

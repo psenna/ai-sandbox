@@ -54,6 +54,7 @@ type AgentManager interface {
 	DefaultOllamaURL() string
 	DefaultRepo() string
 	DefaultAutoCompactThreshold() string
+	DefaultMaxContextsTokens() string
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
@@ -174,8 +175,15 @@ type createAgentRequest struct {
 	// templated into its environment as CLAUDE_AUTO_COMPACT_THRESHOLD. Backend-
 	// agnostic. Empty falls back to the operator's default; empty with no
 	// default means the variable is omitted so the agent uses Claude Code's
-	// built-in default.
+	// built-in default. When non-empty it must be an integer between 50 and
+	// 100.
 	AutoCompactThreshold string `json:"auto_compact_threshold"`
+	// MaxContextsTokens is this agent's Claude Code max-contexts token budget,
+	// templated into its environment as CLAUDE_CODE_MAX_CONTEXTS_TOKENS.
+	// Backend-agnostic. Empty falls back to the operator's default; empty with
+	// no default means the variable is omitted so the agent uses Claude Code's
+	// built-in default.
+	MaxContextsTokens string `json:"max_contexts_tokens"`
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -202,6 +210,10 @@ type agentListResponse struct {
 	// AGENT_AUTO_COMPACT_THRESHOLD; the UI then shows a blank field meaning
 	// "the agent uses Claude Code's built-in default".
 	DefaultAutoCompactThreshold string `json:"default_auto_compact_threshold"`
+	// DefaultMaxContextsTokens is "" when the operator set no
+	// AGENT_MAX_CONTEXTS_TOKENS; the UI then shows a blank field meaning
+	// "the agent uses Claude Code's built-in default".
+	DefaultMaxContextsTokens string `json:"default_max_contexts_tokens"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -246,6 +258,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		DefaultOllamaURL:            h.mgr.DefaultOllamaURL(),
 		DefaultRepo:                 h.mgr.DefaultRepo(),
 		DefaultAutoCompactThreshold: h.mgr.DefaultAutoCompactThreshold(),
+		DefaultMaxContextsTokens:    h.mgr.DefaultMaxContextsTokens(),
 	})
 }
 
@@ -271,12 +284,17 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
 		return
 	}
+	if req.AutoCompactThreshold != "" && !config.ValidAutoCompactThreshold(req.AutoCompactThreshold) {
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
+		return
+	}
 
 	a, err := h.mgr.Create(r.Context(), agent.CreateRequest{
 		Name: req.Name, Description: req.Description,
 		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
 		OllamaURL: req.OllamaURL, Repo: req.Repo,
 		AutoCompactThreshold: req.AutoCompactThreshold,
+		MaxContextsTokens:    req.MaxContextsTokens,
 	})
 	if err != nil {
 		switch {
@@ -290,6 +308,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
 		case agent.IsInvalidRepo(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
+		case agent.IsInvalidAutoCompactThreshold(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
 		default:
 			h.internalError(w, "creating agent", err)
 		}

@@ -185,6 +185,14 @@ services:
       # built-in default.
       AGENT_AUTO_COMPACT_THRESHOLD: "${AGENT_AUTO_COMPACT_THRESHOLD:-}"
 
+      # OPTIONAL, empty by default: the default Claude Code max-contexts token
+      # budget a create request that names none falls back to, templated into
+      # each agent as CLAUDE_CODE_MAX_CONTEXTS_TOKENS (backend-agnostic).
+      # Per-agent values on the create form / POST /api/agents override it.
+      # Leave empty to OMIT the variable entirely so agents use Claude Code's
+      # built-in default.
+      AGENT_MAX_CONTEXTS_TOKENS: "${AGENT_MAX_CONTEXTS_TOKENS:-}"
+
       # Centralized per-agent file store. FILESTORE_DIR (the path the operator
       # sees it at) and FILESTORE_VOLUME (the Docker volume name the daemon
       # resolves each agent's subpath mount against) are TWO NAMES FOR THE
