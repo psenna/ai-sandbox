@@ -117,6 +117,14 @@ agent-image:
 # AGENT_TOKEN/GITHUB_REPO and a writable /workspace, neither of which this
 # check is about.
 agent-image-smoke:
+	@echo "--- claude is the official native binary, on PATH, and runs ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'command -v claude && claude --version'
+	@echo "--- image pins the build-time version (no runtime self-update) ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test "$$DISABLE_AUTOUPDATER" = 1'
+	@echo "OK: DISABLE_AUTOUPDATER=1"
+	@echo "--- musl: system ripgrep installed and selected ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'command -v rg && test "$$USE_BUILTIN_RIPGREP" = 0'
+	@echo "OK: rg + USE_BUILTIN_RIPGREP=0"
 	@echo "--- tmux is installed ---"
 	docker run --rm --entrypoint tmux $(AGENT_IMAGE) -V
 	@echo "--- /opt/skills holds exactly the 5 expected skills ---"
