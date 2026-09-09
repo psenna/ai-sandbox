@@ -1,0 +1,117 @@
+name: docker-operator agent image
+
+# Build docker-operator's agent image (docker-operator/agent/Dockerfile) and
+# publish it to the GitHub Container Registry:
+#
+#   ghcr.io/<owner>/ai-sandbox-agent:<UTC date-time>   immutable, one per build
+#   ghcr.io/<owner>/ai-sandbox-agent:latest            moving pointer
+#
+# This closes the ":dev, build it yourself" gap called out in
+# internal/config's defaultAgentImage comment and docker-operator-release.yml's
+# header -- the agent image now has a real published home.
+#
+# Trigger: a push to `main` that touches docker-operator/agent/** (the
+# Dockerfile, tmux-boot.sh, the forked use-docker skill) or this workflow
+# file. A pull request touching the same paths BUILDS the image (both
+# architectures) but does not push, so a broken Dockerfile still fails a
+# check. workflow_dispatch runs it on demand -- use it for the very first
+# publish, or to re-cut :latest without an agent/ change.
+#
+# NOTE: the Dockerfile also COPYs assets from OUTSIDE docker-operator/agent/
+# (claude-code/entrypoint.sh and four claude-code/*/SKILL.md files). Changing
+# one of those alone does NOT rebuild the image here -- run this workflow via
+# workflow_dispatch after such a change, or fold it into an agent/ commit.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docker-operator/agent/**'
+      - '.github/workflows/docker-operator-agent-image.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker-operator/agent/**'
+      - '.github/workflows/docker-operator-agent-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read    # checkout
+  packages: write   # push to ghcr.io (push / dispatch only; a PR never pushes)
+
+# One publish per ref at a time; a newer push supersedes an in-flight older one.
+concurrency:
+  group: agent-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent-image:
+    name: build + publish agent image
+    runs-on: ubuntu-latest
+    # Canonical repo only for publishes; a fork's PRs still get the build.
+    if: github.repository == 'psenna/ai-sandbox' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: compute image tags
+        id: tags
+        run: |
+          set -eu
+          repo="ghcr.io/${{ github.repository_owner }}/ai-sandbox-agent"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Not pushed -- just a stable name for build logs / cache.
+            tags="$repo:pr-${{ github.event.number }}"
+            ts=""
+          else
+            ts="$(date -u +'%Y%m%d-%H%M%S')"
+            tags="$repo:$ts"$'\n'"$repo:latest"
+          fi
+          {
+            echo "timestamp=$ts"
+            printf 'tags<<EOF\n%s\nEOF\n' "$tags"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push
+        uses: docker/build-push-action@v6
+        with:
+          # docker-operator/agent/Dockerfile COPYs from the repo root
+          # (claude-code/*/SKILL.md, claude-code/entrypoint.sh, ...), so the
+          # build context is the checkout root, not docker-operator/agent/.
+          context: .
+          file: docker-operator/agent/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          # The Dockerfile does not cross-compile, so the arm64 leg builds
+          # under QEMU emulation -- slower, but it matches
+          # docker-operator-release.yml's own copied pattern.
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          # Plain multi-arch manifest list, same as a local `docker build`.
+          provenance: false
+
+      - name: summary
+        if: github.event_name != 'pull_request'
+        run: |
+          repo="ghcr.io/${{ github.repository_owner }}/ai-sandbox-agent"
+          {
+            echo "### Published agent image"
+            echo
+            echo '```'
+            echo "$repo:${{ steps.tags.outputs.timestamp }}"
+            echo "$repo:latest"
+            echo '```'
+            echo
+            echo "Pin the date-time tag in \`docker-operator/.env.example\` /"
+            echo "\`docker-compose.yaml\` / \`internal/config/config.go\` for a"
+            echo "reproducible default."
+          } >> "$GITHUB_STEP_SUMMARY"

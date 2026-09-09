@@ -28,7 +28,7 @@ SKILL_FORK      ?= agent/skills/use-docker/SKILL.md
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION   ?= v1.6.0
-AGENT_IMAGE           ?= ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev
+AGENT_IMAGE           ?= ghcr.io/psenna/ai-sandbox-agent:latest
 
 REPO_SUBDIR := $(patsubst $(SHARED_DIR)/%,%,$(CURDIR))
 CACHE_DIR   := /work/$(CACHE_SUBDIR)

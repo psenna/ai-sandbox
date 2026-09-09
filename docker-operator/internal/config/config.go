@@ -26,7 +26,7 @@ const (
 
 	defaultListenAddr  = ":8080"
 	defaultStateDBPath = "/var/lib/docker-operator/state.db"
-	defaultAgentImage  = "ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev"
+	defaultAgentImage  = "ghcr.io/psenna/ai-sandbox-agent:latest"
 
 	defaultProxynetName = "docker-operator-proxynet"
 	defaultDbnetName    = "docker-operator-dbnet"
@@ -147,7 +147,11 @@ type Config struct {
 
 	// AgentImage is the image reference for agent containers -- the variant
 	// built by docker-operator/agent/Dockerfile (issue #67), which adds tmux
-	// and trims the K8s-operator-only skills.
+	// and trims the K8s-operator-only skills. Defaults to
+	// ghcr.io/psenna/ai-sandbox-agent:latest, published by
+	// .github/workflows/docker-operator-agent-image.yml (which also pushes an
+	// immutable :<UTC date-time> tag); override with that pinned tag for
+	// reproducibility, or shadow :latest with a local `make agent-image`.
 	AgentImage string
 
 	// ProxynetName is the shared network carrying the singleton ollama,
