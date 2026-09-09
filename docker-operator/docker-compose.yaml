@@ -171,7 +171,7 @@ services:
       # the shared Anthropic credential (web UI "Anthropic account" panel /
       # PUT /api/anthropic/auth).
       OLLAMA_URL: "http://ollama:11434"
-      AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.3:cloud}"
+      AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.3-flash:cloud}"
       AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-glm-5.3-flash:cloud}"
 
       # OPTIONAL, empty by default: the default Claude Code auto-compact
