@@ -60,7 +60,7 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		MaxAgents:               5,
 		ListenAddr:              ":8080",
 		StateDBPath:             "/var/lib/docker-operator/state.db",
-		AgentImage:              "ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev",
+		AgentImage:              "ghcr.io/psenna/ai-sandbox-agent:latest",
 		ProxynetName:            "docker-operator-proxynet",
 		DbnetName:               "docker-operator-dbnet",
 		GithubRepo:              "psenna/ai-sandbox.git",

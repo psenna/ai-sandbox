@@ -33,8 +33,11 @@
 # ever gets this socket, and no agent shares a network with it.
 #
 # Prerequisites: same as the root stack's -- sysbox-ce installed
-# (setup-ubuntu-host.sh) for the per-agent DinD sidecars' runtime, and
-# `make agent-image` run once so AGENT_IMAGE exists locally.
+# (setup-ubuntu-host.sh) for the per-agent DinD sidecars' runtime. The agent
+# image (AGENT_IMAGE) defaults to ghcr.io/psenna/ai-sandbox-agent:latest,
+# published by .github/workflows/docker-operator-agent-image.yml on every
+# docker-operator/agent/** change to main; the operator pulls it on first
+# use. `make agent-image` builds and tags that same reference locally.
 
 services:
   ollama:
@@ -129,7 +132,7 @@ services:
       LISTEN_ADDR: "0.0.0.0:8000"
       STATE_DB_PATH: "/var/lib/docker-operator/state.db"
       MAX_AGENTS: "${MAX_AGENTS:-5}"
-      AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev}"
+      AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-agent:latest}"
       DOCKER_RUNTIME: "${DOCKER_RUNTIME:-sysbox-runc}"
       # The backend a create request that names none falls back to. Each
       # agent records its own choice; this is only the create-form default.

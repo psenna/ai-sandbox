@@ -371,6 +371,14 @@ creates the two containers, three volumes and private network described in
 credential first (sidebar **Anthropic account** panel — see [Anthropic
 login](#anthropic-login)).
 
+The agent image (`AGENT_IMAGE`, default
+`ghcr.io/psenna/ai-sandbox-agent:latest`) is pulled on first use — it is
+published to GHCR by
+[`.github/workflows/docker-operator-agent-image.yml`](../.github/workflows/docker-operator-agent-image.yml)
+on every `docker-operator/agent/**` change to `main`, tagged with a UTC
+date-time plus `:latest`. Pin a date-time tag in `.env` for a reproducible
+default, or run `make agent-image` to build and shadow `:latest` locally.
+
 **This step needs `sysbox-runc` installed on the Docker host** (unprivileged
 Docker-in-Docker for the agent's own DinD sidecar; see
 [`../setup-ubuntu-host.sh`](../setup-ubuntu-host.sh)) — most default Docker
