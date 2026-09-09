@@ -33,10 +33,12 @@
 FROM node:22-alpine
 
 # Same package set as the root Dockerfile (git for git-proxy clone/fetch/push,
-# ca-certificates, bash for the entrypoint, curl for the broker leg, docker-cli
-# as a client-only talker to the per-agent rootless DinD sidecar), plus tmux.
-RUN apk add --no-cache git ca-certificates bash curl docker-cli tmux && rm -rf /var/cache/apk/* && \
-    npm install -g @anthropic-ai/claude-code
+# ca-certificates, bash for the entrypoint + the Claude Code installer, curl for
+# the broker leg + the installer, libgcc/libstdc++/ripgrep for the native binary
+# on musl, docker-cli as a client-only talker to the per-agent rootless DinD
+# sidecar), plus tmux.
+RUN apk add --no-cache git ca-certificates bash curl libgcc libstdc++ ripgrep docker-cli tmux && \
+    rm -rf /var/cache/apk/*
 
 # Non-root runtime: node:22-alpine already ships a `node` user with uid 1000
 # (HOME=/home/node), matching git-proxy's and dependaproxy's uid 1000 so shared
@@ -77,6 +79,24 @@ RUN chmod +x /usr/local/bin/tmux-boot.sh
 RUN mkdir -p /workspace && chown node:node /workspace
 
 USER node
+# Claude Code: install it the official way (the npm route is deprecated) —
+# Anthropic's installer fetches the native binary and sets up the launcher.
+# Run as `node` so everything lands under /home/node (the .local/bin/claude
+# launcher + .local/share/claude/versions/) and is usable by the runtime user.
+# Download-then-run instead of `curl | bash`: a failed download must fail the
+# build, not silently pipe EOF into bash. To pin a version, pass it as the
+# script's argument (e.g. `bash /tmp/claude-install.sh 1.2.3`); default is latest.
+RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh && \
+    bash /tmp/claude-install.sh && \
+    rm -f /tmp/claude-install.sh
+# ~/.local/bin is the installer's launcher dir and is not on the base PATH.
+ENV PATH="/home/node/.local/bin:${PATH}"
+# The npm package was frozen at build time; keep that property. The native
+# installer auto-updates in the background by default — for a distributed image,
+# rebuilding IS the upgrade path, so the runtime must not swap versions itself.
+ENV DISABLE_AUTOUPDATER=1
+# musl: use the system ripgrep (installed above) instead of the bundled one.
+ENV USE_BUILTIN_RIPGREP=0
 # Create CLAUDE_CONFIG_DIR as the node user: same copy-up reasoning as
 # /workspace above -- without this the claude-config volume is root-owned and
 # Claude Code cannot write its session dir (EACCES on .../session-env).
