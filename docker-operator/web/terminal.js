@@ -1,5 +1,6 @@
 // terminal.js -- the agent detail view: an editable name/description
-// header, a delete button with a confirmation prompt, and an xterm.js
+// header, an options menu (View context / Agent info), a delete button
+// with a confirmation prompt, and an xterm.js
 // terminal wired to the WebSocket terminal bridge (GET
 // /ws/agents/{id}/terminal, issue #72's protocol: binary frames carry raw
 // PTY bytes each way, a JSON text frame carries {"type":"resize",...}).
@@ -12,14 +13,17 @@
 	'use strict';
 
 	// current holds the live view's teardown, so a new selection always
-	// starts from a clean slate. contextOverlay holds the "View context"
-	// overlay's teardown when one is open -- it lives on document.body, not
-	// inside the detail view, so it is torn down explicitly here too.
+	// starts from a clean slate. contextOverlay / infoOverlay hold the
+	// "View context" / "Agent info" overlays' teardown while one is open --
+	// they live on document.body, not inside the detail view, so they are
+	// torn down explicitly here too.
 	var current = null;
 	var contextOverlay = null;
+	var infoOverlay = null;
 
 	function teardownCurrent() {
 		closeContextOverlay();
+		closeInfoOverlay();
 		if (current) {
 			current.teardown();
 			current = null;
@@ -317,7 +321,13 @@
 					'<input class="detail__description" type="text" placeholder="Add a description…" aria-label="Agent description">' +
 					'<span class="detail__repo" title="repository this agent works"></span>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
-					'<button class="detail__context-btn" type="button">View context</button>' +
+					'<span class="detail__menu">' +
+						'<button class="detail__menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Options">⋮</button>' +
+						'<div class="detail__menu-panel" role="menu" hidden>' +
+							'<button class="detail__menu-item" type="button" role="menuitem" data-action="view-context">View context</button>' +
+							'<button class="detail__menu-item" type="button" role="menuitem" data-action="agent-info">Agent info</button>' +
+						'</div>' +
+					'</span>' +
 					'<button class="detail__delete-btn" type="button">Delete</button>' +
 				'</div>' +
 				'<div class="detail__terminal"></div>' +
@@ -327,7 +337,8 @@
 		var descInput = container.querySelector('.detail__description');
 		var repoEl = container.querySelector('.detail__repo');
 		var saveStatus = container.querySelector('.detail__save-status');
-		var contextBtn = container.querySelector('.detail__context-btn');
+		var menuBtn = container.querySelector('.detail__menu-btn');
+		var menuPanel = container.querySelector('.detail__menu-panel');
 		var deleteBtn = container.querySelector('.detail__delete-btn');
 		var termEl = container.querySelector('.detail__terminal');
 
@@ -366,7 +377,54 @@
 			});
 		});
 
-		contextBtn.addEventListener('click', function () { openContextOverlay(agentID); });
+		// --- options menu ----------------------------------------------------
+		// Press the ⋮ button to open; press it again, click outside, or press
+		// Esc to close. The document listeners live only while the menu is
+		// open (like the context overlay's) so a swapped view never leaves a
+		// stale listener behind.
+		var menuListeners = null;
+
+		function closeMenu() {
+			menuPanel.hidden = true;
+			menuBtn.setAttribute('aria-expanded', 'false');
+			if (menuListeners) {
+				document.removeEventListener('mousedown', menuListeners.onDown);
+				document.removeEventListener('keydown', menuListeners.onKey);
+				menuListeners = null;
+			}
+		}
+
+		function openMenu() {
+			menuPanel.hidden = false;
+			menuBtn.setAttribute('aria-expanded', 'true');
+			menuListeners = {
+				// A mousedown anywhere that is not the panel or its trigger
+				// button closes the menu (the click on the trigger itself is
+				// what toggles it, so the button is excluded here).
+				onDown: function (ev) {
+					if (!menuPanel.contains(ev.target) && ev.target !== menuBtn) closeMenu();
+				},
+				onKey: function (ev) {
+					if (ev.key === 'Escape') closeMenu();
+				},
+			};
+			document.addEventListener('mousedown', menuListeners.onDown);
+			document.addEventListener('keydown', menuListeners.onKey);
+		}
+
+		menuBtn.addEventListener('click', function () {
+			if (menuPanel.hidden) openMenu();
+			else closeMenu();
+		});
+
+		menuPanel.querySelectorAll('.detail__menu-item').forEach(function (item) {
+			item.addEventListener('click', function () {
+				closeMenu();
+				var action = item.getAttribute('data-action');
+				if (action === 'view-context') openContextOverlay(agentID);
+				else if (action === 'agent-info') openInfoOverlay(agentID);
+			});
+		});
 
 		deleteBtn.addEventListener('click', function () {
 			var label = nameInput.value || agentID;
@@ -392,6 +450,7 @@
 		current = {
 			teardown: function () {
 				destroyed = true;
+				closeMenu();
 				t.teardown();
 			},
 		};
@@ -544,6 +603,65 @@
 
 	function closeContextOverlay() {
 		if (contextOverlay) contextOverlay.teardown();
+	}
+
+	// --- Agent info overlay ----------------------------------------------------
+
+	// openInfoOverlay shows the agent's create-time parameters and the
+	// operator-level defaults (GET /api/agents/{id}/info) in a small
+	// full-screen overlay: one request, two sections, rendered by
+	// render.js's pure renderAgentInfo. Esc, an outside mousedown, or
+	// Close dismisses; it is torn down on close and whenever the detail
+	// view is swapped (teardownCurrent), same as the context overlay.
+	function openInfoOverlay(agentID) {
+		closeInfoOverlay();
+
+		var overlay = document.createElement('div');
+		overlay.className = 'info-overlay';
+		overlay.innerHTML =
+			'<div class="info-overlay__panel" role="dialog" aria-label="Agent info">' +
+				'<div class="info-overlay__bar">' +
+					'<strong class="info-overlay__title">Agent info</strong>' +
+					'<button class="info-overlay__close" type="button">Close</button>' +
+				'</div>' +
+				'<div class="info-overlay__body">Loading…</div>' +
+			'</div>';
+		document.body.appendChild(overlay);
+
+		var bodyEl = overlay.querySelector('.info-overlay__body');
+		var mine = { token: true };
+
+		fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/info')
+			.then(function (info) {
+				if (!mine.token || !overlay.parentNode) return; // superseded / closed
+				bodyEl.innerHTML = window.Render.renderAgentInfo(info);
+			})
+			.catch(function (e) {
+				if (!mine.token || !overlay.parentNode) return;
+				bodyEl.textContent = 'Failed to load agent info: ' + (e && e.message ? e.message : e);
+			});
+
+		function onKeydown(ev) {
+			if (ev.key === 'Escape') closeInfoOverlay();
+		}
+		overlay.querySelector('.info-overlay__close').addEventListener('click', closeInfoOverlay);
+		overlay.addEventListener('mousedown', function (ev) {
+			if (ev.target === overlay) closeInfoOverlay();
+		});
+		document.addEventListener('keydown', onKeydown);
+
+		infoOverlay = {
+			teardown: function () {
+				mine.token = false;
+				document.removeEventListener('keydown', onKeydown);
+				if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+				infoOverlay = null;
+			},
+		};
+	}
+
+	function closeInfoOverlay() {
+		if (infoOverlay) infoOverlay.teardown();
 	}
 
 	// renderAnthropicLogin renders the "Log in with your Claude subscription"

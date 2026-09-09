@@ -57,6 +57,14 @@ func (m *Manager) DefaultAutoCompactThreshold() string { return m.cfg.AutoCompac
 // built-in default.
 func (m *Manager) DefaultMaxContextTokens() string { return m.cfg.MaxContextTokens }
 
+// AgentImage and DockerRuntime expose the operator-level parameters that
+// apply to every agent regardless of its create-time request: the agent
+// container image and the Docker-in-Docker sidecar's container runtime.
+// internal/api's GET /api/agents/{id}/info serves them next to the agent
+// record so the UI's "Agent info" overlay can show what the operator set.
+func (m *Manager) AgentImage() string    { return m.cfg.AgentImage }
+func (m *Manager) DockerRuntime() string { return m.cfg.DockerRuntime }
+
 // AnthropicAuthStatus reports whether the shared Anthropic credential is
 // configured -- its kind and last-set time, never its value. The value
 // stays inside internal/agent (resolveBackend) and internal/store; nothing
