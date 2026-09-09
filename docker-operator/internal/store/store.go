@@ -143,12 +143,12 @@ type Agent struct {
 	// container so the agent uses Claude Code's built-in default.
 	AutoCompactThreshold string `json:"auto_compact_threshold,omitempty"`
 
-	// MaxContextsTokens is this agent's Claude Code max-contexts token budget,
-	// templated into its container as CLAUDE_CODE_MAX_CONTEXTS_TOKENS. Set once
-	// at create time from the request or the operator's AGENT_MAX_CONTEXTS_TOKENS
+	// MaxContextTokens is this agent's Claude Code max-context token budget,
+	// templated into its container as CLAUDE_CODE_MAX_CONTEXT_TOKENS. Set once
+	// at create time from the request or the operator's AGENT_MAX_CONTEXT_TOKENS
 	// default; empty (the default) means the variable is omitted from the
 	// container so the agent uses Claude Code's built-in default.
-	MaxContextsTokens string `json:"max_contexts_tokens,omitempty"`
+	MaxContextTokens string `json:"max_context_tokens,omitempty"`
 
 	// Status is the lifecycle state; see Status.
 	Status Status `json:"status"`
@@ -209,7 +209,7 @@ type CreateSpec struct {
 	// Description is the initial free-form description. May be empty.
 	Description string
 	// Backend, Model, FastModel, OllamaURL, Repo, AutoCompactThreshold and
-	// MaxContextsTokens are recorded on the new agent verbatim. internal/agent
+	// MaxContextTokens are recorded on the new agent verbatim. internal/agent
 	// resolves them (request value or operator default) and validates them
 	// before calling Create; the store only persists what it is given.
 	Backend              string
@@ -218,7 +218,7 @@ type CreateSpec struct {
 	OllamaURL            string
 	Repo                 string
 	AutoCompactThreshold string
-	MaxContextsTokens    string
+	MaxContextTokens     string
 }
 
 // bucketAgents holds every agent record, keyed by agent ID. bucketSettings
@@ -378,7 +378,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		OllamaURL:            spec.OllamaURL,
 		Repo:                 spec.Repo,
 		AutoCompactThreshold: spec.AutoCompactThreshold,
-		MaxContextsTokens:    spec.MaxContextsTokens,
+		MaxContextTokens:     spec.MaxContextTokens,
 		Status:               StatusCreating,
 		CreatedAt:            now,
 		UpdatedAt:            now,

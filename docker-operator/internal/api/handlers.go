@@ -54,7 +54,7 @@ type AgentManager interface {
 	DefaultOllamaURL() string
 	DefaultRepo() string
 	DefaultAutoCompactThreshold() string
-	DefaultMaxContextsTokens() string
+	DefaultMaxContextTokens() string
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
@@ -178,12 +178,12 @@ type createAgentRequest struct {
 	// built-in default. When non-empty it must be an integer between 50 and
 	// 100.
 	AutoCompactThreshold string `json:"auto_compact_threshold"`
-	// MaxContextsTokens is this agent's Claude Code max-contexts token budget,
-	// templated into its environment as CLAUDE_CODE_MAX_CONTEXTS_TOKENS.
+	// MaxContextTokens is this agent's Claude Code max-context token budget,
+	// templated into its environment as CLAUDE_CODE_MAX_CONTEXT_TOKENS.
 	// Backend-agnostic. Empty falls back to the operator's default; empty with
 	// no default means the variable is omitted so the agent uses Claude Code's
 	// built-in default.
-	MaxContextsTokens string `json:"max_contexts_tokens"`
+	MaxContextTokens string `json:"max_context_tokens"`
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -210,10 +210,10 @@ type agentListResponse struct {
 	// AGENT_AUTO_COMPACT_THRESHOLD; the UI then shows a blank field meaning
 	// "the agent uses Claude Code's built-in default".
 	DefaultAutoCompactThreshold string `json:"default_auto_compact_threshold"`
-	// DefaultMaxContextsTokens is "" when the operator set no
-	// AGENT_MAX_CONTEXTS_TOKENS; the UI then shows a blank field meaning
+	// DefaultMaxContextTokens is "" when the operator set no
+	// AGENT_MAX_CONTEXT_TOKENS; the UI then shows a blank field meaning
 	// "the agent uses Claude Code's built-in default".
-	DefaultMaxContextsTokens string `json:"default_max_contexts_tokens"`
+	DefaultMaxContextTokens string `json:"default_max_context_tokens"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -258,7 +258,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		DefaultOllamaURL:            h.mgr.DefaultOllamaURL(),
 		DefaultRepo:                 h.mgr.DefaultRepo(),
 		DefaultAutoCompactThreshold: h.mgr.DefaultAutoCompactThreshold(),
-		DefaultMaxContextsTokens:    h.mgr.DefaultMaxContextsTokens(),
+		DefaultMaxContextTokens:     h.mgr.DefaultMaxContextTokens(),
 	})
 }
 
@@ -294,7 +294,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
 		OllamaURL: req.OllamaURL, Repo: req.Repo,
 		AutoCompactThreshold: req.AutoCompactThreshold,
-		MaxContextsTokens:    req.MaxContextsTokens,
+		MaxContextTokens:     req.MaxContextTokens,
 	})
 	if err != nil {
 		switch {
