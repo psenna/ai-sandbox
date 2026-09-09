@@ -14,7 +14,7 @@
 		agents: [],
 		maxAgents: 0,
 		selectedID: null,
-		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextsTokens: '' },
+		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '' },
 	};
 
 	var sidebarList = document.getElementById('agent-list');
@@ -66,7 +66,7 @@
 			ollamaUrl: data.default_ollama_url || '',
 			repo: data.default_repo || '',
 			autoCompactThreshold: data.default_auto_compact_threshold || '',
-			maxContextsTokens: data.default_max_contexts_tokens || '',
+			maxContextTokens: data.default_max_context_tokens || '',
 		};
 		renderSidebar();
 	}
@@ -122,10 +122,10 @@
 			// and let the agent use Claude Code's built-in default".
 			var autoCompact = form.querySelector('.create-form__auto-compact').value.trim();
 			if (autoCompact) body.auto_compact_threshold = autoCompact;
-			// Max-contexts tokens follows the same backend-agnostic, send-only-
+			// Max-context tokens follows the same backend-agnostic, send-only-
 			// when-entered rule.
-			var maxContextsTokens = form.querySelector('.create-form__max-contexts-tokens').value.trim();
-			if (maxContextsTokens) body.max_contexts_tokens = maxContextsTokens;
+			var maxContextTokens = form.querySelector('.create-form__max-context-tokens').value.trim();
+			if (maxContextTokens) body.max_context_tokens = maxContextTokens;
 			if (backend === 'ollama') {
 				body.model = form.querySelector('.create-form__model').value.trim();
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();

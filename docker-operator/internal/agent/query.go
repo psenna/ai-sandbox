@@ -50,12 +50,12 @@ func (m *Manager) DefaultRepo() string      { return m.cfg.GithubRepo }
 // built-in default.
 func (m *Manager) DefaultAutoCompactThreshold() string { return m.cfg.AutoCompactThreshold }
 
-// DefaultMaxContextsTokens exposes the operator's default Claude Code
-// max-contexts token budget, "" when the operator set no
-// AGENT_MAX_CONTEXTS_TOKENS. The UI shows it as the create-form default;
+// DefaultMaxContextTokens exposes the operator's default Claude Code
+// max-context token budget, "" when the operator set no
+// AGENT_MAX_CONTEXT_TOKENS. The UI shows it as the create-form default;
 // empty means the variable is omitted from the agent so it uses Claude Code's
 // built-in default.
-func (m *Manager) DefaultMaxContextsTokens() string { return m.cfg.MaxContextsTokens }
+func (m *Manager) DefaultMaxContextTokens() string { return m.cfg.MaxContextTokens }
 
 // AnthropicAuthStatus reports whether the shared Anthropic credential is
 // configured -- its kind and last-set time, never its value. The value

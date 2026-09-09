@@ -256,14 +256,14 @@ type Config struct {
 	// 50 and 100 (see ValidAutoCompactThreshold).
 	AutoCompactThreshold string
 
-	// MaxContextsTokens is the default Claude Code max-contexts token budget a
+	// MaxContextTokens is the default Claude Code max-context token budget a
 	// create request that names none falls back to, templated into each agent
-	// as CLAUDE_CODE_MAX_CONTEXTS_TOKENS. It is backend-agnostic. OPTIONAL and
+	// as CLAUDE_CODE_MAX_CONTEXT_TOKENS. It is backend-agnostic. OPTIONAL and
 	// empty by default: when the effective value (per-agent override, else
 	// this) is empty the variable is OMITTED from the agent's environment
 	// entirely, so the agent uses Claude Code's own built-in default rather
 	// than being pinned to a value.
-	MaxContextsTokens string
+	MaxContextTokens string
 
 	// DependaproxyContainer is the name of the shared DependaProxy container
 	// the create flow connects to each new agent's private dinernet.
@@ -393,9 +393,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.AutoCompactThreshold, "auto-compact-threshold",
 		envOr(getenv, "AGENT_AUTO_COMPACT_THRESHOLD", ""),
 		"optional default for Claude Code's auto-compact threshold, an integer between 50 and 100, templated into each agent as CLAUDE_AUTO_COMPACT_THRESHOLD; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_AUTO_COMPACT_THRESHOLD)")
-	fs.StringVar(&c.MaxContextsTokens, "max-contexts-tokens",
-		envOr(getenv, "AGENT_MAX_CONTEXTS_TOKENS", ""),
-		"optional default for Claude Code's max-contexts token budget, templated into each agent as CLAUDE_CODE_MAX_CONTEXTS_TOKENS; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_MAX_CONTEXTS_TOKENS)")
+	fs.StringVar(&c.MaxContextTokens, "max-context-tokens",
+		envOr(getenv, "AGENT_MAX_CONTEXT_TOKENS", ""),
+		"optional default for Claude Code's max-context token budget, templated into each agent as CLAUDE_CODE_MAX_CONTEXT_TOKENS; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_MAX_CONTEXT_TOKENS)")
 	fs.StringVar(&c.DependaproxyContainer, "dependaproxy-container",
 		envOr(getenv, "DEPENDAPROXY_CONTAINER", defaultDependaproxyContainer),
 		"name of the shared DependaProxy container the create flow connects to each new agent's private dinernet (env DEPENDAPROXY_CONTAINER)")

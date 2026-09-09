@@ -147,8 +147,8 @@ var fieldCases = []struct {
 		func(c Config) string { return c.AgentFastModel }},
 	{"AutoCompactThreshold", "AGENT_AUTO_COMPACT_THRESHOLD", "auto-compact-threshold", "85", "90",
 		func(c Config) string { return c.AutoCompactThreshold }},
-	{"MaxContextsTokens", "AGENT_MAX_CONTEXTS_TOKENS", "max-contexts-tokens", "150000", "200000",
-		func(c Config) string { return c.MaxContextsTokens }},
+	{"MaxContextTokens", "AGENT_MAX_CONTEXT_TOKENS", "max-context-tokens", "150000", "200000",
+		func(c Config) string { return c.MaxContextTokens }},
 	{"DependaproxyContainer", "DEPENDAPROXY_CONTAINER", "dependaproxy-container", "env-dependaproxy", "flag-dependaproxy",
 		func(c Config) string { return c.DependaproxyContainer }},
 	{"FilestoreDir", "FILESTORE_DIR", "filestore-dir", "/env/filestore", "/flag/filestore",
@@ -401,7 +401,7 @@ func TestValidate_AcceptsBoundaryValues(t *testing.T) {
 		{"auto-compact-threshold at the lower bound", []string{"--auto-compact-threshold=50"}},
 		{"auto-compact-threshold at the upper bound", []string{"--auto-compact-threshold=100"}},
 		{"empty auto-compact-threshold omits the variable, even out-of-range values aside", []string{"--auto-compact-threshold="}},
-		{"max-contexts-tokens set", []string{"--max-contexts-tokens=200000"}},
+		{"max-context-tokens set", []string{"--max-context-tokens=200000"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

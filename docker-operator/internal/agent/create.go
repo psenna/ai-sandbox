@@ -270,12 +270,12 @@ type CreateRequest struct {
 	// default. When non-empty (after the fallback) it must be an integer
 	// between 50 and 100.
 	AutoCompactThreshold string
-	// MaxContextsTokens is this agent's Claude Code max-contexts token budget,
-	// templated into its environment as CLAUDE_CODE_MAX_CONTEXTS_TOKENS. It is
-	// backend-agnostic. Empty falls back to the operator's MaxContextsTokens
+	// MaxContextTokens is this agent's Claude Code max-context token budget,
+	// templated into its environment as CLAUDE_CODE_MAX_CONTEXT_TOKENS. It is
+	// backend-agnostic. Empty falls back to the operator's MaxContextTokens
 	// default; if that is empty too the variable is omitted from the agent's
 	// environment so it uses Claude Code's built-in default.
-	MaxContextsTokens string
+	MaxContextTokens string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -328,11 +328,11 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating an agent: %w: %q", ErrInvalidAutoCompactThreshold, autoCompact)
 	}
 
-	// Max-contexts token budget: the same per-agent-else-operator pattern. No
+	// Max-context token budget: the same per-agent-else-operator pattern. No
 	// validation: the token budget is a plain number with no sensible fixed
 	// range (it depends on the model's context window), so any non-negative
 	// integer shape the operator or caller names is passed through.
-	maxContextsTokens := firstNonEmpty(req.MaxContextsTokens, m.cfg.MaxContextsTokens)
+	maxContextTokens := firstNonEmpty(req.MaxContextTokens, m.cfg.MaxContextTokens)
 
 	// Reserve the slot FIRST. store.Create both counts and inserts inside one
 	// bbolt read-write transaction, so N racing creates against a cap of N-1
@@ -343,7 +343,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
 		OllamaURL: rb.ollamaURL, Repo: repo,
 		AutoCompactThreshold: autoCompact,
-		MaxContextsTokens:    maxContextsTokens,
+		MaxContextTokens:     maxContextTokens,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -790,10 +790,10 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 		env["CLAUDE_AUTO_COMPACT_THRESHOLD"] = a.AutoCompactThreshold
 	}
 
-	// Claude Code max-contexts token budget, resolved the same way and subject
+	// Claude Code max-context token budget, resolved the same way and subject
 	// to the same omit-when-empty rule.
-	if a.MaxContextsTokens != "" {
-		env["CLAUDE_CODE_MAX_CONTEXTS_TOKENS"] = a.MaxContextsTokens
+	if a.MaxContextTokens != "" {
+		env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = a.MaxContextTokens
 	}
 
 	if a.DependaproxyDinernetIP.IsValid() {
