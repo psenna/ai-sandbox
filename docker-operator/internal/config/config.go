@@ -242,6 +242,15 @@ type Config struct {
 	// meaningful for BackendOllama.
 	AgentFastModel string
 
+	// AutoCompactThreshold is the default Claude Code auto-compact threshold a
+	// create request that names none falls back to, templated into each agent
+	// as CLAUDE_AUTO_COMPACT_THRESHOLD. It is backend-agnostic. OPTIONAL and
+	// empty by default: when the effective value (per-agent override, else
+	// this) is empty the variable is OMITTED from the agent's environment
+	// entirely, so the agent uses Claude Code's own built-in default rather
+	// than being pinned to a value.
+	AutoCompactThreshold string
+
 	// DependaproxyContainer is the name of the shared DependaProxy container
 	// the create flow connects to each new agent's private dinernet.
 	DependaproxyContainer string
@@ -367,6 +376,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.AgentFastModel, "agent-fast-model",
 		envOr(getenv, "AGENT_FAST_MODEL", defaultAgentFastModel),
 		"model every agent's \"sonnet\" and \"haiku\" tiers resolve to when ollama-url is set (env AGENT_FAST_MODEL)")
+	fs.StringVar(&c.AutoCompactThreshold, "auto-compact-threshold",
+		envOr(getenv, "AGENT_AUTO_COMPACT_THRESHOLD", ""),
+		"optional default for Claude Code's auto-compact threshold, templated into each agent as CLAUDE_AUTO_COMPACT_THRESHOLD; empty omits the variable so the agent uses Claude Code's built-in default (env AGENT_AUTO_COMPACT_THRESHOLD)")
 	fs.StringVar(&c.DependaproxyContainer, "dependaproxy-container",
 		envOr(getenv, "DEPENDAPROXY_CONTAINER", defaultDependaproxyContainer),
 		"name of the shared DependaProxy container the create flow connects to each new agent's private dinernet (env DEPENDAPROXY_CONTAINER)")

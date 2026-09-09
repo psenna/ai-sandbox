@@ -53,6 +53,7 @@ type AgentManager interface {
 	DefaultFastModel() string
 	DefaultOllamaURL() string
 	DefaultRepo() string
+	DefaultAutoCompactThreshold() string
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
@@ -169,6 +170,12 @@ type createAgentRequest struct {
 	// GITHUB_REPO default. Empty falls back to that default; empty with no
 	// default means the agent boots as a bare terminal. Nothing clones it.
 	Repo string `json:"repo"`
+	// AutoCompactThreshold is this agent's Claude Code auto-compact threshold,
+	// templated into its environment as CLAUDE_AUTO_COMPACT_THRESHOLD. Backend-
+	// agnostic. Empty falls back to the operator's default; empty with no
+	// default means the variable is omitted so the agent uses Claude Code's
+	// built-in default.
+	AutoCompactThreshold string `json:"auto_compact_threshold"`
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -191,6 +198,10 @@ type agentListResponse struct {
 	DefaultFastModel string        `json:"default_fast_model"`
 	DefaultOllamaURL string        `json:"default_ollama_url"`
 	DefaultRepo      string        `json:"default_repo"`
+	// DefaultAutoCompactThreshold is "" when the operator set no
+	// AGENT_AUTO_COMPACT_THRESHOLD; the UI then shows a blank field meaning
+	// "the agent uses Claude Code's built-in default".
+	DefaultAutoCompactThreshold string `json:"default_auto_compact_threshold"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -227,13 +238,14 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		agents = []store.Agent{}
 	}
 	writeJSON(w, http.StatusOK, agentListResponse{
-		Agents:           agents,
-		MaxAgents:        h.mgr.MaxAgents(),
-		DefaultBackend:   h.mgr.DefaultBackend(),
-		DefaultModel:     h.mgr.DefaultModel(),
-		DefaultFastModel: h.mgr.DefaultFastModel(),
-		DefaultOllamaURL: h.mgr.DefaultOllamaURL(),
-		DefaultRepo:      h.mgr.DefaultRepo(),
+		Agents:                      agents,
+		MaxAgents:                   h.mgr.MaxAgents(),
+		DefaultBackend:              h.mgr.DefaultBackend(),
+		DefaultModel:                h.mgr.DefaultModel(),
+		DefaultFastModel:            h.mgr.DefaultFastModel(),
+		DefaultOllamaURL:            h.mgr.DefaultOllamaURL(),
+		DefaultRepo:                 h.mgr.DefaultRepo(),
+		DefaultAutoCompactThreshold: h.mgr.DefaultAutoCompactThreshold(),
 	})
 }
 
@@ -264,6 +276,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Name: req.Name, Description: req.Description,
 		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
 		OllamaURL: req.OllamaURL, Repo: req.Repo,
+		AutoCompactThreshold: req.AutoCompactThreshold,
 	})
 	if err != nil {
 		switch {

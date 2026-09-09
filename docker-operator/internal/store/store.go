@@ -136,6 +136,13 @@ type Agent struct {
 	// bare terminal with no repo. Nothing auto-clones it -- it is a hint.
 	Repo string `json:"repo,omitempty"`
 
+	// AutoCompactThreshold is this agent's Claude Code auto-compact threshold,
+	// templated into its container as CLAUDE_AUTO_COMPACT_THRESHOLD. Set once
+	// at create time from the request or the operator's AGENT_AUTO_COMPACT_THRESHOLD
+	// default; empty (the default) means the variable is omitted from the
+	// container so the agent uses Claude Code's built-in default.
+	AutoCompactThreshold string `json:"auto_compact_threshold,omitempty"`
+
 	// Status is the lifecycle state; see Status.
 	Status Status `json:"status"`
 	// ErrorMessage explains a StatusError agent. Empty in every other state.
@@ -194,15 +201,16 @@ type CreateSpec struct {
 	Name string
 	// Description is the initial free-form description. May be empty.
 	Description string
-	// Backend, Model, FastModel, OllamaURL and Repo are recorded on the new
-	// agent verbatim. internal/agent resolves them (request value or operator
-	// default) and validates them before calling Create; the store only
-	// persists what it is given.
-	Backend   string
-	Model     string
-	FastModel string
-	OllamaURL string
-	Repo      string
+	// Backend, Model, FastModel, OllamaURL, Repo and AutoCompactThreshold are
+	// recorded on the new agent verbatim. internal/agent resolves them
+	// (request value or operator default) and validates them before calling
+	// Create; the store only persists what it is given.
+	Backend              string
+	Model                string
+	FastModel            string
+	OllamaURL            string
+	Repo                 string
+	AutoCompactThreshold string
 }
 
 // bucketAgents holds every agent record, keyed by agent ID. bucketSettings
@@ -353,17 +361,18 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 
 	now := s.now()
 	agent := Agent{
-		ID:          spec.ID,
-		Name:        spec.Name,
-		Description: spec.Description,
-		Backend:     spec.Backend,
-		Model:       spec.Model,
-		FastModel:   spec.FastModel,
-		OllamaURL:   spec.OllamaURL,
-		Repo:        spec.Repo,
-		Status:      StatusCreating,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                   spec.ID,
+		Name:                 spec.Name,
+		Description:          spec.Description,
+		Backend:              spec.Backend,
+		Model:                spec.Model,
+		FastModel:            spec.FastModel,
+		OllamaURL:            spec.OllamaURL,
+		Repo:                 spec.Repo,
+		AutoCompactThreshold: spec.AutoCompactThreshold,
+		Status:               StatusCreating,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 
 	err := s.update(ctx, func(b *bbolt.Bucket) error {

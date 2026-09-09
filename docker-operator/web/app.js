@@ -14,7 +14,7 @@
 		agents: [],
 		maxAgents: 0,
 		selectedID: null,
-		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '' },
+		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '' },
 	};
 
 	var sidebarList = document.getElementById('agent-list');
@@ -65,6 +65,7 @@
 			fastModel: data.default_fast_model || '',
 			ollamaUrl: data.default_ollama_url || '',
 			repo: data.default_repo || '',
+			autoCompactThreshold: data.default_auto_compact_threshold || '',
 		};
 		renderSidebar();
 	}
@@ -115,6 +116,11 @@
 			};
 			var repo = form.querySelector('.create-form__repo').value.trim();
 			if (repo) body.repo = repo;
+			// Auto-compact threshold is backend-agnostic: only sent when the
+			// user entered a value, so an empty field means "omit the variable
+			// and let the agent use Claude Code's built-in default".
+			var autoCompact = form.querySelector('.create-form__auto-compact').value.trim();
+			if (autoCompact) body.auto_compact_threshold = autoCompact;
 			if (backend === 'ollama') {
 				body.model = form.querySelector('.create-form__model').value.trim();
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();
