@@ -104,6 +104,74 @@ volume you create. State written elsewhere inside the container is lost when `--
 removes it. For Go, set `GOMODCACHE`/`GOCACHE` under `/work` if you want build
 caches to persist.
 
+## Building an image or running Compose (DependaProxy in nested builds)
+
+The one-liners above are single `docker run`s. `docker build` and `docker
+compose` launch their own nested containers — a build's `RUN` steps, a
+compose service — and each gets its own network namespace, so they need the
+same two things wired in separately: the `dependaproxy` host entry (the
+per-agent dinernet IP in `/workspace/dependaproxy-ip`) **and** the registry
+config.
+
+### `docker build`
+
+`--add-host` works on `docker build` too. Pass the registry settings as
+build args — they carry no token, so nothing secret is baked into a layer —
+and declare the matching `ARG`s in the Dockerfile stage that installs
+dependencies:
+
+```sh
+DP=$(cat /workspace/dependaproxy-ip)
+docker build \
+  --add-host="dependaproxy:$DP" \
+  --build-arg NPM_CONFIG_REGISTRY=http://dependaproxy:8080/npm \
+  --build-arg PIP_INDEX_URL=http://dependaproxy:8080/pypi/simple \
+  --build-arg PIP_TRUSTED_HOST=dependaproxy \
+  --build-arg GOPROXY=http://dependaproxy:8080/goproxy \
+  -t myapp:dev -f Dockerfile /workspace
+```
+
+```dockerfile
+# In the Dockerfile, BEFORE the RUN that installs dependencies. A declared
+# ARG is visible to that stage's RUN steps as an environment variable, which
+# is exactly what npm / pip / go read — no ENV line needed.
+ARG NPM_CONFIG_REGISTRY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG GOPROXY
+RUN npm ci          # or: pip install -r requirements.txt / go mod download
+```
+
+If you cannot edit the Dockerfile, mount `.npmrc` as a BuildKit secret:
+`docker build --secret id=npmrc,src=/workspace/.npmrc ...` with
+`RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci` (still pass
+`--add-host`).
+
+### `docker compose`
+
+Put the host entry and registry env on each service that fetches
+dependencies. Keep it in a git-ignored `compose.override.yaml` so the
+committed compose file stays proxy-agnostic:
+
+```yaml
+# compose.override.yaml — auto-merged by `docker compose`, git-ignored
+services:
+  app:
+    extra_hosts:
+      - "dependaproxy:${DEPENDAPROXY_IP}"
+    environment:
+      NPM_CONFIG_REGISTRY: http://dependaproxy:8080/npm
+      # pip:  PIP_INDEX_URL=http://dependaproxy:8080/pypi/simple
+      #       PIP_TRUSTED_HOST=dependaproxy
+      # go:   GOPROXY=http://dependaproxy:8080/goproxy
+```
+
+```sh
+DEPENDAPROXY_IP=$(cat /workspace/dependaproxy-ip) docker compose up --build
+```
+
+`extra_hosts` applies to `docker compose build` as well as `up`.
+
 ## Registries → DependaProxy (mandatory)
 
 Every dependency fetch in a workload container goes through the DependaProxy
@@ -131,7 +199,13 @@ matches the stored hash. Three hard constraints:
     so read it, never memorise it.
   The first three all need
   `--add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)"` (the nested
-  daemon cannot resolve the compose name).
+  daemon cannot resolve the compose name). For `docker build` / `docker
+  compose`, see *Building an image or running Compose* above.
+
+> The **`use-dependaproxy`** skill's own one-liners show a fixed `172.23.x`
+> dinernet address — that is the compose stack's shared network. Under the
+> operator, substitute `$(cat /workspace/dependaproxy-ip)` everywhere that
+> literal appears; the URLs and everything else are the same.
 
 A package blocked by DependaProxy's validation (default: published less than 7 days
 ago) returns a 403 — read the error and pick a different version; the block is
