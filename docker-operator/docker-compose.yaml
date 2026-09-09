@@ -124,7 +124,7 @@ services:
       dependaproxy:
         condition: service_started
     ports:
-      - "127.0.0.1:${LISTEN_PORT:-8000}:8000"
+      - "${LISTEN_PORT:-8000}:8000"
     environment:
       LISTEN_ADDR: "0.0.0.0:8000"
       STATE_DB_PATH: "/var/lib/docker-operator/state.db"
@@ -150,7 +150,7 @@ services:
       # agent with none boots as a bare Claude terminal that clones on
       # demand. Each agent can also be pinned to its own repo on the create
       # form / via the POST /api/agents "repo" field.
-      AGENT_TOKEN: "${AGENT_TOKEN}"
+      AGENT_TOKEN: "${AGENT_TOKEN:-agent-token-1}"
       GITHUB_REPO: "${GITHUB_REPO:-}"
       GIT_PROXY_URL: "http://git-proxy:8080"
       GIT_PROXY_BROKER_URL: "http://git-proxy:8090"
