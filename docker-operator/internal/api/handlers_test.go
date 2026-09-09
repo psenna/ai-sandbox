@@ -46,6 +46,9 @@ type fakeManager struct {
 	defaultAutoCompactThreshold string
 	defaultMaxContextTokens     string
 
+	agentImage    string
+	dockerRuntime string
+
 	anthropicKind      string
 	anthropicValue     string
 	anthropicUpdatedAt time.Time
@@ -150,6 +153,9 @@ func (f *fakeManager) DefaultOllamaURL() string            { return f.defaultOll
 func (f *fakeManager) DefaultRepo() string                 { return f.defaultRepo }
 func (f *fakeManager) DefaultAutoCompactThreshold() string { return f.defaultAutoCompactThreshold }
 func (f *fakeManager) DefaultMaxContextTokens() string     { return f.defaultMaxContextTokens }
+
+func (f *fakeManager) AgentImage() string    { return f.agentImage }
+func (f *fakeManager) DockerRuntime() string { return f.dockerRuntime }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
 	f.mu.Lock()
@@ -582,6 +588,64 @@ func TestGet_NotFound(t *testing.T) {
 	}
 	if got := decodeEnvelope(t, rec).Error.Code; got != CodeNotFound {
 		t.Errorf("error code = %q, want %q", got, CodeNotFound)
+	}
+}
+
+func TestAgentInfo(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{
+		ID:     "agt_a",
+		Name:   "a",
+		Status: store.StatusRunning,
+		Repo:   "acme/widget.git",
+	})
+	mgr.agentImage = "ghcr.io/example/agent:1.2.3"
+	mgr.dockerRuntime = "crun"
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_a/info", nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var resp agentInfoResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding info response: %v", err)
+	}
+	if resp.Agent.ID != "agt_a" || resp.Agent.Repo != "acme/widget.git" || resp.Agent.Status != store.StatusRunning {
+		t.Errorf("agent = %+v, want the seeded record with its resolved create-time parameters", resp.Agent)
+	}
+	if resp.Operator.AgentImage != "ghcr.io/example/agent:1.2.3" || resp.Operator.DockerRuntime != "crun" {
+		t.Errorf("operator = %+v, want the manager's agent image and docker runtime", resp.Operator)
+	}
+}
+
+func TestAgentInfo_NotFound(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_missing/info", nil)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeNotFound {
+		t.Errorf("error code = %q, want %q", got, CodeNotFound)
+	}
+}
+
+func TestAgentInfo_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_a", Name: "a"})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_a/info", map[string]string{"name": "x"})
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusMethodNotAllowed, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeMethodNotAllowed {
+		t.Errorf("error code = %q, want %q", got, CodeMethodNotAllowed)
 	}
 }
 

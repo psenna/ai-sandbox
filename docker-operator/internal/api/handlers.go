@@ -56,6 +56,12 @@ type AgentManager interface {
 	DefaultAutoCompactThreshold() string
 	DefaultMaxContextTokens() string
 
+	// AgentImage/DockerRuntime are the operator-level parameters every agent
+	// inherits (its container image, its DinD sidecar's runtime); the
+	// /api/agents/{id}/info handler serves them next to the agent record.
+	AgentImage() string
+	DockerRuntime() string
+
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
 	// SetAnthropicAuth stores (replacing) it; ClearAnthropicAuth removes it
@@ -110,6 +116,7 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("PATCH /api/agents/{id}", h.handleRename)
 	mux.HandleFunc("DELETE /api/agents/{id}", h.handleDelete)
 	mux.HandleFunc("GET /api/agents/{id}/output", h.handleOutput)
+	mux.HandleFunc("GET /api/agents/{id}/info", h.handleAgentInfo)
 
 	mux.HandleFunc("GET /api/files", h.handleFilesList)
 	mux.HandleFunc("DELETE /api/files", h.handleFilesDelete)
@@ -136,6 +143,7 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("/api/agents", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
+	mux.HandleFunc("/api/agents/{id}/info", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/login", methodNotAllowed)
 	mux.HandleFunc("/api/files", methodNotAllowed)
@@ -214,6 +222,22 @@ type agentListResponse struct {
 	// AGENT_MAX_CONTEXT_TOKENS; the UI then shows a blank field meaning
 	// "the agent uses Claude Code's built-in default".
 	DefaultMaxContextTokens string `json:"default_max_context_tokens"`
+}
+
+// agentOperatorInfo is the operator-level part of the /api/agents/{id}/info
+// response: the parameters set on the operator (not per agent) that apply to
+// every agent -- its container image and the DinD sidecar's runtime.
+type agentOperatorInfo struct {
+	AgentImage    string `json:"agent_image"`
+	DockerRuntime string `json:"docker_runtime"`
+}
+
+// agentInfoResponse is the GET /api/agents/{id}/info body: the agent record
+// (its resolved create-time parameters) alongside the operator defaults the
+// UI's "Agent info" overlay renders in a second section.
+type agentInfoResponse struct {
+	Agent    store.Agent       `json:"agent"`
+	Operator agentOperatorInfo `json:"operator"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -452,6 +476,27 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// handleAgentInfo serves GET /api/agents/{id}/info: the agent record (which
+// carries its resolved create-time parameters) plus the operator-level
+// parameters that apply to every agent. It is the data source for the UI's
+// "Agent info" overlay -- one request instead of the client combining the
+// item endpoint with a config endpoint that does not exist.
+func (h *Handler) handleAgentInfo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := h.mgr.Get(r.Context(), id)
+	if err != nil {
+		h.notFoundOrInternal(w, "getting agent "+id, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, agentInfoResponse{
+		Agent: a,
+		Operator: agentOperatorInfo{
+			AgentImage:    h.mgr.AgentImage(),
+			DockerRuntime: h.mgr.DockerRuntime(),
+		},
+	})
 }
 
 func (h *Handler) handleRename(w http.ResponseWriter, r *http.Request) {

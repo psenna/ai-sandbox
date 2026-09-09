@@ -184,6 +184,55 @@ test('renderCreateForm: a repo default containing HTML is escaped', () => {
 	assert.doesNotMatch(html, /<script>x<\/script>/);
 });
 
+test('renderAgentInfo: renders both sections with the agent\'s resolved values', () => {
+	const html = Render.renderAgentInfo({
+		agent: {
+			name: 'Alpha',
+			description: 'the worker',
+			backend: 'ollama',
+			model: 'glm-5.3:cloud',
+			fast_model: 'glm-5.3-flash:cloud',
+			ollama_url: 'http://ollama:11434',
+			repo: 'acme/widget.git',
+			auto_compact_threshold: '85',
+			max_context_tokens: '200000',
+		},
+		operator: { agent_image: 'ghcr.io/example/agent:1.2.3', docker_runtime: 'crun' },
+	});
+	assert.match(html, /agent-info/);
+	assert.match(html, /Agent/);
+	assert.match(html, /Operator/);
+	assert.match(html, /acme\/widget\.git/);
+	assert.match(html, /ghcr\.io\/example\/agent:1\.2\.3/);
+	assert.match(html, /crun/);
+	assert.match(html, /Ollama/);
+});
+
+test('renderAgentInfo: blank parameters render their placeholder, not an empty cell', () => {
+	const html = Render.renderAgentInfo({
+		agent: { backend: 'anthropic' },
+		operator: { agent_image: 'ghcr.io/example/agent:1', docker_runtime: 'crun' },
+	});
+	assert.match(html, /agent-info__value--blank/);
+	assert.match(html, /built-in default/);
+	assert.doesNotMatch(html, /<dd class="agent-info__value"><\/dd>/);
+});
+
+test('renderAgentInfo: values containing HTML are escaped, never rendered raw', () => {
+	const html = Render.renderAgentInfo({
+		agent: { name: '<script>evil()</script>', repo: '"><img src=x>' },
+		operator: {},
+	});
+	assert.doesNotMatch(html, /<script>evil\(\)<\/script>/);
+	assert.doesNotMatch(html, /<img src=x>/);
+});
+
+test('renderAgentInfo: missing input degrades to placeholders instead of throwing', () => {
+	assert.doesNotThrow(() => Render.renderAgentInfo());
+	assert.doesNotThrow(() => Render.renderAgentInfo(null));
+	assert.match(Render.renderAgentInfo(), /agent-info/);
+});
+
 test('renderAnthropicStatus: unset', () => {
 	const html = Render.renderAnthropicStatus({ configured: false });
 	assert.match(html, /No Anthropic credential/);

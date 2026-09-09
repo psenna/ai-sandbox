@@ -137,6 +137,51 @@
 		);
 	}
 
+	// renderAgentInfo renders the "Agent info" overlay's body from
+	// GET /api/agents/{id}/info's body ({agent, operator}): two sections —
+	// the agent's resolved create-time parameters (what the New Agent form
+	// sent, or what the operator defaults filled in for it), and the
+	// operator-level parameters that apply to every agent. A blank parameter
+	// renders its placeholder (— or "built-in default") instead of an empty
+	// cell, so a reader can tell "not set" from a rendering bug.
+	function renderAgentInfo(info) {
+		info = info || {};
+		var agent = info.agent || {};
+		var operator = info.operator || {};
+
+		function row(label, value, blank) {
+			var cls = 'agent-info__value' + (value ? '' : ' agent-info__value--blank');
+			return '<dt class="agent-info__label">' + label + '</dt>' +
+				'<dd class="' + cls + '">' + escapeHTML(value || blank) + '</dd>';
+		}
+
+		return (
+			'<div class="agent-info">' +
+				'<section class="agent-info__section">' +
+					'<h3 class="agent-info__heading">Agent</h3>' +
+					'<dl class="agent-info__list">' +
+						row('Name', agent.name, '(unnamed)') +
+						row('Description', agent.description, '—') +
+						row('Backend', agent.backend ? backendLabel(agent.backend) : '', '—') +
+						row('Model', agent.model, '—') +
+						row('Fast model', agent.fast_model, '—') +
+						row('Ollama server', agent.ollama_url, '—') +
+						row('Repository', agent.repo, '—') +
+						row('Auto-compact threshold', agent.auto_compact_threshold, 'built-in default') +
+						row('Max-context tokens', agent.max_context_tokens, 'built-in default') +
+					'</dl>' +
+				'</section>' +
+				'<section class="agent-info__section">' +
+					'<h3 class="agent-info__heading">Operator</h3>' +
+					'<dl class="agent-info__list">' +
+						row('Agent image', operator.agent_image, '—') +
+						row('Docker runtime', operator.docker_runtime, '—') +
+					'</dl>' +
+				'</section>' +
+			'</div>'
+		);
+	}
+
 	// renderAnthropicStatus renders the sidebar Anthropic-account panel's
 	// one-line status from GET /api/anthropic/auth's body
 	// ({configured, kind, updated_at}).
@@ -257,6 +302,7 @@
 		renderAgentList: renderAgentList,
 		renderCapacity: renderCapacity,
 		renderCreateForm: renderCreateForm,
+		renderAgentInfo: renderAgentInfo,
 		renderAnthropicStatus: renderAnthropicStatus,
 		formatBytes: formatBytes,
 		formatModTime: formatModTime,
