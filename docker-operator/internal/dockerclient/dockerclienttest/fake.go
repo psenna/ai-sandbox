@@ -154,6 +154,7 @@ type Fake struct {
 	networks   map[string]*networkRecord
 	containers map[string]*containerRecord
 	execs      map[string]*execRecord
+	execSpecs  []dockerclient.ExecSpec
 	images     map[string]struct{}
 
 	calls []Call
@@ -294,6 +295,15 @@ func (f *Fake) SetHealth(idOrName string, h dockerclient.HealthStatus) error {
 	}
 	c.health = h
 	return nil
+}
+
+// ExecSpecs returns every ExecSpec passed to ExecCreate, in call order, so a
+// test can assert on Cmd / Env / User without re-plumbing them through
+// ExecOutput's string key.
+func (f *Fake) ExecSpecs() []dockerclient.ExecSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]dockerclient.ExecSpec(nil), f.execSpecs...)
 }
 
 // ExecInput returns everything written to the given exec's stdin so far.
@@ -708,6 +718,7 @@ func (f *Fake) ExecCreate(ctx context.Context, containerID string, spec dockercl
 	}
 	key := strings.Join(spec.Cmd, " ")
 	id := f.nextID()
+	f.execSpecs = append(f.execSpecs, spec)
 	f.execs[id] = &execRecord{
 		output:   append([]byte(nil), f.ExecOutput[key]...),
 		exitCode: f.ExecExit[key],

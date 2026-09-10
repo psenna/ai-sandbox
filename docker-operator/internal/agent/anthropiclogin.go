@@ -50,6 +50,7 @@ const AnthropicLoginIdleTimeout = 20 * time.Minute
 // its eventual non-zero exit ends the loop cleanly under `set -eu`.
 const anthropicLoginScript = `set -eu
 export TERM="${TERM:-xterm-256color}"
+export LANG="${LANG:-C.UTF-8}"
 tmux set-option -g remain-on-exit on \; new-session -d -s main 'claude setup-token; echo; echo "[login helper] copy the token above into the web UI, then remove this session"'
 while tmux has-session -t main 2>/dev/null; do sleep 5; done`
 
@@ -72,7 +73,7 @@ func (m *Manager) StartAnthropicLogin(ctx context.Context) error {
 		Name:       AnthropicLoginContainerName,
 		Image:      m.cfg.AgentImage,
 		Entrypoint: []string{"sh", "-c", anthropicLoginScript},
-		Env:        map[string]string{"TERM": "xterm-256color"},
+		Env:        map[string]string{"TERM": "xterm-256color", "LANG": "C.UTF-8"},
 		Labels: map[string]string{
 			LabelManaged:        LabelManagedValue,
 			LabelRole:           string(RoleAnthropicLogin),

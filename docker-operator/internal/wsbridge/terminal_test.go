@@ -107,6 +107,50 @@ func TestTerminal_EnablesMouseBeforeAttaching(t *testing.T) {
 	}
 }
 
+// TestTerminal_AttachesWithUTF8Locale pins that the attach exec carries
+// LANG=C.UTF-8. Without it tmux runs the attach client in a C/ASCII locale and
+// renders every non-ASCII byte (ç, á, accented Latin text) as `_`, in the pane
+// and in what a viewer types. Setting it on the exec is what fixes an agent
+// whose container predates the image/env change, on its next reconnect.
+func TestTerminal_AttachesWithUTF8Locale(t *testing.T) {
+	docker := dockerclienttest.New()
+	cid, err := docker.ContainerCreate(context.Background(), dockerclient.ContainerSpec{Name: "c", Image: "i"})
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	docker.ExecOutput = map[string][]byte{
+		"tmux set-option -g mouse on ; attach-session -t main": []byte("READY"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ws/agents/{id}/terminal",
+		NewTerminalHandler(fakeGetter{"agt_a": {ID: "agt_a", ContainerID: cid}}, docker, discardLog))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/agents/agt_a/terminal"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// Read one frame first: that proves the exec has been created and attached,
+	// so ExecSpecs is populated and free of a race with the handler goroutine.
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	specs := docker.ExecSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("ExecSpecs() = %d specs, want 1", len(specs))
+	}
+	if got := specs[0].Env["LANG"]; got != "C.UTF-8" {
+		t.Fatalf("attach exec Env[LANG] = %q, want %q", got, "C.UTF-8")
+	}
+}
+
 // --- handleControl (pure logic, no WebSocket or real exec needed) -----------
 
 func TestHandleControl_Resize(t *testing.T) {

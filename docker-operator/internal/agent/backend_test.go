@@ -133,6 +133,20 @@ func TestResolveBackend(t *testing.T) {
 	})
 }
 
+// TestAgentEnv_StaticBase checks the backend-independent half of the
+// container environment -- here, the bits the terminal depends on.
+func TestAgentEnv_StaticBase(t *testing.T) {
+	m, _, _ := newTestManager(t, 5)
+	base := store.Agent{ID: "agt_env", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
+	env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f", ollamaURL: "http://ollama:11434"})
+
+	// tmux picks its charset from LANG; without a UTF-8 value the detached
+	// new-session client (tmux-boot.sh) and the web-UI attach both fall back
+	// to a C/ASCII locale that renders non-ASCII text as `_`.
+	wantEq(t, env, "LANG", "C.UTF-8")
+	wantEq(t, env, "TERM", "xterm-256color")
+}
+
 // TestAgentEnv_Backend checks the credential/model-routing half of the
 // container environment for each backend.
 func TestAgentEnv_Backend(t *testing.T) {

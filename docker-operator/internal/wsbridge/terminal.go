@@ -125,7 +125,8 @@ func NewContainerTerminalHandler(docker dockerclient.ExecClient, containerName, 
 
 // serveTerminal is the shared core of both terminal handlers: upgrade the
 // connection, exec `tmux set-option -g mouse on \; attach-session -t main` in
-// target (a container name or ID), and pump bytes until either side ends.
+// target (a container name or ID) with LANG=C.UTF-8 so tmux renders non-ASCII
+// text, and pump bytes until either side ends.
 // logLabel identifies the target in log lines; notReadyReason is the
 // WebSocket close reason when the exec cannot be created (the container is
 // stopped or absent).
@@ -152,7 +153,14 @@ func serveTerminal(w http.ResponseWriter, r *http.Request, docker dockerclient.E
 		// and on the Anthropic-login helper's throwaway tmux server too. `;`
 		// is tmux's own command separator (a distinct argv element, not shell
 		// syntax), so this is one exec, not a shell pipeline.
-		Cmd:   []string{"tmux", "set-option", "-g", "mouse", "on", ";", "attach-session", "-t", tmuxSession},
+		Cmd: []string{"tmux", "set-option", "-g", "mouse", "on", ";", "attach-session", "-t", tmuxSession},
+		// A UTF-8 locale so this attach client puts tmux in UTF-8 mode.
+		// Without it tmux renders every non-ASCII byte (ç, á, accented Latin
+		// text) as `_`, both in the pane and in what the viewer types. Set on
+		// the exec too -- not only in the agent image / agent env -- so an
+		// agent whose container predates that change is fixed on its next
+		// reconnect, no recreate needed.
+		Env:   map[string]string{"LANG": "C.UTF-8"},
 		TTY:   true,
 		Stdin: true,
 	})
