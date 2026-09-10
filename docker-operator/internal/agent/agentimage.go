@@ -74,6 +74,25 @@ func NewestDateTimeTag(tags []string) string {
 	return newest
 }
 
+// UpgradeAvailable reports whether a newer agent image exists for an agent
+// currently on currentTag. It is true only when currentTag is itself a
+// :YYYYMMDD-HHMMSS date-time tag AND at least one entry of tags is a
+// date-time tag that sorts strictly after currentTag (lexical order is
+// chronological for this format). An agent on :latest, on any non-date-time
+// tag, or with an empty currentTag never reports an upgrade. tags is not
+// assumed to be pre-filtered or pre-sorted.
+func UpgradeAvailable(currentTag string, tags []string) bool {
+	if !IsDateTimeTag(currentTag) {
+		return false
+	}
+	for _, t := range tags {
+		if IsDateTimeTag(t) && t > currentTag {
+			return true
+		}
+	}
+	return false
+}
+
 // ImageTagOf returns the tag of a full image reference, or "" when the
 // reference carries no tag (it is untagged or digest-pinned).
 func ImageTagOf(ref string) string {

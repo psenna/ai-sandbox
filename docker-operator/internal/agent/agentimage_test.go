@@ -62,6 +62,33 @@ func TestNewestDateTimeTag(t *testing.T) {
 	}
 }
 
+func TestUpgradeAvailable(t *testing.T) {
+	cases := []struct {
+		name    string
+		current string
+		tags    []string
+		want    bool
+	}{
+		{"older than newest in list", "20260101-120000", []string{"20260101-120000", "20260201-090000"}, true},
+		{"equal to newest", "20260201-090000", []string{"20260101-120000", "20260201-090000"}, false},
+		{"newer than everything", "20260301-000000", []string{"20260101-120000", "20260201-090000"}, false},
+		{"empty current tag", "", []string{"20260201-090000"}, false},
+		{"latest current tag", "latest", []string{"20260201-090000"}, false},
+		{"list has no date-time tags", "20260101-120000", []string{"latest", "main"}, false},
+		{"nil list", "20260101-120000", nil, false},
+		{"empty list", "20260101-120000", []string{}, false},
+		{"list is current plus older", "20260201-090000", []string{"20260201-090000", "20260101-120000", "20251231-235959"}, false},
+		{"unsorted list with a newer entry", "20260101-120000", []string{"20251231-000000", "latest", "20260601-000000", "20260101-120000"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UpgradeAvailable(tc.current, tc.tags); got != tc.want {
+				t.Errorf("UpgradeAvailable(%q, %v) = %v, want %v", tc.current, tc.tags, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestImageTagOf(t *testing.T) {
 	cases := map[string]string{
 		"ghcr.io/psenna/ai-sandbox-agent:latest":          "latest",

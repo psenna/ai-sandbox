@@ -235,6 +235,15 @@ html, body {
 	padding: 0 3px;
 }
 
+/* --- agent list upgrade marker --- */
+.agent-item__upgrade {
+	flex: 0 0 auto;
+	margin: 0 4px 0 2px;
+	font-size: 11px;
+	line-height: 1;
+	color: var(--accent);
+}
+
 /* --- agent list backend badge --- */
 .agent-item__backend {
 	margin-left: auto;

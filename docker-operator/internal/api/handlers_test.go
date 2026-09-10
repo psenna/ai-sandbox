@@ -582,6 +582,118 @@ func TestList_Empty(t *testing.T) {
 	}
 }
 
+func TestHandleList_UpgradeAvailableComputed(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.imageTags = store.AgentImageTags{Tags: []string{"20260901-120000", "20260801-120000"}}
+	mgr.seed(store.Agent{ID: "agt_old", Name: "old", Image: "ghcr.io/psenna/ai-sandbox-agent:20260801-120000"})
+	mgr.seed(store.Agent{ID: "agt_new", Name: "new", Image: "ghcr.io/psenna/ai-sandbox-agent:20260901-120000"})
+	mgr.seed(store.Agent{ID: "agt_latest", Name: "latest", Image: "ghcr.io/psenna/ai-sandbox-agent:latest"})
+	mgr.seed(store.Agent{ID: "agt_none", Name: "none", Image: ""})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+
+	var resp struct {
+		Agents []struct {
+			ID               string `json:"id"`
+			Image            string `json:"image"`
+			UpgradeAvailable bool   `json:"upgrade_available"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	want := map[string]bool{"agt_old": true, "agt_new": false, "agt_latest": false, "agt_none": false}
+	got := map[string]bool{}
+	for _, a := range resp.Agents {
+		got[a.ID] = a.UpgradeAvailable
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("agent %s upgrade_available = %v, want %v (body: %s)", id, got[id], w, rec.Body)
+		}
+	}
+	// The embedded store.Agent fields stay at the top level.
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"image":"ghcr.io/psenna/ai-sandbox-agent:20260801-120000"`)) {
+		t.Errorf("list body missing the flattened image field: %s", rec.Body)
+	}
+}
+
+func TestHandleList_NoTagsNoUpgrades(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_a", Name: "a", Image: "ghcr.io/psenna/ai-sandbox-agent:20260801-120000"})
+	mgr.seed(store.Agent{ID: "agt_b", Name: "b", Image: "ghcr.io/psenna/ai-sandbox-agent:20260101-000000"})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			UpgradeAvailable bool `json:"upgrade_available"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if len(resp.Agents) != 2 {
+		t.Fatalf("agents = %d, want 2", len(resp.Agents))
+	}
+	for i, a := range resp.Agents {
+		if a.UpgradeAvailable {
+			t.Errorf("agent[%d] upgrade_available = true, want false with no discovered tags", i)
+		}
+	}
+}
+
+func TestHandleGet_IncludesImageAndUpgradeAvailable(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.imageTags = store.AgentImageTags{Tags: []string{"20260901-120000", "20260801-120000"}}
+	mgr.seed(store.Agent{ID: "agt_a", Name: "a", Image: "ghcr.io/psenna/ai-sandbox-agent:20260801-120000"})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_a", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var resp struct {
+		Image            string `json:"image"`
+		UpgradeAvailable bool   `json:"upgrade_available"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding agent: %v", err)
+	}
+	if resp.Image != "ghcr.io/psenna/ai-sandbox-agent:20260801-120000" {
+		t.Errorf("image = %q, want the seeded image", resp.Image)
+	}
+	if !resp.UpgradeAvailable {
+		t.Errorf("upgrade_available = false, want true (a newer date-time tag exists)")
+	}
+}
+
+func TestAgentView_JSONShapeIsFlat(t *testing.T) {
+	b, err := json.Marshal(agentView{
+		Agent:            store.Agent{ID: "agt_a", Name: "a", Status: store.StatusRunning, Image: "ghcr.io/x/y:latest"},
+		UpgradeAvailable: true,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"id", "name", "status", "image", "upgrade_available"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("marshalled agentView missing top-level key %q; got %s", k, b)
+		}
+	}
+}
+
 // --- GET/PATCH/DELETE /api/agents/{id} --------------------------------------
 
 func TestGet(t *testing.T) {

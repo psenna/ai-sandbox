@@ -219,17 +219,51 @@ type patchAgentRequest struct {
 	Description *string `json:"description"`
 }
 
+// agentView is a store.Agent plus the computed, per-request UpgradeAvailable
+// flag. The embedded struct makes encoding/json flatten every store.Agent
+// field to the top level and append "upgrade_available" alongside them, so
+// existing clients that only read id/name/... keep working unchanged.
+type agentView struct {
+	store.Agent
+	// UpgradeAvailable is true when the agent runs a date-time image tag and
+	// the operator's discovered tag list contains a strictly newer one. It is
+	// false for an agent on :latest, on any non-date-time tag, with no
+	// recorded image, or when the tag list is unavailable.
+	UpgradeAvailable bool `json:"upgrade_available"`
+}
+
+// buildAgentViews wraps each agent in an agentView, computing
+// UpgradeAvailable against the operator's last-known agent-image tag list.
+// The tag list is fetched once and best-effort: on any error, or before the
+// first refresh completes, it is treated as empty and nothing is flagged --
+// the list must not fail because tag discovery is unavailable. The result is
+// non-nil even for an empty input.
+func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []agentView {
+	var tags []string
+	if snap, ok, err := h.mgr.AgentImageTags(ctx); err == nil && ok {
+		tags = snap.Tags
+	}
+	views := make([]agentView, 0, len(agents))
+	for _, a := range agents {
+		views = append(views, agentView{
+			Agent:            a,
+			UpgradeAvailable: agent.UpgradeAvailable(agent.ImageTagOf(a.Image), tags),
+		})
+	}
+	return views
+}
+
 // agentListResponse is the GET /api/agents body. MaxAgents and the three
 // Default* fields ride along so the UI can render "3 of 5 slots in use" and
 // pre-fill the create form without a second request.
 type agentListResponse struct {
-	Agents           []store.Agent `json:"agents"`
-	MaxAgents        int           `json:"max_agents"`
-	DefaultBackend   string        `json:"default_backend"`
-	DefaultModel     string        `json:"default_model"`
-	DefaultFastModel string        `json:"default_fast_model"`
-	DefaultOllamaURL string        `json:"default_ollama_url"`
-	DefaultRepo      string        `json:"default_repo"`
+	Agents           []agentView `json:"agents"`
+	MaxAgents        int         `json:"max_agents"`
+	DefaultBackend   string      `json:"default_backend"`
+	DefaultModel     string      `json:"default_model"`
+	DefaultFastModel string      `json:"default_fast_model"`
+	DefaultOllamaURL string      `json:"default_ollama_url"`
+	DefaultRepo      string      `json:"default_repo"`
 	// DefaultAutoCompactThreshold is "" when the operator set no
 	// AGENT_AUTO_COMPACT_THRESHOLD; the UI then shows a blank field meaning
 	// "the agent uses Claude Code's built-in default".
@@ -298,11 +332,8 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "listing agents", err)
 		return
 	}
-	if agents == nil {
-		agents = []store.Agent{}
-	}
 	writeJSON(w, http.StatusOK, agentListResponse{
-		Agents:                      agents,
+		Agents:                      h.buildAgentViews(r.Context(), agents),
 		MaxAgents:                   h.mgr.MaxAgents(),
 		DefaultBackend:              h.mgr.DefaultBackend(),
 		DefaultModel:                h.mgr.DefaultModel(),
@@ -549,7 +580,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		h.notFoundOrInternal(w, "getting agent "+id, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, a)
+	writeJSON(w, http.StatusOK, h.buildAgentViews(r.Context(), []store.Agent{a})[0])
 }
 
 // handleAgentInfo serves GET /api/agents/{id}/info: the agent record (which
