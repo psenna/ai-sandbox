@@ -61,7 +61,7 @@ func volumeNames(f *dockerclienttest.Fake) map[string]bool {
 }
 
 func TestUpdate_RecreatesOnlyAgentContainer(t *testing.T) {
-	m, f, st := newTestManager(t, 5)
+	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 	a := createRunningAgent(t, m)
 	mark := len(f.Calls())
@@ -110,7 +110,99 @@ func TestUpdate_RecreatesOnlyAgentContainer(t *testing.T) {
 			t.Errorf("volume %q is gone after Update", v)
 		}
 	}
-	_ = st
+}
+
+// TestUpdate_ReusesALocallyPresentImage proves the update flow goes through
+// ensureImage (inspect, pull only on a miss) and not a bare ImagePull: the
+// operator's default agent image is routinely a locally built `:dev` tag that
+// exists on no registry, and an unconditional pull would fail every update
+// that does not change the tag.
+func TestUpdate_ReusesALocallyPresentImage(t *testing.T) {
+	m, f, _ := newTestManager(t, 5)
+	ctx := context.Background()
+	a := createRunningAgent(t, m) // runs testAgentImage, seeded via AddImage
+	mark := len(f.Calls())
+
+	// Any pull at all must fail the test, so wire the fake to error on one.
+	f.Fail(dockerclienttest.OpImagePull, errors.New("no registry here"))
+
+	updated, err := m.Update(ctx, a.ID, UpdateRequest{CreateRequest: CreateRequest{Name: "renamed"}})
+	if err != nil {
+		t.Fatalf("Update: %v (an update that keeps the operator's local image must not pull)", err)
+	}
+	if updated.Image != testAgentImage {
+		t.Errorf("Image = %q, want the operator default %q", updated.Image, testAgentImage)
+	}
+	if hasOp(callsAfter(f, mark), dockerclienttest.OpImagePull) {
+		t.Errorf("Update pulled an image that is already on the daemon; calls=%v", callsAfter(f, mark))
+	}
+}
+
+// TestUpdate_RejectsARecordThatWentDeletingMidCall proves the status re-check
+// inside the StatusUpdating transaction: the gate at the top of Update ran
+// against a snapshot, and a Delete that marked the record StatusDeleting in
+// between must not be silently reverted -- and no container may be recreated
+// for an agent that is being torn down.
+func TestUpdate_RejectsARecordThatWentDeletingMidCall(t *testing.T) {
+	m, f, st := newTestManager(t, 5)
+	ctx := context.Background()
+	a := createRunningAgent(t, m)
+
+	// The record Update's own store.Get sees is running; by the time its
+	// StatusUpdating write runs, a concurrent Delete has claimed it.
+	if _, err := st.Update(ctx, a.ID, func(ag *store.Agent) error {
+		ag.Status = store.StatusDeleting
+		return nil
+	}); err != nil {
+		t.Fatalf("marking deleting: %v", err)
+	}
+	mark := len(f.Calls())
+
+	_, err := m.Update(ctx, a.ID, UpdateRequest{})
+	if !IsNotUpdatable(err) {
+		t.Fatalf("err = %v, want IsNotUpdatable", err)
+	}
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusDeleting {
+		t.Errorf("Status = %q, want %q (the losing update must not revert the delete)", got.Status, store.StatusDeleting)
+	}
+	if calls := callsAfter(f, mark); len(calls) != 0 {
+		t.Errorf("the rejected update touched Docker: %v", calls)
+	}
+}
+
+// TestUpdate_KeepsResourceNamesForARecordMissingThem proves the recreate
+// never mounts an EMPTY volume source (which Docker turns into a fresh
+// ANONYMOUS volume, silently detaching the agent from its work): a record
+// whose ID-derived names were lost has them restored before agentSpec runs.
+func TestUpdate_KeepsResourceNamesForARecordMissingThem(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	ctx := context.Background()
+	a := createRunningAgent(t, m)
+
+	if _, err := st.Update(ctx, a.ID, func(ag *store.Agent) error {
+		ag.ContainerName = ""
+		ag.DinernetName = ""
+		ag.WorkspaceVolume = ""
+		ag.ClaudeConfigVolume = ""
+		return nil
+	}); err != nil {
+		t.Fatalf("blanking the names: %v", err)
+	}
+
+	updated, err := m.Update(ctx, a.ID, UpdateRequest{})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.WorkspaceVolume != a.WorkspaceVolume ||
+		updated.ClaudeConfigVolume != a.ClaudeConfigVolume ||
+		updated.DinernetName != a.DinernetName ||
+		updated.ContainerName != a.ContainerName {
+		t.Errorf("resource names not restored: %+v, want the ID-derived names of %+v", updated, a)
+	}
 }
 
 func TestUpdate_RecreatedCmdHasContinue(t *testing.T) {

@@ -547,15 +547,25 @@
 	// it confirms, then POSTs to /api/agents/{id}/update; success re-selects
 	// the agent (window.onAgentUpdated), which re-attaches a fresh terminal to
 	// the recreated container.
+	//
+	// The form claims `current` (with a no-op teardown) for the same reason
+	// every other view does: it is the module's single "what is on screen now"
+	// slot. Both async continuations below bail unless it is still theirs, so a
+	// selection made while the two fetches are in flight is not overwritten by
+	// a late-arriving form -- which would blow away the new detail view's DOM
+	// while its terminal websocket stayed open and unreachable behind it.
 	function openUpdateForm(agentID) {
 		var mainArea = typeof document !== 'undefined' ? document.getElementById('main-area') : null;
 		if (!mainArea || !window.Render) return;
 		teardownCurrent();
+		var view = { teardown: function () {} };
+		current = view;
 
 		Promise.all([
 			fetchJSON('/api/agents/' + encodeURIComponent(agentID)),
 			fetchJSON('/api/agent-image/tags').catch(function () { return null; }),
 		]).then(function (res) {
+			if (current !== view) return; // superseded while fetching
 			var agent = res[0];
 			var tagInfo = res[1] || {};
 			var operatorDefaultTag = tagInfo.operator_default || '';
@@ -625,6 +635,7 @@
 					});
 			});
 		}).catch(function (e) {
+			if (current !== view) return; // superseded while fetching
 			mainArea.innerHTML = '<p class="placeholder">Could not open the update form: ' +
 				escapeHTML(e && e.message ? e.message : String(e)) + '</p>';
 		});

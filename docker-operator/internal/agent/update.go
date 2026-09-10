@@ -74,13 +74,17 @@ type UpdateRequest struct {
 //  2. resolveSpec + resolveAgentImageRef -- both validate, nothing mutated yet.
 //  3. store.Update -> StatusUpdating, BEFORE any Docker call, so the old
 //     container's die/stop event is a no-op (its status is not running, and
-//     the ActorID guard in MarkUnexpectedExit catches it too).
-//  4. docker.ImagePull(newRef). Failure here -> failUpdate (container intact,
-//     but the record is already StatusUpdating).
+//     the ActorID guard in MarkUnexpectedExit catches it too). The mutator
+//     RE-CHECKS the status inside store.Update's transaction, so a Delete (or
+//     a second Update) that won the race between step 1 and here is rejected
+//     rather than silently un-marked.
+//  4. ensureImage(newRef) -- inspect, and pull only if the daemon does not
+//     already have it, exactly as Create does. Failure here -> failUpdate
+//     (container intact, but the record is already StatusUpdating).
 //  5. removeAgentContainer -- stop+remove the agent container ONLY.
 //  6. store.Update -> new config fields + Image + ContainerID="" (still updating).
-//  7. startAgentContainer("--continue") -> waitTmuxSession -> markRunning.
-//     Any failure from step 5 on -> failUpdate.
+//  7. ensureAgentFiles, then startAgentContainer("--continue") ->
+//     waitTmuxSession -> markRunning. Any failure from step 5 on -> failUpdate.
 func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (store.Agent, error) {
 	a, err := m.store.Get(ctx, id)
 	if err != nil {
@@ -100,19 +104,38 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	}
 
 	// StatusUpdating BEFORE any Docker call.
+	//
+	// The status is re-checked INSIDE the mutator, which runs in store.Update's
+	// single bbolt read-write transaction: the check above raced anything else
+	// holding this ID. Without the re-check, a Delete that marked the record
+	// StatusDeleting in between would be silently reverted to StatusUpdating
+	// here, and this flow would then recreate a container for an agent whose
+	// volumes, network and record the delete is concurrently tearing down. The
+	// same re-check rejects a second concurrent Update (updating is not an
+	// updatable status), so only one recreate is ever in flight.
 	a, err = m.store.Update(ctx, id, func(ag *store.Agent) error {
+		if !updatableStatus(ag.Status) {
+			return fmt.Errorf("%w (status %q)", ErrNotUpdatable, ag.Status)
+		}
 		ag.Status = store.StatusUpdating
 		ag.ErrorMessage = ""
 		return nil
 	})
 	if err != nil {
+		if IsNotUpdatable(err) || store.IsNotFound(err) {
+			// Lost the race to a concurrent delete/update: nothing was
+			// mutated, so this is the caller's 409/404, not a failed update.
+			return store.Agent{}, err
+		}
 		return store.Agent{}, fmt.Errorf("updating agent %q: marking it updating: %w", id, err)
 	}
 
-	// Pull the new image. The container is still intact here, but the record is
-	// already StatusUpdating -- failUpdate settles it to StatusError.
-	if err := m.docker.ImagePull(ctx, newRef); err != nil {
-		return m.failUpdate(ctx, &a, fmt.Errorf("pulling the new agent image %q: %w", newRef, err))
+	// Make sure the new image is on the daemon. ensureImage inspects first and
+	// pulls only on a miss -- the same call Create uses, and the reason a
+	// locally built agent image (`make agent-image`, never pushed anywhere)
+	// stays updatable: an unconditional pull would fail for it every time.
+	if err := m.ensureImage(ctx, newRef); err != nil {
+		return m.failUpdate(ctx, &a, err)
 	}
 
 	// Remove the agent container ONLY. From here on, any failure is
@@ -134,12 +157,28 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 		ag.MaxContextTokens = rs.maxContextTokens
 		ag.Image = newRef
 		ag.ContainerID = ""
+		// Re-assert the ID-derived resource names agentSpec reads, in case the
+		// record predates stampNames or lost one. They are pure functions of
+		// the immutable agent ID, so filling a blank in can only ever restore
+		// the right name -- and an EMPTY Mount.Source would make Docker attach
+		// a fresh ANONYMOUS volume, silently detaching the agent from its work.
+		ag.ContainerName = firstNonEmpty(ag.ContainerName, agentContainerName(id))
+		ag.DinernetName = firstNonEmpty(ag.DinernetName, dinernetName(id))
+		ag.WorkspaceVolume = firstNonEmpty(ag.WorkspaceVolume, workspaceVolumeName(id))
+		ag.ClaudeConfigVolume = firstNonEmpty(ag.ClaudeConfigVolume, claudeConfigVolumeName(id))
 		return nil
 	})
 	if err != nil {
 		return m.failUpdate(ctx, &a, fmt.Errorf("recording the updated agent config: %w", err))
 	}
 
+	// The file store's per-agent and shared subpaths must exist before the
+	// daemon resolves agentSpec's subpath mounts. Create asserts this too; the
+	// re-assertion matters when the file store was enabled (or its directory
+	// re-created) after this agent was built.
+	if err := m.ensureAgentFiles(ctx, a); err != nil {
+		return m.failUpdate(ctx, &a, err)
+	}
 	if err := m.startAgentContainer(ctx, &a, rs.rb, "--continue"); err != nil {
 		return m.failUpdate(ctx, &a, err)
 	}
@@ -178,7 +217,16 @@ func (m *Manager) removeAgentContainer(ctx context.Context, a store.Agent) error
 // with an explanatory ErrorMessage and no container ID, the volumes are left
 // exactly as they are (no auto-rollback), and the wrapped cause is returned.
 //
-// The final write uses context.WithoutCancel(ctx): the usual reason the tail
+// The ErrorMessage says outright that nothing was lost, because that is the
+// question the state raises: whichever step failed, an update NEVER removes a
+// volume, the DinD sidecar or the private network, so the agent's workspace
+// and Claude session history are always still there and Update can simply be
+// re-run from StatusError.
+//
+// The only Docker work here is none at all: the sole call is the store write,
+// deliberately, so nothing in this path can fail on the dead context that
+// probably caused the failure being recorded. That write uses
+// context.WithoutCancel(ctx) for the same reason -- the usual reason the tail
 // of Update fails is a cancelled context, and the record must still be moved
 // off StatusUpdating so it does not look like a crash to the next Reconcile.
 func (m *Manager) failUpdate(ctx context.Context, a *store.Agent, cause error) (store.Agent, error) {
@@ -187,7 +235,7 @@ func (m *Manager) failUpdate(ctx context.Context, a *store.Agent, cause error) (
 
 	if _, err := m.store.Update(context.WithoutCancel(ctx), a.ID, func(ag *store.Agent) error {
 		ag.Status = store.StatusError
-		ag.ErrorMessage = "update failed: " + cause.Error()
+		ag.ErrorMessage = "update failed (nothing was lost: the workspace, Claude-config and DinD-cache volumes are intact -- fix the cause and retry the update): " + cause.Error()
 		ag.ContainerID = ""
 		return nil
 	}); err != nil {
