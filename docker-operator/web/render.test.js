@@ -258,3 +258,123 @@ test('renderAnthropicStatus: oauth token, missing date is tolerated', () => {
 test('renderAnthropicStatus: null input degrades to unset', () => {
 	assert.match(Render.renderAnthropicStatus(null), /anthropic-panel__status--unset/);
 });
+
+// --- agent image tag helpers ---------------------------------------------
+
+test('isDateTimeTag: matches only YYYYMMDD-HHMMSS', () => {
+	assert.ok(Render.isDateTimeTag('20260101-120000'));
+	assert.ok(Render.isDateTimeTag('19991231-235959'));
+	for (const bad of ['', 'latest', '2026010-120000', '20260101-12000', '20260101_120000', null, undefined]) {
+		assert.equal(Render.isDateTimeTag(bad), false, JSON.stringify(bad));
+	}
+});
+
+test('newestDateTimeTag: returns the lexically greatest date-time tag, or empty', () => {
+	assert.equal(Render.newestDateTimeTag(['20251231-090000', 'latest', '20260101-120000']), '20260101-120000');
+	assert.equal(Render.newestDateTimeTag(['latest', 'main']), '');
+	assert.equal(Render.newestDateTimeTag([]), '');
+	assert.equal(Render.newestDateTimeTag(null), '');
+});
+
+test('imageTagOf: tag only when no slash follows the last colon', () => {
+	assert.equal(Render.imageTagOf('ghcr.io/psenna/agent:20260101-120000'), '20260101-120000');
+	assert.equal(Render.imageTagOf('host/x:tag'), 'tag');
+	assert.equal(Render.imageTagOf('host:5000/x'), '');
+	assert.equal(Render.imageTagOf('x'), '');
+	assert.equal(Render.imageTagOf(''), '');
+});
+
+test('formatCheckedAgo: falsy is "never checked", otherwise coarse buckets', () => {
+	assert.equal(Render.formatCheckedAgo(''), 'never checked');
+	assert.equal(Render.formatCheckedAgo(null), 'never checked');
+	assert.equal(Render.formatCheckedAgo('not-a-date'), 'never checked');
+	assert.equal(Render.formatCheckedAgo(new Date().toISOString()), 'checked just now');
+	assert.equal(Render.formatCheckedAgo(new Date(Date.now() - 5 * 60 * 1000).toISOString()), 'checked 5 minutes ago');
+	assert.equal(Render.formatCheckedAgo(new Date(Date.now() - 3 * 3600 * 1000).toISOString()), 'checked 3 hours ago');
+	assert.equal(Render.formatCheckedAgo(new Date(Date.now() - 2 * 86400 * 1000).toISOString()), 'checked 2 days ago');
+});
+
+test('renderImageTagSelect: default first and labelled, then newest-first deduped', () => {
+	const html = Render.renderImageTagSelect('c', ['20251231-090000', '20260101-120000', '20251231-090000', 'latest'], 'latest', '');
+	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
+	assert.equal(opts[0], '<option value="latest" selected>latest (default)</option>');
+	assert.equal(opts[1], '<option value="20260101-120000">20260101-120000</option>');
+	assert.equal(opts[2], '<option value="20251231-090000">20251231-090000</option>');
+	assert.equal(opts.length, 3, 'default deduped from the tail, no repeats: ' + html);
+});
+
+test('renderImageTagSelect: a selectedTag not in the list still appears and is selected', () => {
+	const html = Render.renderImageTagSelect('c', ['20260101-120000'], 'latest', '20200101-000000');
+	assert.match(html, /<option value="20200101-000000" selected>20200101-000000<\/option>/);
+	assert.doesNotMatch(html, /value="latest" selected/);
+});
+
+test('renderImageTagSelect: falls back to the default option when selectedTag is empty', () => {
+	const html = Render.renderImageTagSelect('c', ['20260101-120000'], 'latest', '');
+	assert.match(html, /<option value="latest" selected>latest \(default\)<\/option>/);
+});
+
+test('renderImageTagSelect: escapes every value', () => {
+	const html = Render.renderImageTagSelect('c', ['"><img src=x>'], '"><b>', '');
+	assert.doesNotMatch(html, /<img src=x>/);
+	assert.doesNotMatch(html, /<b>/);
+});
+
+test('renderAgentImagePanel: with tags shows the newest and a Check now button', () => {
+	const html = Render.renderAgentImagePanel({
+		tags: ['20260101-120000'], newest: '20260101-120000', operatorDefault: 'latest',
+		checkedAt: new Date().toISOString(), lastError: '',
+	});
+	assert.match(html, /20260101-120000/);
+	assert.match(html, /checked just now/);
+	assert.match(html, /agent-image-panel__refresh/);
+	assert.doesNotMatch(html, /agent-image-panel__error/);
+});
+
+test('renderAgentImagePanel: no tags shows "none discovered"', () => {
+	const html = Render.renderAgentImagePanel({ tags: [], newest: '', operatorDefault: 'latest', checkedAt: null });
+	assert.match(html, /none discovered/);
+	assert.match(html, /never checked/);
+});
+
+test('renderAgentImagePanel: a last error renders the error line', () => {
+	const html = Render.renderAgentImagePanel({ tags: [], lastError: 'registry is unreachable' });
+	assert.match(html, /agent-image-panel__error/);
+	assert.match(html, /registry is unreachable/);
+});
+
+test('renderAgentImagePanel: missing input does not throw', () => {
+	assert.doesNotThrow(() => Render.renderAgentImagePanel());
+});
+
+// --- renderCreateForm: opts + image-tag row -----------------------------
+
+test('renderCreateForm: still renders with a single argument', () => {
+	const html = Render.renderCreateForm({ backend: 'ollama' });
+	assert.match(html, /class="create-form"/);
+	assert.match(html, /New agent/);
+	assert.match(html, />Create</);
+});
+
+test('renderCreateForm: opts.title and opts.submitLabel override the defaults', () => {
+	const html = Render.renderCreateForm({}, { title: 'Update agent', submitLabel: 'Update' });
+	assert.match(html, /Update agent/);
+	assert.match(html, />Update</);
+	assert.doesNotMatch(html, /New agent/);
+});
+
+test('renderCreateForm: the image-tag row renders the select seeded from defaults', () => {
+	const html = Render.renderCreateForm({ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' });
+	assert.match(html, /create-form__image-tag/);
+	assert.match(html, /latest \(default\)/);
+	assert.match(html, /20260101-120000/);
+});
+
+test('renderCreateForm: opts.values pre-fills name/description and a selected image tag', () => {
+	const html = Render.renderCreateForm(
+		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },
+		{ values: { name: 'Neo', description: 'the one', image_tag: '20260101-120000' } });
+	assert.match(html, /class="create-form__name" type="text" value="Neo"/);
+	assert.match(html, /class="create-form__description" type="text" value="the one"/);
+	assert.match(html, /<option value="20260101-120000" selected>/);
+});

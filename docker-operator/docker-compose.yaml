@@ -133,6 +133,14 @@ services:
       STATE_DB_PATH: "/var/lib/docker-operator/state.db"
       MAX_AGENTS: "${MAX_AGENTS:-5}"
       AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-agent:20260909-144348}"
+      # Agent-image tag discovery: the operator polls the registry for
+      # AGENT_IMAGE's :YYYYMMDD-HHMMSS tags and surfaces them in the web UI.
+      # REFRESH_INTERVAL is a Go duration (floored at 1m); REGISTRY_URL is
+      # empty to derive the root from AGENT_IMAGE's domain; REGISTRY_TOKEN is
+      # only needed for a private agent-image repository.
+      AGENT_IMAGE_REFRESH_INTERVAL: "${AGENT_IMAGE_REFRESH_INTERVAL:-1h}"
+      AGENT_IMAGE_REGISTRY_URL: "${AGENT_IMAGE_REGISTRY_URL:-}"
+      AGENT_IMAGE_REGISTRY_TOKEN: "${AGENT_IMAGE_REGISTRY_TOKEN:-}"
       DOCKER_RUNTIME: "${DOCKER_RUNTIME:-sysbox-runc}"
       # The backend a create request that names none falls back to. Each
       # agent records its own choice; this is only the create-form default.

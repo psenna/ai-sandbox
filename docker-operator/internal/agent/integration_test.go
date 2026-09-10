@@ -218,7 +218,7 @@ func TestIntegrationAnthropicLogin(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = c.NetworkRemove(context.Background(), netName) })
 
-	m := NewManager(c, newTestStore(t, 3), cfg, testLogger(), testOptions())
+	m := NewManager(c, nil, newTestStore(t, 3), cfg, testLogger(), testOptions())
 	t.Cleanup(func() { _ = m.StopAnthropicLogin(context.Background()) })
 
 	if err := m.StartAnthropicLogin(ctx); err != nil {

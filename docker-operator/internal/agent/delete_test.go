@@ -162,7 +162,7 @@ func TestDelete_DerivedNamesFromIDOnlyRecord(t *testing.T) {
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	st := newTestStore(t, 5)
-	m := NewManager(f, st, cfg, testLogger(), testOptions())
+	m := NewManager(f, nil, st, cfg, testLogger(), testOptions())
 	ctx := context.Background()
 
 	const id = "agt_bareid1"

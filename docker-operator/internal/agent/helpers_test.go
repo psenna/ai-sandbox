@@ -11,6 +11,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/registry/registrytest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -121,9 +122,15 @@ func newTestManagerCfg(t *testing.T, cfg config.Config) (*Manager, *dockerclient
 	f.AddImage(dindImage)
 	f.AddImage(cfg.AgentImage)
 	st := newTestStore(t, cfg.MaxAgents)
-	m := NewManager(f, st, cfg, testLogger(), testOptions())
+	m := NewManager(f, newTestRegistry(), st, cfg, testLogger(), testOptions())
 	return m, f, st
 }
+
+// newTestRegistry is the default registry.Client the test Manager is wired
+// with -- an empty fake, so RefreshAgentImageTags is exercisable without a
+// real HTTP server. Tests that care about the discovered tags set their own
+// *registrytest.Fake on the Manager instead.
+func newTestRegistry() *registrytest.Fake { return &registrytest.Fake{} }
 
 // resourceCounts snapshots how many volumes/networks/containers the fake
 // currently holds, so a rollback test can assert a failed create leaves the

@@ -62,6 +62,13 @@ type AgentManager interface {
 	AgentImage() string
 	DockerRuntime() string
 
+	// AgentImageTags returns the operator's last-known snapshot of the agent
+	// image's published tags (the bool is false before the first refresh
+	// completes); RefreshAgentImageTags forces a poll now. A poll error is
+	// non-fatal to the caller -- the last-known list is kept.
+	AgentImageTags(ctx context.Context) (store.AgentImageTags, bool, error)
+	RefreshAgentImageTags(ctx context.Context) error
+
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
 	// SetAnthropicAuth stores (replacing) it; ClearAnthropicAuth removes it
@@ -124,6 +131,9 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("POST /api/files/upload", h.handleFilesUpload)
 	mux.HandleFunc("POST /api/files/mkdir", h.handleFilesMkdir)
 
+	mux.HandleFunc("GET /api/agent-image/tags", h.handleAgentImageTags)
+	mux.HandleFunc("POST /api/agent-image/refresh", h.handleAgentImageRefresh)
+
 	mux.HandleFunc("GET /api/anthropic/auth", h.handleAnthropicAuthGet)
 	mux.HandleFunc("PUT /api/anthropic/auth", h.handleAnthropicAuthPut)
 	mux.HandleFunc("DELETE /api/anthropic/auth", h.handleAnthropicAuthDelete)
@@ -144,6 +154,8 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("/api/agents/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/info", methodNotAllowed)
+	mux.HandleFunc("/api/agent-image/tags", methodNotAllowed)
+	mux.HandleFunc("/api/agent-image/refresh", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/login", methodNotAllowed)
 	mux.HandleFunc("/api/files", methodNotAllowed)
@@ -192,6 +204,10 @@ type createAgentRequest struct {
 	// no default means the variable is omitted so the agent uses Claude Code's
 	// built-in default.
 	MaxContextTokens string `json:"max_context_tokens"`
+	// ImageTag pins this one agent to a specific tag of the operator's agent
+	// image repository. Empty means the operator's configured image. A
+	// malformed tag is rejected with 400 on the "image_tag" field.
+	ImageTag string `json:"image_tag"`
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -238,6 +254,18 @@ type agentOperatorInfo struct {
 type agentInfoResponse struct {
 	Agent    store.Agent       `json:"agent"`
 	Operator agentOperatorInfo `json:"operator"`
+}
+
+// agentImageTagsResponse is the GET /api/agent-image/tags and
+// POST /api/agent-image/refresh body: the discovered date-time tags
+// (newest-first), the newest of them, the operator's own default image tag,
+// when the list was last checked, and the last refresh error if any.
+type agentImageTagsResponse struct {
+	Tags            []string   `json:"tags"`
+	Newest          string     `json:"newest"`
+	OperatorDefault string     `json:"operator_default"`
+	CheckedAt       *time.Time `json:"checked_at"`
+	LastError       string     `json:"last_error"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -319,6 +347,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		OllamaURL: req.OllamaURL, Repo: req.Repo,
 		AutoCompactThreshold: req.AutoCompactThreshold,
 		MaxContextTokens:     req.MaxContextTokens,
+		ImageTag:             req.ImageTag,
 	})
 	if err != nil {
 		switch {
@@ -334,6 +363,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
 		case agent.IsInvalidAutoCompactThreshold(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
+		case agent.IsInvalidImageTag(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"image_tag" is not a valid image tag`, "image_tag")
 		default:
 			h.internalError(w, "creating agent", err)
 		}
@@ -341,6 +372,49 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/api/agents/"+a.ID)
 	writeJSON(w, http.StatusCreated, a)
+}
+
+// agentImageTagsBody builds the response DTO from a stored snapshot.
+func (h *Handler) agentImageTagsBody(info store.AgentImageTags) agentImageTagsResponse {
+	tags := info.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	resp := agentImageTagsResponse{
+		Tags:            tags,
+		Newest:          agent.NewestDateTimeTag(info.Tags),
+		OperatorDefault: agent.ImageTagOf(h.mgr.AgentImage()),
+		LastError:       info.LastError,
+	}
+	if !info.CheckedAt.IsZero() {
+		t := info.CheckedAt
+		resp.CheckedAt = &t
+	}
+	return resp
+}
+
+func (h *Handler) handleAgentImageTags(w http.ResponseWriter, r *http.Request) {
+	info, _, err := h.mgr.AgentImageTags(r.Context())
+	if err != nil {
+		h.internalError(w, "reading the agent image tags", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.agentImageTagsBody(info))
+}
+
+func (h *Handler) handleAgentImageRefresh(w http.ResponseWriter, r *http.Request) {
+	// A poll failure is not fatal to this request: the refresh keeps the
+	// last-known list and records the error, and the client still gets a 200
+	// with last_error populated.
+	if err := h.mgr.RefreshAgentImageTags(r.Context()); err != nil {
+		h.log.Warn("on-demand agent image tag refresh failed", "error", err)
+	}
+	info, _, err := h.mgr.AgentImageTags(r.Context())
+	if err != nil {
+		h.internalError(w, "reading back the agent image tags", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.agentImageTagsBody(info))
 }
 
 func (h *Handler) handleAnthropicAuthGet(w http.ResponseWriter, r *http.Request) {

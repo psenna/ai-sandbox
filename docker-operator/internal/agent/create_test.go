@@ -224,7 +224,7 @@ func TestCreate_ImagePullOnlyWhenMissing(t *testing.T) {
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(cfg.AgentImage) // only the agent image is pre-seeded; dindImage is missing
 	st := newTestStore(t, 5)
-	m := NewManager(f, st, cfg, testLogger(), testOptions())
+	m := NewManager(f, nil, st, cfg, testLogger(), testOptions())
 
 	if _, err := m.Create(context.Background(), CreateRequest{}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -319,7 +319,7 @@ func TestCreate_DindNeverHealthy_TimeoutRollback(t *testing.T) {
 	f.AddImage(dindImage)
 	f.AddImage(cfg.AgentImage)
 	st := newTestStore(t, 5)
-	m := NewManager(f, st, cfg, testLogger(), testOptions())
+	m := NewManager(f, nil, st, cfg, testLogger(), testOptions())
 
 	before := snapshotCounts(f)
 	_, err := m.Create(context.Background(), CreateRequest{})
@@ -398,7 +398,7 @@ func TestCreate_RollbackSurvivesCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wrapped := &cancelOnContainerCreate{Fake: f, cancel: cancel}
-	m := NewManager(wrapped, st, cfg, testLogger(), testOptions())
+	m := NewManager(wrapped, nil, st, cfg, testLogger(), testOptions())
 
 	before := snapshotCounts(f)
 	_, err := m.Create(ctx, CreateRequest{})
