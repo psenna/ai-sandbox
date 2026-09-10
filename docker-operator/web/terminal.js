@@ -88,6 +88,14 @@
 			fontSize: 13,
 			fontFamily: 'Menlo, Consolas, "DejaVu Sans Mono", monospace',
 			theme: { background: '#1e1e1e' },
+			// Since the bridge enables tmux `mouse on`, a mouse-aware full-screen
+			// app (claude) turns on mouse tracking and xterm.js forwards every
+			// drag to it as a mouse sequence -- so a plain click-drag no longer
+			// makes a native browser text selection and the pane can't be copied.
+			// xterm.js's escape hatch is a modifier-held drag: Shift-drag forces
+			// a selection on Linux/Windows already, and this option makes ⌥-drag
+			// do the same on macOS. See the "select text" note in the README.
+			macOptionClickForcesSelection: true,
 		});
 		var fitAddon = new window.FitAddon.FitAddon();
 		term.loadAddon(fitAddon);
@@ -331,6 +339,7 @@
 					'<button class="detail__delete-btn" type="button">Delete</button>' +
 				'</div>' +
 				'<div class="detail__terminal"></div>' +
+				'<p class="detail__hint">Scroll to move the pane. Hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS) and drag to select, then <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>C</kbd> to copy.</p>' +
 			'</div>';
 
 		var nameInput = container.querySelector('.detail__name');

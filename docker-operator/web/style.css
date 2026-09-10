@@ -215,6 +215,26 @@ html, body {
 	height: 100%;
 }
 
+.detail__hint {
+	flex: 0 0 auto;
+	margin: 0;
+	padding: 6px 12px;
+	font-size: 12px;
+	color: var(--fg-dim);
+	background: var(--bg-item);
+	border-top: 1px solid var(--border);
+}
+
+.detail__hint kbd {
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 11px;
+	color: var(--fg);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	padding: 0 3px;
+}
+
 /* --- agent list backend badge --- */
 .agent-item__backend {
 	margin-left: auto;
