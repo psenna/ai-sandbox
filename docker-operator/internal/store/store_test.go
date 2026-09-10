@@ -693,6 +693,7 @@ func TestStatus(t *testing.T) {
 		{StatusStopped, true, false},
 		{StatusError, true, false},
 		{StatusDeleting, true, false},
+		{StatusUpdating, true, true},
 		{Status(""), false, false},
 		{Status("Running"), false, false},
 		{Status("terminating"), false, false},
@@ -706,6 +707,20 @@ func TestStatus(t *testing.T) {
 				t.Errorf("CountsTowardCapacity() = %v, want %v", got, tc.holdsSlot)
 			}
 		})
+	}
+}
+
+// TestStatusUpdating_ValidAndCountsTowardCapacity pins the two properties the
+// in-place update flow depends on: "updating" is a defined state (so
+// store.Update accepts a mutator that sets it) and it holds a MAX_AGENTS slot
+// (an updating agent is a live agent mid-recreate, and releasing its slot
+// would let a racing create over-admit).
+func TestStatusUpdating_ValidAndCountsTowardCapacity(t *testing.T) {
+	if !StatusUpdating.Valid() {
+		t.Error("StatusUpdating.Valid() = false, want true")
+	}
+	if !StatusUpdating.CountsTowardCapacity() {
+		t.Error("StatusUpdating.CountsTowardCapacity() = false, want true")
 	}
 }
 
