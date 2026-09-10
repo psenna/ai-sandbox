@@ -40,6 +40,15 @@ FROM node:22-alpine
 RUN apk add --no-cache git ca-certificates bash curl libgcc libstdc++ ripgrep docker-cli tmux && \
     rm -rf /var/cache/apk/*
 
+# A UTF-8 locale so tmux runs in UTF-8 mode. tmux picks its charset from
+# LC_ALL / LC_CTYPE / LANG; with none set the attach client falls back to a
+# C/ASCII locale and renders every non-ASCII byte (ç, á, …) as `_` -- both in
+# the pane and in what a web viewer types. `C.UTF-8` is the locale musl always
+# provides (no locale-gen needed). The operator also injects LANG into the
+# agent env and the terminal-attach exec, so this line is the belt-and-braces
+# default that also covers a plain `docker run` of the image.
+ENV LANG=C.UTF-8
+
 # Non-root runtime: node:22-alpine already ships a `node` user with uid 1000
 # (HOME=/home/node), matching git-proxy's and dependaproxy's uid 1000 so shared
 # volumes are read/writable by all of them. Reused, not recreated -- `adduser -D

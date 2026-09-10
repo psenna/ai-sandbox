@@ -127,6 +127,13 @@ hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS, via xterm.js's
 <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>C</kbd>. The detail view shows this hint
 under the terminal.
 
+The pane runs in a UTF-8 locale (`LANG=C.UTF-8`, set in the agent image, the
+agent environment, and the terminal-attach exec). tmux chooses its charset
+from `LANG` / `LC_*`; with none set it falls back to a C/ASCII locale and
+renders every non-ASCII byte — `ç`, `á`, accented Latin text — as `_`, both
+in the pane and in what a viewer types. An agent whose container predates
+this picks it up on its next terminal reconnect, no recreate needed.
+
 To read or
 search back through a whole session, the detail header's **View context**
 button opens the agent's captured transcript

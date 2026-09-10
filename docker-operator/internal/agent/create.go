@@ -781,6 +781,15 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 
 		// tmux needs a terminal type even for a detached session.
 		"TERM": "xterm-256color",
+
+		// A UTF-8 locale so tmux (the detached new-session client in
+		// tmux-boot.sh, and the web-UI attach exec) runs in UTF-8 mode.
+		// Without it tmux falls back to a C/ASCII locale and renders every
+		// non-ASCII byte -- ç, á, accented Latin text -- as `_`, in the pane
+		// and in what a viewer types. Set here (not only in the image) so it
+		// applies regardless of the agent image version. `C.UTF-8` is the
+		// locale musl always provides.
+		"LANG": "C.UTF-8",
 	}
 
 	// Claude Code auto-compact threshold, only when a value was actually
