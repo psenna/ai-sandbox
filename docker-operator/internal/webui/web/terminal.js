@@ -118,6 +118,42 @@
 			});
 		}
 
+		// Copy / paste keys. On macOS ⌘C / ⌘V are browser accelerators that
+		// xterm.js leaves for the browser (⌘C fires a `copy` event its own
+		// handler answers), so nothing is needed there. On Linux/Windows Ctrl+C
+		// / Ctrl+V are the pty's own SIGINT / literal-0x16, so the terminal
+		// convention is the Shift variant -- which xterm.js does NOT bind, and
+		// xterm's selection is internal-only so there is no browser selection to
+		// fall back on either. Wire them here: Ctrl+Shift+C copies the xterm
+		// selection, Ctrl+Shift+V pastes the clipboard into the pty. The
+		// navigator.clipboard calls need a secure context, which the operator's
+		// 127.0.0.1 bind satisfies; every branch is guarded and best-effort.
+		if (typeof term.attachCustomKeyEventHandler === 'function') {
+			term.attachCustomKeyEventHandler(function (ev) {
+				if (ev.type !== 'keydown') return true;
+				if (isCopyShortcut(ev)) {
+					var sel = term.getSelection();
+					if (sel && navigator.clipboard) {
+						navigator.clipboard.writeText(sel).catch(function () {});
+						// Only claim the event once there is something to copy;
+						// an empty selection falls through so the browser's own
+						// binding still works.
+						ev.preventDefault();
+						return false;
+					}
+					return true;
+				}
+				if (isPasteShortcut(ev) && navigator.clipboard && navigator.clipboard.readText) {
+					navigator.clipboard.readText().then(function (text) {
+						if (text) term.paste(text);
+					}).catch(function () {});
+					ev.preventDefault();
+					return false;
+				}
+				return true;
+			});
+		}
+
 		var socket = new WebSocket(wsURL(wsPath));
 		socket.binaryType = 'arraybuffer';
 
@@ -183,6 +219,22 @@
 	// terminal.test.js can cover the truth table without a DOM.
 	function shouldForwardWheel(bufferType, mouseTrackingMode) {
 		return !(bufferType === 'alternate' && (mouseTrackingMode || 'none') === 'none');
+	}
+
+	// isCopyShortcut / isPasteShortcut recognise the terminal-convention
+	// clipboard combos (Ctrl+Shift+C / Ctrl+Shift+V, or their ⌘ equivalents on
+	// macOS where the browser has not already claimed the plain combo). Pure,
+	// so terminal.test.js can cover them without a DOM. `ev.code` is used, not
+	// `ev.key`, because with Shift held `ev.key` is the uppercase letter and on
+	// some layouts a different glyph entirely.
+	function isClipboardCombo(ev, code) {
+		return Boolean(ev.code === code && ev.shiftKey && (ev.ctrlKey || ev.metaKey) && !ev.altKey);
+	}
+	function isCopyShortcut(ev) {
+		return isClipboardCombo(ev, 'KeyC');
+	}
+	function isPasteShortcut(ev) {
+		return isClipboardCombo(ev, 'KeyV');
 	}
 
 	var HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -339,7 +391,7 @@
 					'<button class="detail__delete-btn" type="button">Delete</button>' +
 				'</div>' +
 				'<div class="detail__terminal"></div>' +
-				'<p class="detail__hint">Scroll to move the pane. Hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS) and drag to select, then <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>C</kbd> to copy.</p>' +
+				'<p class="detail__hint">Scroll to move the pane. Hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS) and drag to select, then <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> (<kbd>⌘</kbd><kbd>C</kbd> on macOS) to copy.</p>' +
 			'</div>';
 
 		var nameInput = container.querySelector('.detail__name');
@@ -746,6 +798,8 @@
 		resizeFrame: resizeFrame,
 		encodeKeystroke: encodeKeystroke,
 		shouldForwardWheel: shouldForwardWheel,
+		isCopyShortcut: isCopyShortcut,
+		isPasteShortcut: isPasteShortcut,
 		terminalTextToPlain: terminalTextToPlain,
 		buildContextHTML: buildContextHTML,
 		clampToLastLines: clampToLastLines,
