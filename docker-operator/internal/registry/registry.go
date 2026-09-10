@@ -312,9 +312,9 @@ func (c *HTTPClient) fetchToken(ctx context.Context, ch bearerChallenge) (string
 	}
 	defer drainClose(resp.Body)
 
-	switch {
-	case resp.StatusCode == http.StatusOK:
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return "", fmt.Errorf("the registry auth endpoint refused to issue a token (HTTP %d): %w", resp.StatusCode, ErrAuth)
 	default:
 		return "", fmt.Errorf("the registry auth endpoint returned HTTP %d: %w", resp.StatusCode, ErrOffline)
