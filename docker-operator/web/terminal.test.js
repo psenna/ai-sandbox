@@ -14,6 +14,8 @@ const {
 	resizeFrame,
 	encodeKeystroke,
 	shouldForwardWheel,
+	isCopyShortcut,
+	isPasteShortcut,
 	terminalTextToPlain,
 	buildContextHTML,
 	clampToLastLines,
@@ -71,6 +73,19 @@ test('shouldForwardWheel: swallowed only on the alternate screen with no mouse t
 	// The app is tracking the mouse: forward, so it can scroll itself.
 	assert.equal(shouldForwardWheel('alternate', 'vt200'), true);
 	assert.equal(shouldForwardWheel('alternate', 'any'), true);
+});
+
+test('isCopyShortcut / isPasteShortcut: Ctrl/⌘+Shift+C/V only', () => {
+	assert.equal(isCopyShortcut({ code: 'KeyC', shiftKey: true, ctrlKey: true }), true);
+	assert.equal(isCopyShortcut({ code: 'KeyC', shiftKey: true, metaKey: true }), true);
+	assert.equal(isPasteShortcut({ code: 'KeyV', shiftKey: true, ctrlKey: true }), true);
+	// Bare Ctrl+C must stay SIGINT to the pty, not a copy.
+	assert.equal(isCopyShortcut({ code: 'KeyC', ctrlKey: true }), false);
+	// Shift+C alone is just a capital C.
+	assert.equal(isCopyShortcut({ code: 'KeyC', shiftKey: true }), false);
+	// A modifier soup that isn't the combo.
+	assert.equal(isCopyShortcut({ code: 'KeyC', shiftKey: true, ctrlKey: true, altKey: true }), false);
+	assert.equal(isPasteShortcut({ code: 'KeyC', shiftKey: true, ctrlKey: true }), false);
 });
 
 test('terminalTextToPlain: strips ANSI colour/cursor sequences and OSC titles', () => {
