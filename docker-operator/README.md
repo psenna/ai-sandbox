@@ -121,11 +121,14 @@ would instead be turned into history-walking arrow keys, which
 Because tmux mouse mode is on, a mouse-aware full-screen app (`claude`)
 enables mouse tracking and xterm.js forwards a plain click-drag to it as a
 mouse sequence instead of making a native text selection — the same
-trade-off every terminal emulator has. To **select and copy** from the pane,
-hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS, via xterm.js's
-`macOptionClickForcesSelection`) while dragging, then copy with the usual
-<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>C</kbd>. The detail view shows this hint
-under the terminal.
+trade-off every terminal emulator has. To **select** text from the pane, hold
+<kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS, via xterm.js's
+`macOptionClickForcesSelection`) while dragging. To **copy** it, use
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> — the plain <kbd>Ctrl</kbd>+<kbd>C</kbd>
+stays the pty's SIGINT — or, on macOS, <kbd>⌘</kbd><kbd>C</kbd> (a browser
+accelerator xterm.js leaves alone). <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd>
+pastes (`isCopyShortcut` / `isPasteShortcut` in `web/terminal.js`). The detail
+view shows this hint under the terminal.
 
 The pane runs in a UTF-8 locale (`LANG=C.UTF-8`, set in the agent image, the
 agent environment, and the terminal-attach exec). tmux chooses its charset
