@@ -404,7 +404,10 @@ func handleContainerEvent(ctx context.Context, mgr *agent.Manager, ev dockerclie
 		return
 	}
 
-	err := mgr.MarkUnexpectedExit(ctx, id, newStatus, "container "+string(ev.Action)+" unexpectedly")
+	// ev.ActorID is the container the event fired on. Passing it lets
+	// MarkUnexpectedExit ignore the OLD container's die/stop that an in-place
+	// Update's recreate generates once the record already points at the new one.
+	err := mgr.MarkUnexpectedExit(ctx, id, ev.ActorID, newStatus, "container "+string(ev.Action)+" unexpectedly")
 	if err != nil && !store.IsNotFound(err) {
 		log.Warn("status-sync: recording an unexpected container exit failed", "agent_id", id, "error", err)
 	}
