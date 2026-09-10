@@ -15,6 +15,7 @@
 		maxAgents: 0,
 		selectedID: null,
 		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '' },
+		agentImage: { tags: [], newest: '', operatorDefault: '', checkedAt: null, lastError: '' },
 	};
 
 	var sidebarList = document.getElementById('agent-list');
@@ -23,6 +24,7 @@
 	var filesBtn = document.getElementById('files-btn');
 	var mainArea = document.getElementById('main-area');
 	var anthropicPanel = document.getElementById('anthropic-panel');
+	var agentImagePanel = document.getElementById('agent-image-panel');
 
 	// apiError extracts internal/api's {"error":{"message":...}} envelope
 	// when present, falling back to a generic message for a response that
@@ -82,7 +84,11 @@
 	// --- create form ---------------------------------------------------------
 
 	function showCreateForm() {
-		mainArea.innerHTML = window.Render.renderCreateForm(state.defaults);
+		var formDefaults = Object.assign({}, state.defaults, {
+			imageTags: state.agentImage.tags,
+			imageDefaultTag: state.agentImage.operatorDefault,
+		});
+		mainArea.innerHTML = window.Render.renderCreateForm(formDefaults);
 		var form = mainArea.querySelector('.create-form');
 		var ollamaBlock = form.querySelector('.create-form__ollama');
 		var anthropicNote = form.querySelector('.create-form__anthropic-note');
@@ -126,6 +132,10 @@
 			// when-entered rule.
 			var maxContextTokens = form.querySelector('.create-form__max-context-tokens').value.trim();
 			if (maxContextTokens) body.max_context_tokens = maxContextTokens;
+			// The image-tag <select>'s first option is the operator default;
+			// only send image_tag when the user picked something else.
+			var sel = form.querySelector('.create-form__image-tag');
+			if (sel && sel.value && sel.value !== state.agentImage.operatorDefault) body.image_tag = sel.value;
 			if (backend === 'ollama') {
 				body.model = form.querySelector('.create-form__model').value.trim();
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();
@@ -195,6 +205,54 @@
 		}
 	}
 
+	// --- agent image panel -------------------------------------------------
+
+	function mapAgentImage(data) {
+		data = data || {};
+		state.agentImage = {
+			tags: data.tags || [],
+			newest: data.newest || '',
+			operatorDefault: data.operator_default || '',
+			checkedAt: data.checked_at || null,
+			lastError: data.last_error || '',
+		};
+	}
+
+	function renderAgentImagePanelNow() {
+		agentImagePanel.innerHTML = window.Render.renderAgentImagePanel(state.agentImage);
+		var btn = agentImagePanel.querySelector('.agent-image-panel__refresh');
+		if (btn) {
+			btn.addEventListener('click', function () {
+				btn.disabled = true;
+				fetchJSON('/api/agent-image/refresh', { method: 'POST' })
+					.then(function (data) {
+						mapAgentImage(data);
+						renderAgentImagePanelNow();
+					})
+					.catch(function (e) {
+						agentImagePanel.innerHTML =
+							'<div class="agent-image-panel__title">Agent image</div>' +
+							'<span class="agent-image-panel__status--unavailable">' +
+							window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
+					});
+			});
+		}
+	}
+
+	function refreshAgentImagePanel() {
+		return fetchJSON('/api/agent-image/tags')
+			.then(function (data) {
+				mapAgentImage(data);
+				renderAgentImagePanelNow();
+			})
+			.catch(function (e) {
+				agentImagePanel.innerHTML =
+					'<div class="agent-image-panel__title">Agent image</div>' +
+					'<span class="agent-image-panel__status--unavailable">' +
+					window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
+			});
+	}
+
 	function putAnthropicAuth(payload) {
 		return fetchJSON('/api/anthropic/auth', {
 			method: 'PUT',
@@ -258,11 +316,13 @@
 			'<li class="agent-list__error">Failed to load agents: ' + window.Render.escapeHTML(e.message) + '</li>';
 	});
 	refreshAnthropicPanel();
+	refreshAgentImagePanel();
 
 	// Poll for status changes (creating -> running, an unexpected stop, etc.)
 	// every few seconds. Simplest correct approach for a V1 local tool with a
 	// handful of agents at most -- no push channel needed yet.
 	setInterval(function () {
 		refreshAgents().catch(function () { /* transient failure; retried next tick */ });
+		refreshAgentImagePanel().catch(function () { /* transient failure; retried next tick */ });
 	}, 3000);
 })();

@@ -91,8 +91,12 @@
 	// its placeholder, so submitting it untouched means "use the operator
 	// default". The caller wires the backend radio to show/hide
 	// .create-form__ollama and submits the form's values to POST /api/agents.
-	function renderCreateForm(defaults) {
+	function renderCreateForm(defaults, opts) {
 		defaults = defaults || {};
+		opts = opts || {};
+		var title = escapeHTML(opts.title || 'New agent');
+		var submitLabel = escapeHTML(opts.submitLabel || 'Create');
+		var values = opts.values || {};
 		var backend = defaults.backend === 'anthropic' ? 'anthropic' : 'ollama';
 		var model = escapeHTML(defaults.model || '');
 		var fastModel = escapeHTML(defaults.fastModel || '');
@@ -101,13 +105,18 @@
 		var autoCompact = escapeHTML(defaults.autoCompactThreshold || '');
 		var maxContextTokens = escapeHTML(defaults.maxContextTokens || '');
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
+		var nameValue = escapeHTML(values.name || '');
+		var descriptionValue = escapeHTML(values.description || '');
 		return (
 			'<form class="create-form">' +
-				'<h2 class="create-form__title">New agent</h2>' +
-				'<label class="create-form__row">Name<input class="create-form__name" type="text" placeholder="(optional)"></label>' +
-				'<label class="create-form__row">Description<input class="create-form__description" type="text" placeholder="(optional)"></label>' +
+				'<h2 class="create-form__title">' + title + '</h2>' +
+				'<label class="create-form__row">Name<input class="create-form__name" type="text" value="' + nameValue + '" placeholder="(optional)"></label>' +
+				'<label class="create-form__row">Description<input class="create-form__description" type="text" value="' + descriptionValue + '" placeholder="(optional)"></label>' +
 				'<label class="create-form__row">Repository' +
 					'<input class="create-form__repo" type="text" value="' + repo + '" placeholder="owner/repo.git — blank for a bare terminal">' +
+				'</label>' +
+				'<label class="create-form__row">Agent image' +
+					renderImageTagSelect('create-form__image-tag', (defaults.imageTags || []), defaults.imageDefaultTag || '', values.image_tag || '') +
 				'</label>' +
 				'<label class="create-form__row">Auto-compact threshold' +
 					'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '" placeholder="Claude Code auto-compact threshold — blank to use the built-in default">' +
@@ -129,7 +138,7 @@
 				'</div>' +
 				'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in the sidebar first).</p>' +
 				'<div class="create-form__actions">' +
-					'<button class="create-form__submit" type="submit">Create</button>' +
+					'<button class="create-form__submit" type="submit">' + submitLabel + '</button>' +
 					'<button class="create-form__cancel" type="button">Cancel</button>' +
 				'</div>' +
 				'<p class="create-form__error" role="alert" hidden></p>' +
@@ -196,6 +205,122 @@
 		var when = status.updated_at ? new Date(status.updated_at) : null;
 		var whenText = when && !isNaN(when.getTime()) ? ' · set ' + when.toISOString().slice(0, 10) : '';
 		return '<span class="anthropic-panel__status anthropic-panel__status--set">' + escapeHTML(kind) + escapeHTML(whenText) + '</span>';
+	}
+
+	// --- agent image tags ---------------------------------------------------
+
+	var DATE_TIME_TAG_RE = /^\d{8}-\d{6}$/;
+
+	// isDateTimeTag mirrors docker-operator/internal/agent.IsDateTimeTag:
+	// the immutable :YYYYMMDD-HHMMSS tag the agent-image CI publishes.
+	function isDateTimeTag(tag) {
+		return DATE_TIME_TAG_RE.test(String(tag || ''));
+	}
+
+	// newestDateTimeTag returns the lexically-greatest date-time tag (== the
+	// newest, for this format), or '' when there is none.
+	function newestDateTimeTag(tags) {
+		var newest = '';
+		(tags || []).forEach(function (t) {
+			if (isDateTimeTag(t) && t > newest) newest = t;
+		});
+		return newest;
+	}
+
+	// imageTagOf is a best-effort client-side ImageTagOf: the substring after
+	// the last ':' ONLY when no '/' follows that ':' (so "host:5000/x" => '',
+	// "host/x:tag" => 'tag', "x" => '').
+	function imageTagOf(ref) {
+		var s = String(ref || '');
+		var colon = s.lastIndexOf(':');
+		if (colon < 0) return '';
+		if (s.indexOf('/', colon) >= 0) return '';
+		return s.slice(colon + 1);
+	}
+
+	// formatCheckedAgo renders an ISO timestamp as a coarse "checked ..." bucket.
+	function formatCheckedAgo(iso) {
+		if (!iso) return 'never checked';
+		var then = new Date(iso).getTime();
+		if (isNaN(then)) return 'never checked';
+		var secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+		if (secs < 60) return 'checked just now';
+		var mins = Math.round(secs / 60);
+		if (mins < 60) return 'checked ' + mins + ' minute' + (mins === 1 ? '' : 's') + ' ago';
+		var hours = Math.round(mins / 60);
+		if (hours < 24) return 'checked ' + hours + ' hour' + (hours === 1 ? '' : 's') + ' ago';
+		var days = Math.round(hours / 24);
+		return 'checked ' + days + ' day' + (days === 1 ? '' : 's') + ' ago';
+	}
+
+	// renderImageTagSelect renders a <select> whose first option is the
+	// operator's default image tag (labelled "<tag> (default)" and the fallback
+	// selection), followed by the discovered date-time tags newest-first and
+	// de-duplicated (the default removed from that tail). A truthy selectedTag
+	// that is not otherwise listed is added so it stays selectable. Every value
+	// is escaped.
+	function renderImageTagSelect(cls, tags, operatorDefaultTag, selectedTag) {
+		var def = String(operatorDefaultTag || '');
+		var selected = String(selectedTag || '');
+		var options = [];
+		var seen = {};
+
+		options.push({ value: def, label: def ? def + ' (default)' : '(operator default)' });
+		seen[def] = true;
+
+		newestFirstUnique(tags).forEach(function (t) {
+			if (seen[t]) return;
+			seen[t] = true;
+			options.push({ value: t, label: t });
+		});
+
+		if (selected && !seen[selected]) {
+			options.push({ value: selected, label: selected });
+			seen[selected] = true;
+		}
+
+		var matched = selected && seen[selected] ? selected : def;
+		var html = '<select class="' + escapeHTML(cls) + '">';
+		options.forEach(function (o) {
+			html += '<option value="' + escapeHTML(o.value) + '"' +
+				(o.value === matched ? ' selected' : '') + '>' + escapeHTML(o.label) + '</option>';
+		});
+		return html + '</select>';
+	}
+
+	// newestFirstUnique returns the date-time tags of tags, de-duplicated and
+	// sorted newest-first.
+	function newestFirstUnique(tags) {
+		var seen = {};
+		var out = [];
+		(tags || []).forEach(function (t) {
+			if (!isDateTimeTag(t) || seen[t]) return;
+			seen[t] = true;
+			out.push(t);
+		});
+		out.sort();
+		out.reverse();
+		return out;
+	}
+
+	// renderAgentImagePanel renders the sidebar "Agent image" panel body from
+	// {tags, newest, operatorDefault, checkedAt, lastError}. Mirrors
+	// renderAnthropicStatus's shape.
+	function renderAgentImagePanel(info) {
+		info = info || {};
+		var newest = info.newest || newestDateTimeTag(info.tags);
+		var newestText = newest ? escapeHTML(newest) : 'none discovered';
+		var html =
+			'<div class="agent-image-panel__title">Agent image</div>' +
+			'<span class="agent-image-panel__newest">Newest tag: ' + newestText + '</span>' +
+			'<span class="agent-image-panel__checked">' + escapeHTML(formatCheckedAgo(info.checkedAt)) + '</span>';
+		if (info.lastError) {
+			html += '<p class="agent-image-panel__error">' + escapeHTML(info.lastError) + '</p>';
+		}
+		html += '<div class="agent-image-panel__actions">' +
+			'<button class="agent-image-panel__refresh" type="button">Check now</button>' +
+			'</div>';
+		return html;
 	}
 
 	// formatBytes renders a byte count as a short human string. A negative or
@@ -306,6 +431,12 @@
 		renderCreateForm: renderCreateForm,
 		renderAgentInfo: renderAgentInfo,
 		renderAnthropicStatus: renderAnthropicStatus,
+		isDateTimeTag: isDateTimeTag,
+		newestDateTimeTag: newestDateTimeTag,
+		imageTagOf: imageTagOf,
+		formatCheckedAgo: formatCheckedAgo,
+		renderImageTagSelect: renderImageTagSelect,
+		renderAgentImagePanel: renderAgentImagePanel,
 		formatBytes: formatBytes,
 		formatModTime: formatModTime,
 		renderBreadcrumb: renderBreadcrumb,

@@ -174,7 +174,7 @@ anything else on the same Docker host.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` (so the create form needs no second request). |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","ollama_url","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","ollama_url","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE`. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
 | `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `ollama_url`, `repo`). |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
@@ -187,6 +187,8 @@ anything else on the same Docker host.
 | `GET` | `/ws/agents/{id}/terminal` | WebSocket terminal bridge — binary frames are raw PTY bytes each way, a JSON text frame is `{"type":"resize","cols":N,"rows":N}`. |
 | `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
 | `GET`/`POST`/`DELETE` | `/api/anthropic/login` | Status / start / stop the `claude setup-token` helper container. `POST` returns `{"active":true,"ws":"/ws/anthropic/login/terminal"}`. |
+| `GET` | `/api/agent-image/tags` | The discovered `:YYYYMMDD-HHMMSS` agent-image tags, newest-first: `{"tags":[…],"newest":"…","operator_default":"…","checked_at":"…"\|null,"last_error":"…"}`. Polled on a timer (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`, floored at `1m`). |
+| `POST` | `/api/agent-image/refresh` | Force a registry poll now, then return the same body as `GET /api/agent-image/tags`. A poll failure is **not** fatal — still `200`, with the last-known list kept and `last_error` populated. |
 | `GET` | `/ws/anthropic/login/terminal` | Terminal bridge into the login helper container (same frame protocol as the agent terminal). |
 
 ### Authenticating the API
@@ -399,6 +401,16 @@ published to GHCR by
 on every `docker-operator/agent/**` change to `main`, tagged with a UTC
 date-time plus `:latest`. Pin a date-time tag in `.env` for a reproducible
 default, or run `make agent-image` to build and shadow `:latest` locally.
+
+The operator polls the registry for those date-time tags
+(`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`; `AGENT_IMAGE_REGISTRY_URL` /
+`AGENT_IMAGE_REGISTRY_TOKEN` override the derived registry root / supply a
+Bearer for a private repo) and surfaces them in the sidebar **Agent image**
+panel and a per-agent dropdown on the create form. Creating an agent with a
+non-default tag stamps the resolved reference on its record (`image`). Pin
+`AGENT_IMAGE` to a `:YYYYMMDD-HHMMSS` tag — or create agents with an explicit
+tag — so the per-agent upgrade prompts planned in follow-up issues have a
+known starting point.
 
 **This step needs `sysbox-runc` installed on the Docker host** (unprivileged
 Docker-in-Docker for the agent's own DinD sidecar; see

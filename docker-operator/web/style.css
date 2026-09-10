@@ -281,6 +281,42 @@ html, body {
 .anthropic-panel__actions button:hover { border-color: var(--accent); }
 .anthropic-panel__remove { color: var(--status-error); }
 
+/* --- Agent image panel (sidebar footer) --- */
+.agent-image-panel {
+	border-top: 1px solid var(--border);
+	margin-top: 8px;
+	padding-top: 8px;
+	font-size: 12px;
+}
+
+.agent-image-panel__title {
+	color: var(--fg-dim);
+	margin-bottom: 4px;
+}
+
+.agent-image-panel__newest { display: block; }
+.agent-image-panel__checked { display: block; color: var(--fg-dim); margin-bottom: 6px; }
+.agent-image-panel__status--unavailable { display: block; color: var(--fg-dim); font-style: italic; }
+.agent-image-panel__error { margin: 4px 0 6px; color: var(--status-error); }
+
+.agent-image-panel__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.agent-image-panel__actions button {
+	background: var(--bg-item);
+	color: var(--fg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 4px 8px;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.agent-image-panel__actions button:hover { border-color: var(--accent); }
+
 /* --- create form --- */
 .create-form {
 	max-width: 460px;
@@ -309,7 +345,17 @@ html, body {
 	font: inherit;
 }
 
-.create-form__row input:focus { outline: none; border-color: var(--accent); }
+.create-form__row select {
+	background: var(--bg-item);
+	color: var(--fg);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 6px 8px;
+	font: inherit;
+}
+
+.create-form__row input:focus,
+.create-form__row select:focus { outline: none; border-color: var(--accent); }
 
 .create-form__backend {
 	border: 1px solid var(--border);
