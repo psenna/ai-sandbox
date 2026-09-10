@@ -60,6 +60,11 @@ type fakeManager struct {
 	loginActive   bool
 	loginStartErr error
 	loginStopErr  error
+
+	imageTags    store.AgentImageTags
+	imageTagsErr error
+	refreshErr   error
+	refreshCalls int
 }
 
 func newFakeManager(maxAgents int) *fakeManager {
@@ -71,6 +76,7 @@ func newFakeManager(maxAgents int) *fakeManager {
 		defaultFastModel: "glm-5.3-flash:cloud",
 		defaultOllamaURL: "http://ollama:11434",
 		defaultRepo:      "psenna/ai-sandbox.git",
+		agentImage:       "ghcr.io/psenna/ai-sandbox-agent:latest",
 	}
 }
 
@@ -156,6 +162,22 @@ func (f *fakeManager) DefaultMaxContextTokens() string     { return f.defaultMax
 
 func (f *fakeManager) AgentImage() string    { return f.agentImage }
 func (f *fakeManager) DockerRuntime() string { return f.dockerRuntime }
+
+func (f *fakeManager) AgentImageTags(_ context.Context) (store.AgentImageTags, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.imageTagsErr != nil {
+		return store.AgentImageTags{}, false, f.imageTagsErr
+	}
+	return f.imageTags, len(f.imageTags.Tags) > 0 || !f.imageTags.CheckedAt.IsZero(), nil
+}
+
+func (f *fakeManager) RefreshAgentImageTags(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refreshCalls++
+	return f.refreshErr
+}
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
 	f.mu.Lock()

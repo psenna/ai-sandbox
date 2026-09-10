@@ -730,6 +730,8 @@ func TestEveryMethodHonoursACancelledContext(t *testing.T) {
 		{"GetAnthropicAuth", func() error { _, _, err := s.GetAnthropicAuth(ctx); return err }},
 		{"SetAnthropicAuth", func() error { return s.SetAnthropicAuth(ctx, AnthropicKindAPIKey, "x") }},
 		{"ClearAnthropicAuth", func() error { return s.ClearAnthropicAuth(ctx) }},
+		{"GetAgentImageTags", func() error { _, _, err := s.GetAgentImageTags(ctx); return err }},
+		{"SetAgentImageTags", func() error { return s.SetAgentImageTags(ctx, AgentImageTags{}) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -939,5 +941,88 @@ func TestSetAnthropicAuth_Rejects(t *testing.T) {
 	// A rejected call stores nothing.
 	if _, ok, err := s.GetAnthropicAuth(ctx); err != nil || ok {
 		t.Fatalf("GetAnthropicAuth after rejected sets = (_, %v, %v), want (_, false, nil)", ok, err)
+	}
+}
+
+func TestAgentImageTags_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	if _, ok, err := s.GetAgentImageTags(ctx); err != nil || ok {
+		t.Fatalf("GetAgentImageTags on a fresh store = (_, %v, %v), want (_, false, nil)", ok, err)
+	}
+
+	checked := time.Date(2026, 9, 10, 8, 0, 0, 0, time.UTC)
+	want := AgentImageTags{Tags: []string{"20260910-070000", "20260909-120000"}, CheckedAt: checked}
+	if err := s.SetAgentImageTags(ctx, want); err != nil {
+		t.Fatalf("SetAgentImageTags: %v", err)
+	}
+
+	got, ok, err := s.GetAgentImageTags(ctx)
+	if err != nil || !ok {
+		t.Fatalf("GetAgentImageTags after set = (_, %v, %v), want (_, true, nil)", ok, err)
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "20260910-070000" || got.Tags[1] != "20260909-120000" {
+		t.Errorf("Tags = %v, want the stored slice in order", got.Tags)
+	}
+	if !got.CheckedAt.Equal(checked) {
+		t.Errorf("CheckedAt = %s, want %s", got.CheckedAt, checked)
+	}
+
+	// Round-trips through a reopen.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := Open(s.path, 5)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+	if got, ok, err := s2.GetAgentImageTags(ctx); err != nil || !ok || len(got.Tags) != 2 {
+		t.Fatalf("after reopen GetAgentImageTags = (%+v, %v, %v), want the stored snapshot", got, ok, err)
+	}
+}
+
+func TestAgentImageTags_ReplacesWholesale(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	if err := s.SetAgentImageTags(ctx, AgentImageTags{Tags: []string{"a", "b", "c"}, CheckedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SetAgentImageTags (first): %v", err)
+	}
+	if err := s.SetAgentImageTags(ctx, AgentImageTags{Tags: []string{"b"}, CheckedAt: time.Now().UTC(), LastError: "boom"}); err != nil {
+		t.Fatalf("SetAgentImageTags (second): %v", err)
+	}
+
+	got, _, err := s.GetAgentImageTags(ctx)
+	if err != nil {
+		t.Fatalf("GetAgentImageTags: %v", err)
+	}
+	if len(got.Tags) != 1 || got.Tags[0] != "b" {
+		t.Errorf("Tags = %v, want exactly [b] (a wholesale replace, not a merge)", got.Tags)
+	}
+	if got.LastError != "boom" {
+		t.Errorf("LastError = %q, want %q", got.LastError, "boom")
+	}
+}
+
+func TestAgent_ImagePersists(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	got, err := s.Create(ctx, CreateSpec{ID: "agt_img00001", Image: "ghcr.io/psenna/ai-sandbox-agent:20260910-070000"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got.Image != "ghcr.io/psenna/ai-sandbox-agent:20260910-070000" {
+		t.Fatalf("Create returned Image = %q, want the spec's value", got.Image)
+	}
+
+	stored, err := s.Get(ctx, "agt_img00001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Image != "ghcr.io/psenna/ai-sandbox-agent:20260910-070000" {
+		t.Errorf("stored Image = %q, want the spec's value", stored.Image)
 	}
 }

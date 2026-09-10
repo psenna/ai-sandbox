@@ -21,7 +21,7 @@ func managerWithRepo(t *testing.T, repo string) (*Manager, *dockerclienttest.Fak
 	f.AddImage(dindImage)
 	f.AddImage(cfg.AgentImage)
 	st := newTestStore(t, 5)
-	return NewManager(f, st, cfg, testLogger(), testOptions()), f, st
+	return NewManager(f, nil, st, cfg, testLogger(), testOptions()), f, st
 }
 
 func TestAgentEnv_Repo(t *testing.T) {

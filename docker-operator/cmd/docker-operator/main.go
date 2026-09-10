@@ -22,6 +22,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/registry"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/webui"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/wsbridge"
@@ -93,7 +94,17 @@ func run(log *slog.Logger) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	mgr := agent.NewManager(docker, st, cfg, log, agent.Options{})
+	reg, err := registry.New(registry.Options{
+		Image:     cfg.AgentImage,
+		BaseURL:   cfg.AgentImageRegistryURL,
+		AuthToken: cfg.AgentImageRegistryToken.Reveal(),
+		UserAgent: "docker-operator/" + version,
+	})
+	if err != nil {
+		return fmt.Errorf("building the registry client: %w", err)
+	}
+
+	mgr := agent.NewManager(docker, reg, st, cfg, log, agent.Options{})
 
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), reconcileTimeout)
 	report, err := mgr.Reconcile(reconcileCtx)
@@ -121,6 +132,13 @@ func run(log *slog.Logger) error {
 	cancelLoginReap()
 	stopLoginJanitor := startAnthropicLoginJanitor(mgr, log)
 	defer stopLoginJanitor()
+
+	// Poll the registry for the agent image's published tags on a timer (and
+	// once immediately, inside the goroutine, so a slow or offline registry
+	// never delays ListenAndServe).
+	stopImageRefresher := startAgentImageRefresher(mgr,
+		clampDuration(cfg.AgentImageRefreshInterval, minAgentImageRefreshInterval), log)
+	defer stopImageRefresher()
 
 	// The centralized per-agent file store. Empty FILESTORE_DIR disables it
 	// entirely (no /api/files* routes, no /workspace/store mount); an open
@@ -256,6 +274,61 @@ func startAnthropicLoginJanitor(mgr *agent.Manager, log *slog.Logger) func() {
 		if err := mgr.StopAnthropicLogin(stopCtx); err != nil {
 			log.Warn("could not tear down the Anthropic-login container on shutdown", "error", err)
 		}
+	}
+}
+
+// minAgentImageRefreshInterval is the floor the operator clamps
+// cfg.AgentImageRefreshInterval up to: a tighter loop would hammer the
+// registry for no benefit (the CI publishes a tag at most a few times a day).
+const minAgentImageRefreshInterval = time.Minute
+
+// clampDuration returns d, or min when d is smaller than min.
+func clampDuration(d, min time.Duration) time.Duration {
+	if d < min {
+		return min
+	}
+	return d
+}
+
+// agentImageRefresher is the one Manager method startAgentImageRefresher
+// needs, as an interface seam so main_test.go can drive it with a counter.
+type agentImageRefresher interface {
+	RefreshAgentImageTags(context.Context) error
+}
+
+// startAgentImageRefresher runs one immediate agent-image tag poll and then
+// re-polls every interval. It is modeled on startAnthropicLoginJanitor, with
+// two differences: the first poll happens inside the goroutine (before the
+// ticker) so a slow registry cannot delay startup, and the returned stop
+// function only cancels and waits -- there is nothing to tear down. A poll
+// error is logged at Warn and the last-known list is kept; context
+// cancellation is not logged.
+func startAgentImageRefresher(r agentImageRefresher, interval time.Duration, log *slog.Logger) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		if err := r.RefreshAgentImageTags(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn("agent-image refresher: initial poll failed (last-known list kept)", "error", err)
+		}
+
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := r.RefreshAgentImageTags(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Warn("agent-image refresher: poll failed (last-known list kept)", "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
 	}
 }
 

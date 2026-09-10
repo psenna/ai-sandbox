@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Built-in defaults, applied when neither a flag nor an environment variable
@@ -47,6 +48,11 @@ const (
 	defaultDependaproxyContainer = "docker-operator-dependaproxy"
 
 	defaultAgentBackend = BackendOllama
+
+	// defaultAgentImageRefreshInterval is how often the operator polls the
+	// registry for the agent image's published tags. cmd/docker-operator
+	// clamps a smaller value up to 1m.
+	defaultAgentImageRefreshInterval = time.Hour
 
 	// The centralized file store (issue #122). FilestoreDir and
 	// FilestoreVolume are two names for the SAME storage -- see the Config
@@ -153,6 +159,25 @@ type Config struct {
 	// immutable :<UTC date-time> tag); override with that pinned tag for
 	// reproducibility, or shadow :latest with a local `make agent-image`.
 	AgentImage string
+
+	// AgentImageRefreshInterval is how often the operator polls the registry
+	// for the agent image's published date-time tags (the sidebar "Agent
+	// image" panel and the create-form tag dropdown). Default 1h. cmd/docker-
+	// operator clamps a value below 1m up to 1m; Validate only rejects a
+	// negative one.
+	AgentImageRefreshInterval time.Duration
+
+	// AgentImageRegistryURL overrides the registry root the tag poll talks to.
+	// Empty (the default) derives it from AgentImage's domain
+	// (https://<domain>, with docker.io special-cased). When set it must be an
+	// http or https URL.
+	AgentImageRegistryURL string
+
+	// AgentImageRegistryToken is an optional Bearer forwarded to the registry
+	// (and its token endpoint) for the tag poll -- needed only for a private
+	// agent-image repository. A Secret: it must never reach a log line. Empty
+	// by default (GHCR public repos need no credential).
+	AgentImageRegistryToken Secret
 
 	// ProxynetName is the shared network carrying the singleton ollama,
 	// git-proxy and dependaproxy services, which every agent container
@@ -314,8 +339,14 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	var apiToken string
 	var anthropicAuthToken string
 	var anthropicAPIKey string
+	var agentImageRegistryToken string
 
 	maxAgents, err := envInt(getenv, "MAX_AGENTS", defaultMaxAgents)
+	if err != nil {
+		return Config{}, err
+	}
+
+	imageRefreshInterval, err := envDuration(getenv, "AGENT_IMAGE_REFRESH_INTERVAL", defaultAgentImageRefreshInterval)
 	if err != nil {
 		return Config{}, err
 	}
@@ -339,6 +370,15 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.AgentImage, "agent-image",
 		envOr(getenv, "AGENT_IMAGE", defaultAgentImage),
 		"container image for agent containers (env AGENT_IMAGE)")
+	fs.DurationVar(&c.AgentImageRefreshInterval, "agent-image-refresh-interval",
+		imageRefreshInterval,
+		"how often to poll the registry for the agent image's published tags; clamped up to 1m by the operator (env AGENT_IMAGE_REFRESH_INTERVAL)")
+	fs.StringVar(&c.AgentImageRegistryURL, "agent-image-registry-url",
+		envOr(getenv, "AGENT_IMAGE_REGISTRY_URL", ""),
+		"registry root for the agent-image tag poll; empty derives it from agent-image's domain (env AGENT_IMAGE_REGISTRY_URL)")
+	fs.StringVar(&agentImageRegistryToken, "agent-image-registry-token",
+		envOr(getenv, "AGENT_IMAGE_REGISTRY_TOKEN", ""),
+		"optional Bearer forwarded to the registry for the agent-image tag poll; needed only for a private repository. Prefer the AGENT_IMAGE_REGISTRY_TOKEN environment variable (env AGENT_IMAGE_REGISTRY_TOKEN)")
 	fs.StringVar(&c.ProxynetName, "proxynet-name",
 		envOr(getenv, "PROXYNET_NAME", defaultProxynetName),
 		"name of the shared network carrying ollama, git-proxy and dependaproxy (env PROXYNET_NAME)")
@@ -417,6 +457,7 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	c.APIToken = Secret(apiToken)
 	c.AnthropicAuthToken = Secret(anthropicAuthToken)
 	c.AnthropicAPIKey = Secret(anthropicAPIKey)
+	c.AgentImageRegistryToken = Secret(agentImageRegistryToken)
 
 	return c, nil
 }
@@ -509,6 +550,9 @@ func (c Config) validateLimitsAndPaths() error {
 	if c.AutoCompactThreshold != "" && !ValidAutoCompactThreshold(c.AutoCompactThreshold) {
 		return fmt.Errorf("auto-compact-threshold: %q must be an integer between %d and %d, or empty to use Claude Code's built-in default", c.AutoCompactThreshold, autoCompactMin, autoCompactMax)
 	}
+	if c.AgentImageRefreshInterval < 0 {
+		return fmt.Errorf("agent-image-refresh-interval: must not be negative, got %s", c.AgentImageRefreshInterval)
+	}
 	return nil
 }
 
@@ -534,6 +578,11 @@ func (c Config) validateURLs() error {
 		{"dependaproxy-goproxy-url", c.DependaproxyGoproxyURL},
 	} {
 		if err := validateHTTPURL(f.field, f.value); err != nil {
+			return err
+		}
+	}
+	if c.AgentImageRegistryURL != "" {
+		if err := validateHTTPURL("agent-image-registry-url", c.AgentImageRegistryURL); err != nil {
 			return err
 		}
 	}
@@ -678,6 +727,22 @@ func envInt(getenv func(string) string, name string, def int) (int, error) {
 		return 0, fmt.Errorf("%s: %q is not a valid integer: %w", name, v, err)
 	}
 	return n, nil
+}
+
+// envDuration returns the time.Duration environment value for name, or def
+// when it is unset or blank. Like envInt, an unparseable value is a loud
+// error rather than a silent fall back to the default: a mistyped poll
+// interval is worth failing over.
+func envDuration(getenv func(string) string, name string, def time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a valid duration: %w", name, v, err)
+	}
+	return d, nil
 }
 
 // envInt64 is envInt for an int64-valued variable (FILESTORE_MAX_UPLOAD_BYTES).

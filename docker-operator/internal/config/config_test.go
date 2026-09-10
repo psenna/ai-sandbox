@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func emptyEnv(string) string { return "" }
@@ -57,31 +58,34 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 	}
 
 	want := Config{
-		MaxAgents:               5,
-		ListenAddr:              ":8080",
-		StateDBPath:             "/var/lib/docker-operator/state.db",
-		AgentImage:              "ghcr.io/psenna/ai-sandbox-agent:latest",
-		ProxynetName:            "docker-operator-proxynet",
-		DbnetName:               "docker-operator-dbnet",
-		GithubRepo:              "psenna/ai-sandbox.git",
-		AgentToken:              Secret("agent-token-1"),
-		APIToken:                Secret(""),
-		GitProxyURL:             "http://git-proxy:8080",
-		GitProxyBrokerURL:       "http://git-proxy:8090",
-		DependaproxyURL:         "http://dependaproxy:8080/npm",
-		DependaproxyPyPIURL:     "http://dependaproxy:8080/pypi",
-		DependaproxyGoproxyURL:  "http://dependaproxy:8080/goproxy",
-		DockerRuntime:           "sysbox-runc",
-		DefaultBackend:          "ollama",
-		OllamaURL:               "http://ollama:11434",
-		AnthropicAuthToken:      Secret("ollama"),
-		AnthropicAPIKey:         Secret(""),
-		AgentModel:              "glm-5.3:cloud",
-		AgentFastModel:          "glm-5.3-flash:cloud",
-		DependaproxyContainer:   "docker-operator-dependaproxy",
-		FilestoreDir:            "/var/lib/docker-operator/filestore",
-		FilestoreVolume:         "docker-operator-filestore",
-		FilestoreMaxUploadBytes: 104857600,
+		MaxAgents:                 5,
+		ListenAddr:                ":8080",
+		StateDBPath:               "/var/lib/docker-operator/state.db",
+		AgentImage:                "ghcr.io/psenna/ai-sandbox-agent:latest",
+		AgentImageRefreshInterval: time.Hour,
+		AgentImageRegistryURL:     "",
+		AgentImageRegistryToken:   Secret(""),
+		ProxynetName:              "docker-operator-proxynet",
+		DbnetName:                 "docker-operator-dbnet",
+		GithubRepo:                "psenna/ai-sandbox.git",
+		AgentToken:                Secret("agent-token-1"),
+		APIToken:                  Secret(""),
+		GitProxyURL:               "http://git-proxy:8080",
+		GitProxyBrokerURL:         "http://git-proxy:8090",
+		DependaproxyURL:           "http://dependaproxy:8080/npm",
+		DependaproxyPyPIURL:       "http://dependaproxy:8080/pypi",
+		DependaproxyGoproxyURL:    "http://dependaproxy:8080/goproxy",
+		DockerRuntime:             "sysbox-runc",
+		DefaultBackend:            "ollama",
+		OllamaURL:                 "http://ollama:11434",
+		AnthropicAuthToken:        Secret("ollama"),
+		AnthropicAPIKey:           Secret(""),
+		AgentModel:                "glm-5.3:cloud",
+		AgentFastModel:            "glm-5.3-flash:cloud",
+		DependaproxyContainer:     "docker-operator-dependaproxy",
+		FilestoreDir:              "/var/lib/docker-operator/filestore",
+		FilestoreVolume:           "docker-operator-filestore",
+		FilestoreMaxUploadBytes:   104857600,
 	}
 	if c != want {
 		t.Fatalf("Load defaults = %+v, want %+v", c, want)
@@ -111,6 +115,12 @@ var fieldCases = []struct {
 		func(c Config) string { return c.StateDBPath }},
 	{"AgentImage", "AGENT_IMAGE", "agent-image", "example.com/env:v1", "example.com/flag:v1",
 		func(c Config) string { return c.AgentImage }},
+	{"AgentImageRefreshInterval", "AGENT_IMAGE_REFRESH_INTERVAL", "agent-image-refresh-interval", "2h0m0s", "3h0m0s",
+		func(c Config) string { return c.AgentImageRefreshInterval.String() }},
+	{"AgentImageRegistryURL", "AGENT_IMAGE_REGISTRY_URL", "agent-image-registry-url", "http://env-registry:1", "http://flag-registry:1",
+		func(c Config) string { return c.AgentImageRegistryURL }},
+	{"AgentImageRegistryToken", "AGENT_IMAGE_REGISTRY_TOKEN", "agent-image-registry-token", "env-reg-token", "flag-reg-token",
+		func(c Config) string { return c.AgentImageRegistryToken.Reveal() }},
 	{"ProxynetName", "PROXYNET_NAME", "proxynet-name", "env-proxynet", "flag-proxynet",
 		func(c Config) string { return c.ProxynetName }},
 	{"DbnetName", "DBNET_NAME", "dbnet-name", "env-dbnet", "flag-dbnet",
@@ -226,6 +236,83 @@ func TestLoad_MaxAgentsEnvParsing(t *testing.T) {
 				t.Errorf("MaxAgents = %d, want %d", c.MaxAgents, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoad_AgentImageRefreshIntervalEnvParsing(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"hours", "2h", 2 * time.Hour, false},
+		{"seconds", "90s", 90 * time.Second, false},
+		{"blank falls back to the 1h default", "", time.Hour, false},
+		{"nonsense", "nonsense", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(nil, envWith(map[string]string{"AGENT_IMAGE_REFRESH_INTERVAL": tc.value}))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Load with AGENT_IMAGE_REFRESH_INTERVAL=%q: expected error, got nil", tc.value)
+				}
+				if !strings.Contains(err.Error(), "AGENT_IMAGE_REFRESH_INTERVAL") {
+					t.Errorf("Load error = %v, want it to name AGENT_IMAGE_REFRESH_INTERVAL", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load with AGENT_IMAGE_REFRESH_INTERVAL=%q: unexpected error: %v", tc.value, err)
+			}
+			if c.AgentImageRefreshInterval != tc.want {
+				t.Errorf("AgentImageRefreshInterval = %s, want %s", c.AgentImageRefreshInterval, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnvDuration(t *testing.T) {
+	get := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	if d, err := envDuration(get(nil), "X", 5*time.Minute); err != nil || d != 5*time.Minute {
+		t.Errorf("envDuration(unset) = (%s, %v), want (5m0s, nil)", d, err)
+	}
+	if d, err := envDuration(get(map[string]string{"X": "  "}), "X", 5*time.Minute); err != nil || d != 5*time.Minute {
+		t.Errorf("envDuration(blank) = (%s, %v), want (5m0s, nil)", d, err)
+	}
+	if d, err := envDuration(get(map[string]string{"X": "45s"}), "X", 5*time.Minute); err != nil || d != 45*time.Second {
+		t.Errorf("envDuration(45s) = (%s, %v), want (45s, nil)", d, err)
+	}
+	if _, err := envDuration(get(map[string]string{"X": "later"}), "X", 5*time.Minute); err == nil || !strings.Contains(err.Error(), "X") {
+		t.Errorf("envDuration(garbage) err = %v, want one naming X", err)
+	}
+}
+
+func TestValidate_AgentImageFields(t *testing.T) {
+	base, err := Load(nil, envFrom(requiredEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	neg := base
+	neg.AgentImageRefreshInterval = -time.Second
+	if err := neg.Validate(); err == nil || !strings.Contains(err.Error(), "agent-image-refresh-interval") {
+		t.Errorf("Validate(negative interval) = %v, want an error naming agent-image-refresh-interval", err)
+	}
+
+	badURL := base
+	badURL.AgentImageRegistryURL = "not-a-url"
+	if err := badURL.Validate(); err == nil || !strings.Contains(err.Error(), "agent-image-registry-url") {
+		t.Errorf("Validate(bad registry URL) = %v, want an error naming agent-image-registry-url", err)
+	}
+
+	okURL := base
+	okURL.AgentImageRegistryURL = "https://ghcr.io"
+	if err := okURL.Validate(); err != nil {
+		t.Errorf("Validate(valid registry URL) = %v, want nil", err)
 	}
 }
 

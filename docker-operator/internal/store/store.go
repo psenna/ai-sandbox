@@ -150,6 +150,13 @@ type Agent struct {
 	// container so the agent uses Claude Code's built-in default.
 	MaxContextTokens string `json:"max_context_tokens,omitempty"`
 
+	// Image is the fully resolved agent container image reference this agent
+	// was created against (the operator's AgentImage, or its repository with a
+	// per-agent tag substituted in). Set once at create time. Empty on records
+	// created before this field; the image is then unknown and never reports
+	// an upgrade.
+	Image string `json:"image,omitempty"`
+
 	// Status is the lifecycle state; see Status.
 	Status Status `json:"status"`
 	// ErrorMessage explains a StatusError agent. Empty in every other state.
@@ -208,10 +215,11 @@ type CreateSpec struct {
 	Name string
 	// Description is the initial free-form description. May be empty.
 	Description string
-	// Backend, Model, FastModel, OllamaURL, Repo, AutoCompactThreshold and
-	// MaxContextTokens are recorded on the new agent verbatim. internal/agent
-	// resolves them (request value or operator default) and validates them
-	// before calling Create; the store only persists what it is given.
+	// Backend, Model, FastModel, OllamaURL, Repo, AutoCompactThreshold,
+	// MaxContextTokens and Image are recorded on the new agent verbatim.
+	// internal/agent resolves them (request value or operator default) and
+	// validates them before calling Create; the store only persists what it
+	// is given.
 	Backend              string
 	Model                string
 	FastModel            string
@@ -219,6 +227,7 @@ type CreateSpec struct {
 	Repo                 string
 	AutoCompactThreshold string
 	MaxContextTokens     string
+	Image                string
 }
 
 // bucketAgents holds every agent record, keyed by agent ID. bucketSettings
@@ -228,7 +237,8 @@ var (
 	bucketAgents   = []byte("agents")
 	bucketSettings = []byte("settings")
 
-	keySettingsAnthropicAuth = []byte("anthropic_auth")
+	keySettingsAnthropicAuth  = []byte("anthropic_auth")
+	keySettingsAgentImageTags = []byte("agent_image_tags")
 )
 
 const (
@@ -379,6 +389,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		Repo:                 spec.Repo,
 		AutoCompactThreshold: spec.AutoCompactThreshold,
 		MaxContextTokens:     spec.MaxContextTokens,
+		Image:                spec.Image,
 		Status:               StatusCreating,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -601,6 +612,74 @@ func (s *Store) ClearAnthropicAuth(ctx context.Context) error {
 			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
 		}
 		return b.Delete(keySettingsAnthropicAuth)
+	})
+}
+
+// AgentImageTags is the operator's last-known snapshot of the agent image's
+// published tags. It is a process-wide singleton (not per agent), refreshed
+// on a timer by internal/agent's Manager, which is also what fills CheckedAt
+// -- the store stamps nothing and validates nothing here.
+type AgentImageTags struct {
+	// Tags is the discovered tag list, already filtered and sorted by the
+	// Manager before it is stored.
+	Tags []string `json:"tags"`
+	// CheckedAt is when the Manager last completed a refresh attempt
+	// (successful or not).
+	CheckedAt time.Time `json:"checked_at"`
+	// LastError is the message from the most recent failed refresh, or empty
+	// after a successful one. Tags is left in place across a failure.
+	LastError string `json:"last_error,omitempty"`
+}
+
+// GetAgentImageTags returns the stored agent-image tag snapshot. The bool is
+// false (and AgentImageTags is the zero value) when no refresh has ever been
+// recorded.
+func (s *Store) GetAgentImageTags(ctx context.Context) (AgentImageTags, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return AgentImageTags{}, false, err
+	}
+	var (
+		tags AgentImageTags
+		ok   bool
+	)
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketSettings)
+		if b == nil {
+			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
+		}
+		raw := b.Get(keySettingsAgentImageTags)
+		if raw == nil {
+			return nil
+		}
+		if err := json.Unmarshal(raw, &tags); err != nil {
+			return fmt.Errorf("decoding the stored agent image tags: %w", err)
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return AgentImageTags{}, false, err
+	}
+	return tags, ok, nil
+}
+
+// SetAgentImageTags stores (replacing any existing) the agent-image tag
+// snapshot wholesale, so tags the registry no longer publishes are pruned.
+// No validation and no timestamp stamping: the Manager supplies CheckedAt.
+func (s *Store) SetAgentImageTags(ctx context.Context, tags AgentImageTags) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(tags)
+	if err != nil {
+		return fmt.Errorf("encoding the agent image tags: %w", err)
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketSettings)
+		if b == nil {
+			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
+		}
+		return b.Put(keySettingsAgentImageTags, raw)
 	})
 }
 

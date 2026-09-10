@@ -14,6 +14,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/registry"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -206,10 +207,15 @@ func (o Options) withDefaults() Options {
 // is the thing being protected.
 type Manager struct {
 	docker dockerclient.Client
-	store  *store.Store
-	cfg    config.Config
-	log    *slog.Logger
-	opts   Options
+	// registry lists the agent image's published tags for the discovery /
+	// refresh flow. It may be nil (RefreshAgentImageTags then records
+	// "registry client not configured" and keeps the last list); every other
+	// path tolerates a nil registry too.
+	registry registry.Client
+	store    *store.Store
+	cfg      config.Config
+	log      *slog.Logger
+	opts     Options
 	// files is the centralized per-agent file store. nil when the file
 	// store is disabled (config.FilestoreDir == "") or could not be opened.
 	files *filestore.Store
@@ -220,11 +226,11 @@ type Manager struct {
 // When cfg enables the centralized file store (cfg.FilestoreDir != "") the
 // store is opened here; a failure is logged and the manager keeps running
 // without it (agents are then created with no /workspace/store mount).
-func NewManager(docker dockerclient.Client, st *store.Store, cfg config.Config, log *slog.Logger, opts Options) *Manager {
+func NewManager(docker dockerclient.Client, reg registry.Client, st *store.Store, cfg config.Config, log *slog.Logger, opts Options) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	m := &Manager{docker: docker, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
+	m := &Manager{docker: docker, registry: reg, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
 	if cfg.FilestoreDir != "" {
 		fs, err := filestore.New(cfg.FilestoreDir)
 		if err != nil {
@@ -276,6 +282,12 @@ type CreateRequest struct {
 	// default; if that is empty too the variable is omitted from the agent's
 	// environment so it uses Claude Code's built-in default.
 	MaxContextTokens string
+	// ImageTag pins this one agent to a specific tag of the operator's agent
+	// image repository. Empty means the operator's configured AgentImage
+	// verbatim. A non-empty tag is validated (resolveAgentImageRef) but is
+	// NOT required to be one of the discovered tags. The resolved reference is
+	// stamped on the record as store.Agent.Image.
+	ImageTag string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -334,6 +346,14 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	// integer shape the operator or caller names is passed through.
 	maxContextTokens := firstNonEmpty(req.MaxContextTokens, m.cfg.MaxContextTokens)
 
+	// Resolve the agent image reference before reserving a slot: a malformed
+	// per-agent tag is a bad request and must not burn a MAX_AGENTS slot, the
+	// same reasoning as the backend and repo checks above.
+	imageRef, err := m.resolveAgentImageRef(req.ImageTag)
+	if err != nil {
+		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
+	}
+
 	// Reserve the slot FIRST. store.Create both counts and inserts inside one
 	// bbolt read-write transaction, so N racing creates against a cap of N-1
 	// produce exactly N-1 successes. The error satisfies store.IsAtCapacity,
@@ -344,6 +364,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		OllamaURL: rb.ollamaURL, Repo: repo,
 		AutoCompactThreshold: autoCompact,
 		MaxContextTokens:     maxContextTokens,
+		Image:                imageRef,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -407,7 +428,7 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 	if err := m.stampNames(ctx, a); err != nil {
 		return err
 	}
-	if err := m.ensureImages(ctx); err != nil {
+	if err := m.ensureImages(ctx, *a); err != nil {
 		return err
 	}
 	if err := m.createVolumes(ctx, *a); err != nil {
@@ -456,8 +477,8 @@ func (m *Manager) stampNames(ctx context.Context, a *store.Agent) error {
 // ensureImages makes sure both images exist on the daemon before anything is
 // created, so a missing image fails as one legible error rather than as a
 // half-built agent.
-func (m *Manager) ensureImages(ctx context.Context) error {
-	for _, ref := range []string{dindImage, m.cfg.AgentImage} {
+func (m *Manager) ensureImages(ctx context.Context, a store.Agent) error {
+	for _, ref := range []string{dindImage, firstNonEmpty(a.Image, m.cfg.AgentImage)} {
 		if err := m.ensureImage(ctx, ref); err != nil {
 			return err
 		}
@@ -691,7 +712,7 @@ func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb re
 func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend) dockerclient.ContainerSpec {
 	spec := dockerclient.ContainerSpec{
 		Name:   a.ContainerName,
-		Image:  m.cfg.AgentImage,
+		Image:  firstNonEmpty(a.Image, m.cfg.AgentImage),
 		Cmd:    []string{tmuxBootPath},
 		Env:    m.agentEnv(a, rb),
 		Labels: labelsFor(a.ID, RoleAgent),
