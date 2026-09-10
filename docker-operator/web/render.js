@@ -50,10 +50,14 @@
 		var label = statusLabel(agent.status);
 		var selected = agent.id === selectedID ? ' agent-item--selected' : '';
 		var name = agent.name ? escapeHTML(agent.name) : '(unnamed)';
+		var upgrade = agent.upgrade_available
+			? '<span class="agent-item__upgrade" title="a newer agent image is available">⬆</span>'
+			: '';
 		return (
 			'<li class="agent-item' + selected + '" data-agent-id="' + escapeHTML(agent.id) + '">' +
 				'<span class="status-dot ' + label.cls + '" title="' + label.text + '"></span>' +
 				'<span class="agent-item__name">' + name + '</span>' +
+				upgrade +
 				'<span class="agent-item__backend" title="backend">' + escapeHTML(backendLabel(agent.backend)) + '</span>' +
 			'</li>'
 		);
@@ -225,6 +229,18 @@
 			if (isDateTimeTag(t) && t > newest) newest = t;
 		});
 		return newest;
+	}
+
+	// upgradeAvailable mirrors docker-operator/internal/agent.UpgradeAvailable:
+	// true only when currentTag is a date-time tag AND some entry of tags is a
+	// date-time tag lexically greater than it. Exported for tests and other
+	// callers; renderAgentListItem trusts the server's upgrade_available field
+	// rather than recomputing.
+	function upgradeAvailable(currentTag, tags) {
+		if (!isDateTimeTag(currentTag)) return false;
+		return (tags || []).some(function (t) {
+			return isDateTimeTag(t) && t > currentTag;
+		});
 	}
 
 	// imageTagOf is a best-effort client-side ImageTagOf: the substring after
@@ -433,6 +449,7 @@
 		renderAnthropicStatus: renderAnthropicStatus,
 		isDateTimeTag: isDateTimeTag,
 		newestDateTimeTag: newestDateTimeTag,
+		upgradeAvailable: upgradeAvailable,
 		imageTagOf: imageTagOf,
 		formatCheckedAgo: formatCheckedAgo,
 		renderImageTagSelect: renderImageTagSelect,

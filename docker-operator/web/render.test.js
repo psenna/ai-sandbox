@@ -276,6 +276,37 @@ test('newestDateTimeTag: returns the lexically greatest date-time tag, or empty'
 	assert.equal(Render.newestDateTimeTag(null), '');
 });
 
+test('upgradeAvailable: true only for a date-time current tag with a strictly newer date-time tag in the list', () => {
+	assert.equal(Render.upgradeAvailable('20260101-120000', ['20260101-120000', '20260201-090000']), true);
+	assert.equal(Render.upgradeAvailable('20260201-090000', ['20260101-120000', '20260201-090000']), false);
+	assert.equal(Render.upgradeAvailable('20260301-000000', ['20260101-120000', '20260201-090000']), false);
+	assert.equal(Render.upgradeAvailable('', ['20260201-090000']), false);
+	assert.equal(Render.upgradeAvailable('latest', ['20260201-090000']), false);
+	assert.equal(Render.upgradeAvailable('20260101-120000', ['latest', 'main']), false);
+	assert.equal(Render.upgradeAvailable('20260101-120000', null), false);
+	assert.equal(Render.upgradeAvailable('20260101-120000', []), false);
+	assert.equal(Render.upgradeAvailable('20260201-090000', ['20260201-090000', '20260101-120000']), false);
+	assert.equal(Render.upgradeAvailable('20260101-120000', ['20251231-000000', 'latest', '20260601-000000']), true);
+});
+
+test('renderAgentListItem: upgrade marker present only when upgrade_available is truthy, and before the backend badge', () => {
+	const withUpgrade = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', backend: 'ollama', upgrade_available: true });
+	assert.match(withUpgrade, /agent-item__upgrade/);
+	assert.ok(
+		withUpgrade.indexOf('agent-item__upgrade') < withUpgrade.indexOf('agent-item__backend'),
+		'upgrade marker should sit before the backend badge',
+	);
+
+	assert.doesNotMatch(
+		Render.renderAgentListItem({ id: 'agt_b', name: 'B', status: 'running', upgrade_available: false }),
+		/agent-item__upgrade/,
+	);
+	assert.doesNotMatch(
+		Render.renderAgentListItem({ id: 'agt_c', name: 'C', status: 'running' }),
+		/agent-item__upgrade/,
+	);
+});
+
 test('imageTagOf: tag only when no slash follows the last colon', () => {
 	assert.equal(Render.imageTagOf('ghcr.io/psenna/agent:20260101-120000'), '20260101-120000');
 	assert.equal(Render.imageTagOf('host/x:tag'), 'tag');
