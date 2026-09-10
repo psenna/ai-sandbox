@@ -49,6 +49,12 @@ type Report struct {
 //     behind across a restart. Its resources are half-built or half-removed by
 //     definition, and its slot is either leaked or already released.
 //
+//   - A record stuck in updating (a crash mid in-place update) is marked
+//     error, NOT torn down: the agent container may be gone but the three
+//     volumes -- with every byte of the agent's work and its Claude session
+//     history -- are always intact at that point, and teardown would destroy
+//     them. The user retries Update, which is idempotent.
+//
 // Records in running, stopped or error are left untouched: keeping their status
 // honest against the daemon is the event-stream goroutine's job (task 13), not
 // a startup sweep's.
@@ -90,6 +96,20 @@ func (m *Manager) Reconcile(ctx context.Context) (Report, error) {
 
 	var errs []error
 	for _, a := range agents {
+		// A stuck in-place update: the container may be half-gone but the
+		// volumes are intact. Mark it error and move on -- never teardown.
+		if a.Status == store.StatusUpdating {
+			m.log.InfoContext(ctx, "marking an agent whose record is stuck mid-update as error (its volumes are kept; retry the update)",
+				"agent_id", a.ID)
+			if _, err := m.store.Update(ctx, a.ID, func(ag *store.Agent) error {
+				ag.Status = store.StatusError
+				ag.ErrorMessage = "update interrupted; retry the update"
+				return nil
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("reconciling agent %q: marking a stuck update as error: %w", a.ID, err))
+			}
+			continue
+		}
 		if a.Status != store.StatusCreating && a.Status != store.StatusDeleting {
 			continue
 		}

@@ -204,3 +204,37 @@ func TestReconcile_HealthyRunningAgent_SurvivesUntouched(t *testing.T) {
 		t.Errorf("docker resources after Reconcile = %+v, want unchanged from %+v", after, before)
 	}
 }
+
+// TestReconcile_StuckUpdatingMarkedError proves a record stuck in
+// StatusUpdating (the operator crashed mid in-place update) is marked
+// StatusError -- with the "retry the update" message -- and, crucially, is
+// NOT torn down: its volumes (holding the agent's work and Claude session
+// history) must survive, and its record must not be deleted.
+func TestReconcile_StuckUpdatingMarkedError(t *testing.T) {
+	m, f, st := newTestManager(t, 5)
+	ctx := context.Background()
+	a := seedStuckAgent(t, m, f, store.StatusUpdating)
+	before := snapshotCounts(f)
+
+	rep, err := m.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(rep.CleanedUp) != 0 {
+		t.Errorf("Report.CleanedUp = %v, want none (a stuck update is not torn down)", rep.CleanedUp)
+	}
+
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get after Reconcile: %v (the record must survive)", err)
+	}
+	if got.Status != store.StatusError {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusError)
+	}
+	if got.ErrorMessage != "update interrupted; retry the update" {
+		t.Errorf("ErrorMessage = %q, want the retry message", got.ErrorMessage)
+	}
+	if after := snapshotCounts(f); after != before {
+		t.Errorf("docker resources after Reconcile = %+v, want unchanged from %+v (volumes must survive)", after, before)
+	}
+}
