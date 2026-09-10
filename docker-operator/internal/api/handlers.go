@@ -43,6 +43,13 @@ type AgentManager interface {
 	MaxAgents() int
 	Rename(ctx context.Context, id string, name, description *string) (store.Agent, error)
 
+	// Update recreates an agent's container in place (a new image tag, or a
+	// changed create-form field) under the same agent ID and the same
+	// volumes. Errors: store.IsNotFound (404), agent.IsNotUpdatable (409),
+	// agent.IsInvalidImageTag (400), agent.IsNoAnthropicAuth (409), and the
+	// invalid-backend/ollama/repo/threshold family (400).
+	Update(ctx context.Context, id string, req agent.UpdateRequest) (store.Agent, error)
+
 	// DefaultBackend/DefaultModel/DefaultFastModel/DefaultOllamaURL/DefaultRepo
 	// are the operator-configured defaults the create form pre-fills; they
 	// ride along on the list response so the UI needs no second request.
@@ -122,6 +129,7 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("GET /api/agents/{id}", h.handleGet)
 	mux.HandleFunc("PATCH /api/agents/{id}", h.handleRename)
 	mux.HandleFunc("DELETE /api/agents/{id}", h.handleDelete)
+	mux.HandleFunc("POST /api/agents/{id}/update", h.handleUpdate)
 	mux.HandleFunc("GET /api/agents/{id}/output", h.handleOutput)
 	mux.HandleFunc("GET /api/agents/{id}/info", h.handleAgentInfo)
 
@@ -152,6 +160,7 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	}
 	mux.HandleFunc("/api/agents", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}", methodNotAllowed)
+	mux.HandleFunc("/api/agents/{id}/update", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/info", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/tags", methodNotAllowed)
@@ -208,6 +217,59 @@ type createAgentRequest struct {
 	// image repository. Empty means the operator's configured image. A
 	// malformed tag is rejected with 400 on the "image_tag" field.
 	ImageTag string `json:"image_tag"`
+}
+
+// updateAgentRequest is the POST /api/agents/{id}/update body: every
+// createAgentRequest field (all editable in place) plus the image tag. It
+// shares createAgentRequest's field validation and DTO mapping with
+// handleCreate via validateAgentFields / toCreateRequest.
+type updateAgentRequest struct {
+	createAgentRequest
+	ImageTag string `json:"image_tag"`
+}
+
+// apiErr is a deferred writeError call: the create/update field validation
+// builds one instead of writing straight to the ResponseWriter, so the same
+// checks serve both handlers.
+type apiErr struct {
+	status int
+	code   string
+	msg    string
+	field  string
+}
+
+func (e *apiErr) write(w http.ResponseWriter) { writeError(w, e.status, e.code, e.msg, e.field) }
+
+// validateAgentFields runs the create-form field checks shared by
+// handleCreate and handleUpdate. It returns nil when every field is
+// acceptable, or the (unwritten) error otherwise.
+func validateAgentFields(req createAgentRequest) *apiErr {
+	switch {
+	case req.Backend != "" && !config.ValidBackend(req.Backend):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend"}
+	case req.Backend == config.BackendAnthropic && (req.Model != "" || req.FastModel != "" || req.OllamaURL != ""):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"model", "fast_model" and "ollama_url" are not valid for the anthropic backend`, "model"}
+	case req.OllamaURL != "" && !config.ValidOllamaURL(req.OllamaURL):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url"}
+	case req.Repo != "" && !config.ValidGithubRepo(req.Repo):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo"}
+	case req.AutoCompactThreshold != "" && !config.ValidAutoCompactThreshold(req.AutoCompactThreshold):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold"}
+	default:
+		return nil
+	}
+}
+
+// toCreateRequest maps the validated DTO to the internal agent.CreateRequest.
+func toCreateRequest(req createAgentRequest) agent.CreateRequest {
+	return agent.CreateRequest{
+		Name: req.Name, Description: req.Description,
+		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
+		OllamaURL: req.OllamaURL, Repo: req.Repo,
+		AutoCompactThreshold: req.AutoCompactThreshold,
+		MaxContextTokens:     req.MaxContextTokens,
+		ImageTag:             req.ImageTag,
+	}
 }
 
 // patchAgentRequest is the PATCH /api/agents/{id} body. A nil field leaves
@@ -351,35 +413,12 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadJSON, "the request body is not valid JSON: "+err.Error(), "")
 		return
 	}
-	if req.Backend != "" && !config.ValidBackend(req.Backend) {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
-		return
-	}
-	if req.Backend == config.BackendAnthropic && (req.Model != "" || req.FastModel != "" || req.OllamaURL != "") {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"model", "fast_model" and "ollama_url" are not valid for the anthropic backend`, "model")
-		return
-	}
-	if req.OllamaURL != "" && !config.ValidOllamaURL(req.OllamaURL) {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
-		return
-	}
-	if req.Repo != "" && !config.ValidGithubRepo(req.Repo) {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
-		return
-	}
-	if req.AutoCompactThreshold != "" && !config.ValidAutoCompactThreshold(req.AutoCompactThreshold) {
-		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
+	if ae := validateAgentFields(req); ae != nil {
+		ae.write(w)
 		return
 	}
 
-	a, err := h.mgr.Create(r.Context(), agent.CreateRequest{
-		Name: req.Name, Description: req.Description,
-		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
-		OllamaURL: req.OllamaURL, Repo: req.Repo,
-		AutoCompactThreshold: req.AutoCompactThreshold,
-		MaxContextTokens:     req.MaxContextTokens,
-		ImageTag:             req.ImageTag,
-	})
+	a, err := h.mgr.Create(r.Context(), toCreateRequest(req))
 	if err != nil {
 		switch {
 		case store.IsAtCapacity(err):
@@ -624,6 +663,55 @@ func (h *Handler) handleRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// handleUpdate serves POST /api/agents/{id}/update: recreate the agent's
+// container in place (a new image tag, or any changed create-form field)
+// under the same agent ID and the same volumes. The running tmux/claude
+// session ends; the new container resumes it via `claude --continue`.
+func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req updateAgentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadJSON, "the request body is not valid JSON: "+err.Error(), "")
+		return
+	}
+	if ae := validateAgentFields(req.createAgentRequest); ae != nil {
+		ae.write(w)
+		return
+	}
+
+	a, err := h.mgr.Update(r.Context(), id, agent.UpdateRequest{
+		CreateRequest: toCreateRequest(req.createAgentRequest),
+		ImageTag:      req.ImageTag,
+	})
+	if err != nil {
+		switch {
+		case store.IsNotFound(err):
+			writeError(w, http.StatusNotFound, CodeNotFound, "no such agent", "")
+		case agent.IsNotUpdatable(err):
+			writeError(w, http.StatusConflict, CodeNotUpdatable, "the agent is not in an updatable state (only running, stopped or error agents can be updated)", "")
+		case agent.IsInvalidImageTag(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"image_tag" is not a valid image tag`, "image_tag")
+		case agent.IsNoAnthropicAuth(err):
+			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before switching an agent to it", "backend")
+		case agent.IsInvalidBackend(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
+		case agent.IsInvalidOllamaURL(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
+		case agent.IsInvalidRepo(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
+		case agent.IsInvalidAutoCompactThreshold(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
+		default:
+			h.internalError(w, "updating agent "+id, err)
+		}
+		return
+	}
+	// Wrapped in an agentView for consistency with handleGet, so the client
+	// gets the same shape (with upgrade_available) it reads elsewhere.
+	writeJSON(w, http.StatusOK, h.buildAgentViews(r.Context(), []store.Agent{a})[0])
 }
 
 // handleDelete always answers 200, whether or not the agent existed:

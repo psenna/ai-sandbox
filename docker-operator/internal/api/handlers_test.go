@@ -35,6 +35,9 @@ type fakeManager struct {
 	createErr error
 	deleteErr error
 
+	updateErr  error
+	updateReqs []agent.UpdateRequest
+
 	purgedIDs []string
 	purgeErr  error
 
@@ -128,6 +131,31 @@ func (f *fakeManager) PurgeAgentFiles(_ context.Context, id string) error {
 	}
 	f.purgedIDs = append(f.purgedIDs, id)
 	return nil
+}
+
+func (f *fakeManager) Update(_ context.Context, id string, req agent.UpdateRequest) (store.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updateReqs = append(f.updateReqs, req)
+	if f.updateErr != nil {
+		return store.Agent{}, f.updateErr
+	}
+	a, ok := f.agents[id]
+	if !ok {
+		return store.Agent{}, fmt.Errorf("updating agent %q: %w", id, store.ErrNotFound)
+	}
+	a.Name = req.Name
+	a.Description = req.Description
+	a.Backend = req.Backend
+	a.Model = req.Model
+	a.FastModel = req.FastModel
+	a.OllamaURL = req.OllamaURL
+	a.Repo = req.Repo
+	a.AutoCompactThreshold = req.AutoCompactThreshold
+	a.MaxContextTokens = req.MaxContextTokens
+	a.Status = store.StatusRunning
+	f.agents[id] = a
+	return a, nil
 }
 
 func (f *fakeManager) Get(_ context.Context, id string) (store.Agent, error) {
@@ -836,6 +864,115 @@ func TestRename_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body)
+	}
+}
+
+// --- POST /api/agents/{id}/update -----------------------------------------
+
+func TestHandleUpdate_OK(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "old", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
+		createAgentRequest: createAgentRequest{Name: "new", Backend: "ollama"},
+		ImageTag:           "20260101-000000",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	if a := decodeAgent(t, rec); a.Name != "new" || a.Status != store.StatusRunning {
+		t.Errorf("updated agent = %+v, want Name=new Status=running", a)
+	}
+	if len(mgr.updateReqs) != 1 || mgr.updateReqs[0].ImageTag != "20260101-000000" {
+		t.Errorf("updateReqs = %+v, want one call carrying the image tag", mgr.updateReqs)
+	}
+}
+
+func TestHandleUpdate_NotFound(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_missing/update", updateAgentRequest{})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body)
+	}
+}
+
+func TestHandleUpdate_NotUpdatable(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusCreating})
+	mgr.updateErr = fmt.Errorf("updating agent %q: %w", "agt_1", agent.ErrNotUpdatable)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeNotUpdatable {
+		t.Errorf("error code = %q, want %q", got, CodeNotUpdatable)
+	}
+}
+
+func TestHandleUpdate_InvalidBackend(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+	mgr.updateErr = errors.New("Update must not be reached")
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
+		createAgentRequest: createAgentRequest{Backend: "gpt"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "backend" {
+		t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "backend")
+	}
+}
+
+func TestHandleUpdate_BadJSON(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	r := httptest.NewRequest("POST", "/api/agents/agt_1/update", bytes.NewReader([]byte(`{`)))
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeBadJSON {
+		t.Errorf("error code = %q, want %q", got, CodeBadJSON)
+	}
+}
+
+func TestHandleUpdate_UnknownField(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	r := httptest.NewRequest("POST", "/api/agents/agt_1/update", bytes.NewReader([]byte(`{"bogus":1}`)))
+	r.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+}
+
+func TestHandleUpdate_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_1/update", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusMethodNotAllowed, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeMethodNotAllowed {
+		t.Errorf("error code = %q, want %q", got, CodeMethodNotAllowed)
 	}
 }
 
