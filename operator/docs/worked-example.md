@@ -113,7 +113,7 @@ spec:
 does **not** fetch the issue. `task.md` is rendered as literally `Implement
 issue #42 in psenna/e2e-fixture.` The **agent** fetches the issue itself
 through the broker, using `GIT_PROXY_BROKER_URL` + `AGENT_TOKEN` — the same
-`use-git-proxy` skill contract as the compose stack. The operator renders
+`use-git-proxy` skill contract as the docker-operator. The operator renders
 **no** skill files into the pod: `Inputs.Skills` is never populated by any
 controller code path. Your agent image must already know how to work with
 the broker.

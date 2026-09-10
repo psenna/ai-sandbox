@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # setup-ubuntu-host.sh — configure an Ubuntu Linux host to run the ai-sandbox
-# stack (which uses a rootless Docker-in-Docker daemon under the sysbox-ce
-# runtime: `runtime: sysbox-runc` in docker-compose.yaml).
+# stack. The docker-operator gives every agent its own rootless
+# Docker-in-Docker sidecar under the sysbox-ce runtime
+# (`DOCKER_RUNTIME=sysbox-runc`), which is what this script installs.
 #
 # What this does:
 #   1. Installs Docker Engine + the compose plugin NATIVELY via apt (sysbox does
@@ -14,7 +15,8 @@
 #   3. Installs sysbox-ce from the official Nestybox .deb. The installer registers
 #      the `sysbox-runc` runtime with Docker (/etc/docker/daemon.json) and SIGHUPs
 #      dockerd. It does NOT make sysbox the default runtime (we don't want that —
-#      only the `docker` dind service uses it; git-proxy and claude use default runc).
+#      only each agent's per-agent DinD sidecar uses it; the shared services and
+#      the operator itself use the default runc).
 #   4. Verifies: sysbox service is active, `docker info` lists `sysbox-runc`, and a
 #      `docker run --runtime=sysbox-runc` smoke test works.
 #
@@ -252,16 +254,18 @@ cat <<EOF
 \033[1;32m[setup] host is ready.\033[0m
 
 Next, from the ai-sandbox repo root on this host:
-  cp .env.example .env        # then edit .env: OLLAMA_MODEL, GITHUB_REPO (+ AGENT_TOKEN)
   # put your GitHub PAT in credentials.yaml (password + token) or export GITHUB_TOKEN
-  mkdir -p data/mirror data/audit
-  docker compose build
+  cp .env.example .env        # then edit: OPERATOR_API_TOKEN, GITHUB_REPO, OLLAMA_MODEL
+  mkdir -p docker-operator/data/mirror docker-operator/data/audit docker-operator/data/dependaproxy-cache
   docker compose up -d
-  docker compose ps           # the 'docker' service must be healthy; claude starts after it
-  docker compose exec claude claude   # interactive Claude Code session
+  docker compose ps           # ollama + docker-operator healthy
 
-Then run the E2E checks (see README.md "Verification"), e.g.:
-  docker compose exec claude sh -c 'docker run --rm -v /workspace:/work -w /work node:22-alpine node -e "console.log(42)"'
+Then open the web UI (New agent -> a terminal on it):
+  http://127.0.0.1:8000/?token=<OPERATOR_API_TOKEN>
+or drive the REST API:
+  curl -fsS -H "Authorization: Bearer <OPERATOR_API_TOKEN>" http://127.0.0.1:8000/api/agents
+
+See README.md and docker-operator/README.md for the full guide.
 
 Pinned packages are held so an 'apt upgrade' won't bump them to a major sysbox
 isn't validated against:

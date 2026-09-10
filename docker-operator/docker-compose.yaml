@@ -1,9 +1,14 @@
-# docker-operator: the shared-services stack (ollama, git-proxy, postgres,
-# dependaproxy -- unchanged from the root ai-sandbox/docker-compose.yaml,
-# minus the single static `docker` DinD sidecar and `claude` agent, which
-# this stack replaces with the operator creating one DinD sidecar + one
-# agent container PER AGENT, on demand, via the real Docker API) plus the
-# docker-operator service itself.
+# docker-operator: the default ai-sandbox stack. The shared-services set
+# (ollama, git-proxy, postgres, dependaproxy) plus the docker-operator service
+# itself, which then creates one DinD sidecar + one agent container PER AGENT,
+# on demand, via the real Docker API. No static `docker` DinD sidecar or
+# `claude` agent here -- the operator templates those per agent.
+#
+# This file is the single source of truth: the repo-root docker-compose.yaml
+# is a thin `include:` of it (so `docker compose up` from the repo root brings
+# up this stack), and it is still runnable directly from this directory. Either
+# way the project name is `docker-operator` (pinned below) and the relative
+# paths resolve against THIS directory.
 #
 # Topology:
 #   docker-operator-proxynet (shared, singleton): ollama, git-proxy,
@@ -32,12 +37,20 @@
 # does not" split the Kubernetes operator already uses. No agent container
 # ever gets this socket, and no agent shares a network with it.
 #
-# Prerequisites: same as the root stack's -- sysbox-ce installed
-# (setup-ubuntu-host.sh) for the per-agent DinD sidecars' runtime. The agent
+# Prerequisites: sysbox-ce installed (../setup-ubuntu-host.sh) for the
+# per-agent DinD sidecars' runtime. The agent
 # image (AGENT_IMAGE) defaults to ghcr.io/psenna/ai-sandbox-agent:latest,
 # published by .github/workflows/docker-operator-agent-image.yml on every
 # docker-operator/agent/** change to main; the operator pulls it on first
 # use. `make agent-image` builds and tags that same reference locally.
+
+# Explicit project name so the un-pinned `pgdata` / `operator-state` volumes
+# land under the SAME prefix (docker-operator_*) whether this stack is brought
+# up from here or via the repo-root docker-compose.yaml's `include:` -- without
+# it, `docker compose` at the repo root would prefix them with "ai-sandbox"
+# instead and silently switch to fresh volumes. The shared singletons below
+# already pin their own `name:`, so they are unaffected either way.
+name: docker-operator
 
 services:
   ollama:
@@ -58,9 +71,9 @@ services:
 
   # config.yaml/credentials.yaml are the ROOT stack's files (../), not a
   # docker-operator-local copy: they are exactly the same git-proxy
-  # configuration either stack needs, and duplicating them would only invite
-  # the two copies to drift. See ai-sandbox/README.md's Setup section for how
-  # to populate credentials.yaml -- unchanged here.
+  # configuration this stack needs, and a docker-operator-local copy would only
+  # invite the two to drift. See ../README.md's Quickstart for how to populate
+  # credentials.yaml.
   git-proxy:
     image: ghcr.io/psenna/git-proxy:v0.0.11
     container_name: docker-operator-gitproxy
@@ -97,9 +110,9 @@ services:
   # container_name MUST equal internal/config's DependaproxyContainer default
   # (docker-operator-dependaproxy) -- the create flow's NetworkConnect looks
   # it up by exactly this name on each new agent's private dinernet.
-  # No static dinernet IP or dinernet membership here at all: unlike the
-  # root stack's single shared dinernet, connecting dependaproxy into a
-  # per-agent dinernet is the operator's job at create time, not compose's.
+  # No static dinernet IP or dinernet membership here at all: rather than one
+  # shared dinernet, connecting dependaproxy into each agent's per-agent
+  # dinernet is the operator's job at create time, not compose's.
   dependaproxy:
     image: ghcr.io/psenna/dependaproxy:v0.0.7
     container_name: docker-operator-dependaproxy
