@@ -116,7 +116,18 @@ forwards the wheel to a mouse-aware full-screen app (claude scrolls its own
 transcript) or, at a plain shell, scrolls tmux's history in copy-mode (which
 exits as soon as you reach the live bottom). Without that option the wheel
 would instead be turned into history-walking arrow keys, which
-`shouldForwardWheel` in `web/terminal.js` also guards against. To read or
+`shouldForwardWheel` in `web/terminal.js` also guards against.
+
+Because tmux mouse mode is on, a mouse-aware full-screen app (`claude`)
+enables mouse tracking and xterm.js forwards a plain click-drag to it as a
+mouse sequence instead of making a native text selection — the same
+trade-off every terminal emulator has. To **select and copy** from the pane,
+hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS, via xterm.js's
+`macOptionClickForcesSelection`) while dragging, then copy with the usual
+<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>C</kbd>. The detail view shows this hint
+under the terminal.
+
+To read or
 search back through a whole session, the detail header's **View context**
 button opens the agent's captured transcript
 (`GET /api/agents/{id}/output`) in a searchable overlay. The raw capture is mostly TUI redraw frames, so it is first
