@@ -121,7 +121,13 @@ func (m *Manager) resolveAgentImageRef(tag string) (string, error) {
 // previous Tags with an advanced CheckedAt and a LastError, and -- for a real
 // poll error -- returns it wrapped.
 func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
-	prev, _, _ := m.store.GetAgentImageTags(ctx)
+	prev, _, prevErr := m.store.GetAgentImageTags(ctx)
+	if prevErr != nil {
+		// Best-effort: an unreadable snapshot is treated as "no previous
+		// list" (the write below then replaces whatever is there), but the
+		// read failure itself must not be invisible.
+		m.log.WarnContext(ctx, "could not read the last-known agent image tag list", "error", prevErr)
+	}
 	now := time.Now().UTC()
 
 	if m.registry == nil {
@@ -138,7 +144,9 @@ func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
 			Tags:      prev.Tags,
 			CheckedAt: now,
 			LastError: err.Error(),
-		}); serr != nil {
+		}); serr != nil && ctx.Err() == nil {
+			// A write that failed only because ctx is already done is the
+			// operator shutting down mid-poll, not something to warn about.
 			m.log.WarnContext(ctx, "could not persist the failed agent-image tag refresh", "error", serr)
 		}
 		return fmt.Errorf("refreshing agent image tags: %w", err)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -179,6 +180,82 @@ func TestListTags_FollowsLinkPagination(t *testing.T) {
 	}
 	if fmt.Sprint(tags) != "[a b c]" {
 		t.Errorf("tags = %v, want [a b c] (both pages, in order)", tags)
+	}
+}
+
+func TestListTags_IgnoresACrossHostNextLink(t *testing.T) {
+	// A second registry that must never be contacted: the "next" link below
+	// points at it, and following it would hand it the Authorization header
+	// minted for the first one.
+	var elsewhereHits atomic.Int64
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhereHits.Add(1)
+		_, _ = w.Write([]byte(`{"tags":["leaked"]}`))
+	}))
+	defer elsewhere.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/team/img/tags/list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Link", `<`+elsewhere.URL+`/v2/team/img/tags/list?last=b>; rel="next"`)
+		_, _ = w.Write([]byte(`{"tags":["a","b"]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newClient(t, srv, Options{AuthToken: "static-tok"})
+	tags, err := c.ListTags(context.Background())
+	if err != nil {
+		t.Fatalf("ListTags: %v", err)
+	}
+	if fmt.Sprint(tags) != "[a b]" {
+		t.Errorf("tags = %v, want [a b] (the cross-host next link must be ignored)", tags)
+	}
+	if got := elsewhereHits.Load(); got != 0 {
+		t.Errorf("the cross-host next link was followed %d times, want 0", got)
+	}
+}
+
+func TestListTags_MalformedLinkHeaderIsIgnored(t *testing.T) {
+	for _, link := range []string{"garbage", `<unclosed; rel="next"`, `</v2/x>; rel="prev"`, ">;<"} {
+		t.Run(link, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Link", link)
+				_, _ = w.Write([]byte(`{"tags":["a"]}`))
+			}))
+			defer srv.Close()
+
+			c := newClient(t, srv, Options{})
+			tags, err := c.ListTags(context.Background())
+			if err != nil {
+				t.Fatalf("ListTags: %v", err)
+			}
+			if fmt.Sprint(tags) != "[a]" {
+				t.Errorf("tags = %v, want [a] (one page, malformed Link ignored)", tags)
+			}
+		})
+	}
+}
+
+func TestListTags_EndlessPaginationIsCappedAndIsAnError(t *testing.T) {
+	var pages atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := pages.Add(1)
+		// Always another page: a registry that never stops paginating.
+		w.Header().Set("Link", fmt.Sprintf(`</v2/team/img/tags/list?last=%d>; rel="next"`, n))
+		_, _ = w.Write([]byte(`{"tags":["a"]}`))
+	}))
+	defer srv.Close()
+
+	c := newClient(t, srv, Options{})
+	tags, err := c.ListTags(context.Background())
+	if !errors.Is(err, ErrOffline) {
+		t.Fatalf("ListTags against an endlessly paginating registry = (%v, %v), want errors.Is(_, ErrOffline)", tags, err)
+	}
+	if tags != nil {
+		t.Errorf("tags = %v, want nil: a truncated prefix must not look like a complete list", tags)
+	}
+	if got := pages.Load(); got != maxPages {
+		t.Errorf("fetched %d pages, want exactly the %d-page cap", got, maxPages)
 	}
 }
 

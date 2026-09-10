@@ -76,7 +76,8 @@ var _ Client = (*HTTPClient)(nil)
 
 // maxPages caps Link-header pagination so a misbehaving registry that keeps
 // pointing "next" at itself cannot spin forever. GHCR returns the whole tag
-// list of the agent image in one page today; 100 is pure headroom.
+// list of the agent image in one page today; 100 is pure headroom. Reaching
+// the cap is an ErrOffline error, not a short list -- see ListTags.
 const maxPages = 100
 
 // New builds an HTTPClient from opts, parsing opts.Image for the registry
@@ -128,15 +129,23 @@ func (c *HTTPClient) ListTags(ctx context.Context) ([]string, error) {
 	token := c.authToken
 
 	var out []string
-	for page := 0; page < maxPages && next != ""; page++ {
+	for page := 0; page < maxPages; page++ {
 		names, link, err := c.getPage(ctx, next, &token)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, names...)
+		if link == "" {
+			return out, nil
+		}
 		next = link
 	}
-	return out, nil
+	// The cap was reached with a "next" link still pending, so what we have is
+	// a truncated prefix of the tag list. Returning it as if it were complete
+	// would let the caller persist it wholesale and prune tags that do exist,
+	// so this is an error -- and an ErrOffline one, because "the registry is
+	// misbehaving, keep the last-known list" is exactly the right response.
+	return nil, fmt.Errorf("the registry kept paginating the tag list past %d pages: %w", maxPages, ErrOffline)
 }
 
 // getPage fetches one tags/list page, running the anonymous token dance on a
@@ -325,10 +334,36 @@ func (c *HTTPClient) fetchToken(ctx context.Context, ch bearerChallenge) (string
 	return tok, nil
 }
 
+// origin returns the scheme+host this client is configured to talk to. The
+// bool is false when c.base is not a usable absolute URL.
+func (c *HTTPClient) origin() (*url.URL, bool) {
+	u, err := url.Parse(c.base)
+	if err != nil || u.Host == "" {
+		return nil, false
+	}
+	return u, true
+}
+
 // nextLink returns the absolute URL of the `rel="next"` Link header, resolved
-// against the registry base, or "" when there is none.
+// (per RFC 3986) against the request that produced resp, or "" when there is
+// none.
+//
+// A next link that resolves to a different scheme or host than the configured
+// registry is IGNORED rather than followed: the value comes straight out of a
+// response header, and authedGet would attach the Authorization header -- the
+// operator's configured registry token, or the anonymous token just minted
+// for this one repository -- to whatever host it named. Pagination is not a
+// reason to hand a credential to an unconfigured host, or to turn the
+// operator into a request forwarder for one.
 func (c *HTTPClient) nextLink(resp *http.Response) string {
-	base, baseErr := url.Parse(c.base)
+	origin, ok := c.origin()
+	if !ok {
+		return ""
+	}
+	base := origin
+	if resp.Request != nil && resp.Request.URL != nil {
+		base = resp.Request.URL
+	}
 	for _, header := range resp.Header.Values("Link") {
 		for _, part := range strings.Split(header, ",") {
 			part = strings.TrimSpace(part)
@@ -344,10 +379,11 @@ func (c *HTTPClient) nextLink(resp *http.Response) string {
 			if err != nil {
 				continue
 			}
-			if baseErr != nil || ref.IsAbs() {
-				return ref.String()
+			next := base.ResolveReference(ref)
+			if !strings.EqualFold(next.Scheme, origin.Scheme) || !strings.EqualFold(next.Host, origin.Host) {
+				continue
 			}
-			return base.ResolveReference(ref).String()
+			return next.String()
 		}
 	}
 	return ""
