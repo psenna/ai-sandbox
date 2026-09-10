@@ -311,6 +311,18 @@
 		refreshAgents().then(showPlaceholder).catch(function () {});
 	};
 
+	// onAgentUpdated is called by terminal.js after a successful in-place
+	// update: refresh the list (status went updating -> running) and re-attach
+	// to the agent, which gives the viewer a fresh terminal on the new
+	// container.
+	window.onAgentUpdated = function (id) {
+		refreshAgents().then(function () { selectAgent(id); }).catch(function () { selectAgent(id); });
+	};
+
+	// So terminal.js's openUpdateForm can reach the operator's create-form
+	// defaults (backend/model/... ) without a second /api/agents round-trip.
+	window.getAgentDefaults = function () { return state.defaults; };
+
 	refreshAgents().catch(function (e) {
 		sidebarList.innerHTML =
 			'<li class="agent-list__error">Failed to load agents: ' + window.Render.escapeHTML(e.message) + '</li>';

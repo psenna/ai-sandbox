@@ -380,12 +380,14 @@
 					'<input class="detail__name" type="text" placeholder="(unnamed)" aria-label="Agent name">' +
 					'<input class="detail__description" type="text" placeholder="Add a description…" aria-label="Agent description">' +
 					'<span class="detail__id" title="agent id"></span>' +
+					'<button class="detail__upgrade" type="button" hidden>Upgrade available</button>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
 					'<span class="detail__menu">' +
 						'<button class="detail__menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Options">⋮</button>' +
 						'<div class="detail__menu-panel" role="menu" hidden>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="view-context">View context</button>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="agent-info">Agent info</button>' +
+							'<button class="detail__menu-item" type="button" role="menuitem" data-action="update-agent">Update agent</button>' +
 						'</div>' +
 					'</span>' +
 					'<button class="detail__delete-btn" type="button">Delete</button>' +
@@ -397,6 +399,7 @@
 		var nameInput = container.querySelector('.detail__name');
 		var descInput = container.querySelector('.detail__description');
 		var idEl = container.querySelector('.detail__id');
+		var upgradeBtn = container.querySelector('.detail__upgrade');
 		var saveStatus = container.querySelector('.detail__save-status');
 		var menuBtn = container.querySelector('.detail__menu-btn');
 		var menuPanel = container.querySelector('.detail__menu-panel');
@@ -411,6 +414,7 @@
 				nameInput.value = agent.name || '';
 				descInput.value = agent.description || '';
 				idEl.textContent = agent.id;
+				if (upgradeBtn) upgradeBtn.hidden = !agent.upgrade_available;
 			})
 			.catch(function (e) {
 				if (destroyed) return;
@@ -484,8 +488,13 @@
 				var action = item.getAttribute('data-action');
 				if (action === 'view-context') openContextOverlay(agentID);
 				else if (action === 'agent-info') openInfoOverlay(agentID);
+				else if (action === 'update-agent') openUpdateForm(agentID);
 			});
 		});
+
+		if (upgradeBtn) {
+			upgradeBtn.addEventListener('click', function () { openUpdateForm(agentID); });
+		}
 
 		deleteBtn.addEventListener('click', function () {
 			var label = nameInput.value || agentID;
@@ -515,6 +524,110 @@
 				t.teardown();
 			},
 		};
+	}
+
+	// --- Update agent form ----------------------------------------------------
+
+	// syncBackend shows/hides the create form's Ollama block for the currently
+	// selected backend radio. A local ~8-line copy of app.js's identically
+	// named helper -- it is not exported there, and this matches the existing
+	// "untested DOM wiring lives with its view" split.
+	function syncBackend(form) {
+		var checked = form.querySelector('input[name="backend"]:checked');
+		var anthropic = (checked ? checked.value : 'ollama') === 'anthropic';
+		var ollamaBlock = form.querySelector('.create-form__ollama');
+		var note = form.querySelector('.create-form__anthropic-note');
+		if (ollamaBlock) ollamaBlock.hidden = anthropic;
+		if (note) note.hidden = !anthropic;
+	}
+
+	// openUpdateForm renders a full-page "Update agent" form into the main
+	// area, pre-filled from the agent record (every create-form field is
+	// editable in place, including the backend and the image tag). On submit
+	// it confirms, then POSTs to /api/agents/{id}/update; success re-selects
+	// the agent (window.onAgentUpdated), which re-attaches a fresh terminal to
+	// the recreated container.
+	function openUpdateForm(agentID) {
+		var mainArea = typeof document !== 'undefined' ? document.getElementById('main-area') : null;
+		if (!mainArea || !window.Render) return;
+		teardownCurrent();
+
+		Promise.all([
+			fetchJSON('/api/agents/' + encodeURIComponent(agentID)),
+			fetchJSON('/api/agent-image/tags').catch(function () { return null; }),
+		]).then(function (res) {
+			var agent = res[0];
+			var tagInfo = res[1] || {};
+			var operatorDefaultTag = tagInfo.operator_default || '';
+			var opDefaults = (typeof window.getAgentDefaults === 'function' && window.getAgentDefaults()) || {};
+			var defaults = Object.assign({}, opDefaults, {
+				imageTags: tagInfo.tags || [],
+				imageDefaultTag: operatorDefaultTag,
+			});
+
+			mainArea.innerHTML = window.Render.renderCreateForm(defaults, {
+				title: 'Update agent', submitLabel: 'Update', values: agent,
+			});
+			var form = mainArea.querySelector('.create-form');
+			var errorEl = form.querySelector('.create-form__error');
+			var submitBtn = form.querySelector('.create-form__submit');
+
+			form.querySelectorAll('input[name="backend"]').forEach(function (el) {
+				el.addEventListener('change', function () { syncBackend(form); });
+			});
+			syncBackend(form);
+
+			form.querySelector('.create-form__cancel').addEventListener('click', function () {
+				renderAgentDetail(mainArea, agentID);
+			});
+
+			form.addEventListener('submit', function (ev) {
+				ev.preventDefault();
+				var checked = form.querySelector('input[name="backend"]:checked');
+				var backend = checked ? checked.value : 'ollama';
+				var body = {
+					name: form.querySelector('.create-form__name').value.trim(),
+					description: form.querySelector('.create-form__description').value.trim(),
+					backend: backend,
+				};
+				var repo = form.querySelector('.create-form__repo').value.trim();
+				if (repo) body.repo = repo;
+				var autoCompact = form.querySelector('.create-form__auto-compact').value.trim();
+				if (autoCompact) body.auto_compact_threshold = autoCompact;
+				var maxContextTokens = form.querySelector('.create-form__max-context-tokens').value.trim();
+				if (maxContextTokens) body.max_context_tokens = maxContextTokens;
+				var sel = form.querySelector('.create-form__image-tag');
+				if (sel && sel.value && sel.value !== operatorDefaultTag) body.image_tag = sel.value;
+				if (backend === 'ollama') {
+					body.model = form.querySelector('.create-form__model').value.trim();
+					body.fast_model = form.querySelector('.create-form__fast-model').value.trim();
+					var ollamaURL = form.querySelector('.create-form__ollama-url').value.trim();
+					if (ollamaURL) body.ollama_url = ollamaURL;
+				}
+
+				if (!window.confirm('Update this agent? It recreates the container (ending the running session) but keeps the volumes and history.')) return;
+
+				errorEl.hidden = true;
+				submitBtn.disabled = true;
+				fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/update', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(body),
+				})
+					.then(function () {
+						if (typeof window.onAgentUpdated === 'function') window.onAgentUpdated(agentID);
+						else renderAgentDetail(mainArea, agentID);
+					})
+					.catch(function (e) {
+						submitBtn.disabled = false;
+						errorEl.textContent = e && e.message ? e.message : String(e);
+						errorEl.hidden = false;
+					});
+			});
+		}).catch(function (e) {
+			mainArea.innerHTML = '<p class="placeholder">Could not open the update form: ' +
+				escapeHTML(e && e.message ? e.message : String(e)) + '</p>';
+		});
 	}
 
 	// --- View context overlay --------------------------------------------------

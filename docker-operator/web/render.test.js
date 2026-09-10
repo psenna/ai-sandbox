@@ -409,3 +409,38 @@ test('renderCreateForm: opts.values pre-fills name/description and a selected im
 	assert.match(html, /class="create-form__description" type="text" value="the one"/);
 	assert.match(html, /<option value="20260101-120000" selected>/);
 });
+
+test('renderCreateForm: opts.values overrides the operator defaults for every create-form field', () => {
+	const html = Render.renderCreateForm(
+		{ backend: 'ollama', model: 'op-default', fastModel: 'fast-default', repo: 'op/default.git', autoCompactThreshold: '80', maxContextTokens: '100000' },
+		{
+			title: 'Update agent', submitLabel: 'Update',
+			values: {
+				backend: 'ollama', model: 'agent-opus', fast_model: 'agent-fast',
+				ollama_url: 'http://gpu-box:11434', repo: 'acme/widget.git',
+				auto_compact_threshold: '95', max_context_tokens: '250000',
+			},
+		});
+	assert.match(html, /Update agent/);
+	assert.match(html, /class="create-form__model" type="text" value="agent-opus"/);
+	assert.match(html, /class="create-form__fast-model" type="text" value="agent-fast"/);
+	assert.match(html, /class="create-form__ollama-url" type="text" value="http:\/\/gpu-box:11434" placeholder=/);
+	assert.match(html, /class="create-form__repo" type="text" value="acme\/widget.git"/);
+	assert.match(html, /class="create-form__auto-compact" type="text" value="95"/);
+	assert.match(html, /class="create-form__max-context-tokens" type="text" value="250000"/);
+});
+
+test('renderCreateForm: opts.values.backend=anthropic hides the ollama block even when the operator default is ollama', () => {
+	const html = Render.renderCreateForm(
+		{ backend: 'ollama' },
+		{ values: { backend: 'anthropic' } });
+	assert.match(html, /class="create-form__ollama" hidden/);
+	assert.match(html, /value="anthropic" checked/);
+});
+
+test('renderCreateForm: with no image_tag, opts.values.image seeds the selected tag from the resolved ref', () => {
+	const html = Render.renderCreateForm(
+		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },
+		{ values: { image: 'ghcr.io/x/agent:20260101-120000' } });
+	assert.match(html, /<option value="20260101-120000" selected>/);
+});
