@@ -325,13 +325,30 @@ test('formatCheckedAgo: falsy is "never checked", otherwise coarse buckets', () 
 	assert.equal(Render.formatCheckedAgo(new Date(Date.now() - 2 * 86400 * 1000).toISOString()), 'checked 2 days ago');
 });
 
-test('renderImageTagSelect: default first and labelled, then newest-first deduped', () => {
+test('renderImageTagSelect: newest-first, deduped, "latest" default sorts above the date-time tags', () => {
 	const html = Render.renderImageTagSelect('c', ['20251231-090000', '20260101-120000', '20251231-090000', 'latest'], 'latest', '');
 	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
 	assert.equal(opts[0], '<option value="latest" selected>latest (default)</option>');
 	assert.equal(opts[1], '<option value="20260101-120000">20260101-120000</option>');
 	assert.equal(opts[2], '<option value="20251231-090000">20251231-090000</option>');
-	assert.equal(opts.length, 3, 'default deduped from the tail, no repeats: ' + html);
+	assert.equal(opts.length, 3, 'no repeats: ' + html);
+});
+
+test('renderImageTagSelect: a date-time default keeps its chronological position (not hoisted to the top)', () => {
+	const html = Render.renderImageTagSelect(
+		'c', ['20260801-000000', '20260910-110802', '20260909-144348'], '20260909-144348', '');
+	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
+	assert.equal(opts[0], '<option value="20260910-110802">20260910-110802</option>');
+	assert.equal(opts[1], '<option value="20260909-144348" selected>20260909-144348 (default)</option>');
+	assert.equal(opts[2], '<option value="20260801-000000">20260801-000000</option>');
+	assert.equal(opts.length, 3);
+});
+
+test('renderImageTagSelect: no operator default => a blank "(operator default)" option, selected', () => {
+	const html = Render.renderImageTagSelect('c', ['20260101-120000'], '', '');
+	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
+	assert.equal(opts[0], '<option value="" selected>(operator default)</option>');
+	assert.equal(opts[1], '<option value="20260101-120000">20260101-120000</option>');
 });
 
 test('renderImageTagSelect: a selectedTag not in the list still appears and is selected', () => {
