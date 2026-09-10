@@ -34,12 +34,22 @@ git config --global http."http://git-proxy:8080/".extraHeader "Authorization: Be
 
 # Make the use-git-proxy skill available to this project workspace. Claude Code
 # auto-loads skills from .claude/skills/ in the project (cwd) directory.
+#
+# Every baked skill's own target dir is wiped (rm -rf) right before its
+# mkdir + cp, so the skills are refreshed from the image on every boot --
+# including an in-place agent update, whose recreated container re-runs this
+# ENTRYPOINT -- and a skill the new image renamed or dropped does not linger as
+# a stale dir. Only the dirs this script manages are wiped, one at a time,
+# never a blanket rm -rf /workspace/.claude/skills, so a user-added skill
+# survives.
+rm -rf /workspace/.claude/skills/use-git-proxy
 mkdir -p /workspace/.claude/skills/use-git-proxy
 cp /opt/skills/use-git-proxy/SKILL.md /workspace/.claude/skills/use-git-proxy/SKILL.md
 
 # Make the agent aware of its rootless DinD environment. CLAUDE.md is always
 # loaded by Claude Code (project root); the use-docker skill is on-demand.
 cp /opt/agent-context/CLAUDE.md /workspace/CLAUDE.md
+rm -rf /workspace/.claude/skills/use-docker
 mkdir -p /workspace/.claude/skills/use-docker
 cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 
@@ -47,6 +57,7 @@ cp /opt/skills/use-docker/SKILL.md /workspace/.claude/skills/use-docker/SKILL.md
 # the only route to a registry is the DependaProxy instance -- the validation
 # gates, per-ecosystem client config, and the reversible /pypi/upstream/ lock
 # rewrite for `uv sync --frozen`. On-demand.
+rm -rf /workspace/.claude/skills/use-dependaproxy
 mkdir -p /workspace/.claude/skills/use-dependaproxy
 cp /opt/skills/use-dependaproxy/SKILL.md /workspace/.claude/skills/use-dependaproxy/SKILL.md
 
@@ -64,6 +75,7 @@ cp /opt/skills/use-dependaproxy/SKILL.md /workspace/.claude/skills/use-dependapr
 # pod, but harmless to always drop in (on-demand skill, only loaded when
 # needed).
 if [ -f /opt/skills/use-sandbox/SKILL.md ]; then
+  rm -rf /workspace/.claude/skills/use-sandbox
   mkdir -p /workspace/.claude/skills/use-sandbox
   cp /opt/skills/use-sandbox/SKILL.md /workspace/.claude/skills/use-sandbox/SKILL.md
 fi
@@ -72,6 +84,7 @@ fi
 # teardown, slot release) and what to check on resume -- same on-demand,
 # harmless-if-irrelevant rationale as use-sandbox above.
 if [ -f /opt/skills/freeze/SKILL.md ]; then
+  rm -rf /workspace/.claude/skills/freeze
   mkdir -p /workspace/.claude/skills/freeze
   cp /opt/skills/freeze/SKILL.md /workspace/.claude/skills/freeze/SKILL.md
 fi
@@ -80,12 +93,14 @@ fi
 # not (cold image cache, containers gone), and what to re-establish, in
 # order. Only relevant to a pod that was woken, so equally on-demand.
 if [ -f /opt/skills/unfreeze/SKILL.md ]; then
+  rm -rf /workspace/.claude/skills/unfreeze
   mkdir -p /workspace/.claude/skills/unfreeze
   cp /opt/skills/unfreeze/SKILL.md /workspace/.claude/skills/unfreeze/SKILL.md
 fi
 
 # implement-issue: drive a GitHub issue from spec to merged PR with a tiered
 # model pipeline (Opus plans, Sonnet implements, Opus validates & fixes).
+rm -rf /workspace/.claude/skills/implement-issue
 mkdir -p /workspace/.claude/skills/implement-issue
 cp /opt/skills/implement-issue/SKILL.md /workspace/.claude/skills/implement-issue/SKILL.md
 
@@ -95,6 +110,7 @@ cp /opt/skills/implement-issue/SKILL.md /workspace/.claude/skills/implement-issu
 # baked into the docker-operator agent image -- the root image has neither, so
 # this is a no-op there.
 if [ -n "${AGENT_STORE_DIR:-}" ] && [ -f /opt/skills/store-file/SKILL.md ]; then
+  rm -rf /workspace/.claude/skills/store-file
   mkdir -p /workspace/.claude/skills/store-file
   cp /opt/skills/store-file/SKILL.md /workspace/.claude/skills/store-file/SKILL.md
 fi
