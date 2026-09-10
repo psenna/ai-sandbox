@@ -1,418 +1,257 @@
 # ai-sandbox
 
-A containerized sandbox that runs **Claude Code** with **Ollama** as the LLM
-server, in front of **git-proxy** so the agent can work on a real GitHub repo
-**without ever seeing the GitHub PAT**, and with a **rootless Docker-in-Docker**
-daemon so dev tasks (node/python/go runs, databases) happen in isolated
-containers that cannot reach the host or the proxy's credentials.
+Run **Claude Code** agents on a real GitHub repo **without ever handing them the
+GitHub PAT**, each agent in its own container with a **rootless Docker-in-Docker**
+daemon for dev work, and every dependency **supply-chain-gated** through a
+validating proxy.
+
+- **git-proxy** holds the GitHub PAT and attaches it only on the proxy→GitHub
+  leg. Agents authenticate to the proxy with a low-value bearer, never see the
+  PAT, have no `gh` CLI, and every push is policy-gated (`secret_scan`,
+  `history_protect`, `branch_pattern`) and audited.
+- **DependaProxy** validates and hash-verifies every npm / PyPI / Go package; the
+  public registries are network-blocked from the DinD daemon, so a workload
+  cannot fetch a dependency any other way.
+- **Ollama** serves an Anthropic-compatible API (local models, or `:cloud`
+  models proxied to ollama.com) — or point an agent at a real Anthropic account.
 
 ```
- proxynet (bridge):  ollama ──┐
-   git-proxy ──────── https ──> github.com   (holds the PAT; agent never sees it)
-   dependaproxy ──── https ──> registry.npmjs.org / pypi.org / proxy.golang.org
-   claude ─── git/push/PR ───> git-proxy (8080 git / 8090 broker)
-        ├── /v1/messages ───> ollama (11434, Anthropic-compatible API)
-        └── npm/pip/go ────> dependaproxy (8080 /npm /pypi /goproxy)
- dinernet (bridge):  docker (rootless DinD, sysbox-runc, no --privileged)
-   claude ─── DOCKER_HOST=tcp://docker:2375 ──> runs node/python/go/services
-   workload containers ── npm/pip/go ──> dependaproxy (static IP 172.23.0.10)
- dbnet (bridge):  postgres <── dependaproxy (trust-anchor storage; isolated)
+ proxynet:  ollama · git-proxy ──https──> github.com   (holds the PAT)
+            dependaproxy ──https──> registry.npmjs.org / pypi.org / proxy.golang.org
+            every agent container ── git/PR ──> git-proxy
+                                  ├── /v1/messages ──> ollama
+                                  └── npm/pip/go ────> dependaproxy
+ per-agent dinernet (private):  that agent's DinD sidecar (sysbox-runc)
+ dbnet:  postgres <── dependaproxy   (trust-anchor storage; isolated)
 ```
-
-The agent never gets the upstream PAT, never has `gh`, and never has python/go on
-its container — dev tooling runs inside disposable DinD containers. Pushes are
-policy-gated (`secret_scan`, `history_protect`, `branch_pattern`) and audited.
-Dependencies are supply-chain-gated too: every npm/pypi/Go package is validated
-and hash-verified by DependaProxy, and the public npm/pypi/Go registries are
-network-blocked from the DinD daemon — workloads cannot fetch dependencies any
-other way.
 
 ---
 
-## Two ways to run this: the compose stack, or the Kubernetes operator
+## Two ways to run this: the docker-operator, or the Kubernetes operator
 
-This repository ships **two** ways to run an agent, and they solve different
-problems. Pick one before reading further.
+This repository ships **two** ways to run agents. Pick one before reading
+further.
 
-| | **Compose stack** (this README) | **Kubernetes operator** (`operator/`) |
+| | **docker-operator** (the default — `docker compose up`) | **Kubernetes operator** (`operator/`) |
 |---|---|---|
-| What it is | Five containers on one Ubuntu host, started with `docker compose up`. | A Kubernetes operator with two CRDs, `SandboxClass` and `SandboxEnvironment`. |
-| How you start a run | You attach to the `claude` container and drive it interactively, or run one headless task. | `kubectl apply` a `SandboxEnvironment`. |
-| How many at once | One. The stack is a single agent workstation. | As many as `slots.capacity` allows, queued by priority. |
-| Long-running / paused work | Not modelled. The container runs until you stop it. | Modelled: an agent can declare a wait, the sandbox is **frozen** (snapshotted, pod deleted, slot released) and **woken** when the wait clears. |
-| What survives a restart | The `workspace` volume. | A checksum-verified snapshot in S3, plus a terminal archive (`run.json` + the session transcript) with a retention policy. |
-| Isolation | Docker bridge networks + a rootless DinD daemon with registry egress blocked. | Kubernetes `NetworkPolicy` (`Restricted`/`Open`), a hardened pod, and no Kubernetes credential in the agent container at all. |
-| Nested containers for dev work | Yes — rootless DinD (`DOCKER_HOST=tcp://docker:2375`). | **Not yet.** The only implemented engine is `none`; `rootless-podman` is designed and spiked but unimplemented ([#24](https://github.com/psenna/ai-sandbox/issues/24)). |
-| Operational surface | `docker compose logs`. | Conditions, Events, Prometheus metrics, a Helm chart. |
+| What it is | A single Go binary that creates agent containers through the Docker API, with a REST API + web UI. One Ubuntu host, no cluster. | A Kubernetes operator with two CRDs, `SandboxClass` and `SandboxEnvironment`. |
+| How you start a run | Click **New agent** in the web UI (or `POST /api/agents`); a terminal opens on it. | `kubectl apply` a `SandboxEnvironment`. |
+| How many at once | Many — one Claude container + one private DinD sidecar per agent, capped by `MAX_AGENTS`. | As many as `slots.capacity` allows, queued by priority. |
+| Long-running / paused work | Not modelled — the agent's `tmux` session survives the operator or a browser tab restarting, but not the agent container stopping. | Modelled: an agent can declare a wait, the sandbox is **frozen** (snapshotted, pod deleted, slot released) and **woken** when the wait clears. |
+| Isolation | A private Docker bridge network + a rootless DinD daemon per agent, registry egress blocked. The operator drives Docker over a bind-mounted socket and shares no network with any agent. | Kubernetes `NetworkPolicy`, a hardened pod, and no Kubernetes credential in the agent container. |
+| Nested containers for dev work | Yes — a rootless DinD sidecar per agent (`DOCKER_HOST=tcp://docker:2375`). | **Not yet** — only the `none` engine is implemented ([#24](https://github.com/psenna/ai-sandbox/issues/24)). |
+| Operational surface | `docker compose logs`, the web UI, `GET /api/agents`. | Conditions, Events, Prometheus metrics, a Helm chart. |
 | Maturity | Working, in daily use. | `v1alpha1`; no image or chart published yet. |
 
-**Use the compose stack** when you want one agent, on one machine, working on
-one repository, right now — and especially when the agent needs to launch
-containers of its own (databases, language runtimes) via the DinD daemon.
+**Use the docker-operator** when you want one or many agents on one machine,
+right now, with a browser UI — and especially when agents need to launch
+containers of their own (databases, language runtimes).
 
-**Use the operator** when you want many concurrent, policy-isolated agent runs
-on a cluster; when runs must survive being paused for hours while CI or a
-review completes; or when you need an auditable archive of what each run did.
+**Use the Kubernetes operator** when you want policy-isolated agent runs on a
+cluster, or runs that must survive being paused for hours while CI or a review
+completes.
 
-The two share their trust model — git-proxy holds the upstream PAT and the
-agent never sees it, DependaProxy gates every dependency — and the operator
-consumes the same git-proxy, DependaProxy and Ollama endpoints this stack
-provides. Start with the compose stack; move to the operator when one agent
-stops being enough.
+Both share the same trust model — git-proxy holds the PAT, DependaProxy gates
+every dependency — and the Kubernetes operator consumes the same git-proxy,
+DependaProxy and Ollama endpoints.
 
-Operator docs: [`operator/README.md`](operator/README.md) ·
-[quickstart](operator/README.md#quickstart) ·
-[engines](operator/docs/engines.md) ·
-[operations](operator/docs/operations.md) ·
-[security](operator/docs/security.md) ·
-[CRD reference](operator/docs/crd-reference.md)
+Deep docs:
+- **docker-operator:** [`docker-operator/README.md`](docker-operator/README.md) ·
+  [quickstart](docker-operator/README.md#quickstart) ·
+  [REST API](docker-operator/README.md#rest-api) ·
+  [authenticating the API](docker-operator/README.md#authenticating-the-api)
+- **Kubernetes operator:** [`operator/README.md`](operator/README.md) ·
+  [quickstart](operator/README.md#quickstart) ·
+  [engines](operator/docs/engines.md) ·
+  [operations](operator/docs/operations.md) ·
+  [security](operator/docs/security.md) ·
+  [CRD reference](operator/docs/crd-reference.md)
 
 ---
 
-## Architecture (compose stack)
+## Architecture
 
-Five services on three isolated bridge networks (see `docker-compose.yaml`):
+Shared, singleton services (one set, reused by every agent):
 
-| Service | Image | Networks | Purpose |
-|---|---|---|---|
-| `ollama` | `ollama/ollama:latest` | proxynet | LLM server, Anthropic-compatible `/v1/messages` on `:11434`. `:cloud` + local models. |
-| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.11` | proxynet | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
-| `postgres` | `postgres:18` | dbnet | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
-| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.7` | proxynet + dinernet + dbnet | Secure npm/pypi/Go proxy: validates + hashes every package, serves `/npm` `/pypi` `/goproxy`, plus an embedded web UI / admin dashboard at `/`. Static dinernet IP `172.23.0.10`. |
-| `docker` | `docker:27-dind` (`sysbox-runc`) | dinernet | Rootless DinD daemon for agent-launched dev workloads; blocks egress to the public npm/pypi/Go registries (`scripts/dind-init.sh`). |
-| `claude` | built from `Dockerfile` | proxynet + dinernet | Slim agent: node + claude-code + git + docker-cli. No python/go. |
+| Service | Image | Purpose |
+|---|---|---|
+| `ollama` | `ollama/ollama:latest` | LLM server, Anthropic-compatible `/v1/messages`. `:cloud` + local models. |
+| `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.11` | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
+| `postgres` | `postgres:18` | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
+| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.7` | Validates + hash-verifies every npm / PyPI / Go package; serves `/npm` `/pypi` `/goproxy` + an admin dashboard at `/`. |
+| `docker-operator` | built from `docker-operator/Dockerfile` | The orchestrator: REST API + web UI on `127.0.0.1:${LISTEN_PORT:-8000}`, drives Docker over a bind-mounted socket. |
 
-`git-proxy` is on **proxynet only**; the DinD daemon is on **dinernet only** — so
-a compromised daemon has no route to the proxy's bind-mounted `credentials.yaml`.
-`claude` is on both. `postgres` is on **dbnet only** — DependaProxy's DSN is its
-only route. The shared `workspace` volume (mounted in `claude` and `docker`) is the
-only file-exchange point between the agent and the containers it launches.
+Then, **per agent, on demand**, the operator creates: a Claude Code container
+(node + claude-code + git + docker-cli + tmux, from
+`docker-operator/agent/Dockerfile`), a private `docker:dind` sidecar under
+`sysbox-runc`, a private bridge network joining just those two, and three
+isolated volumes (workspace, Claude config, DinD cache). No agent shares a
+network or a volume with any other agent, and none can reach the operator.
 
-**Registry flow:** the agent's clients (claude itself + workload containers) point
-their registries at `http://dependaproxy:8080/npm` (npm), `…/pypi/simple` (pip),
-and `…/goproxy` (Go modules). DependaProxy validates each package
-(min-publication-age 7 days), stores a sha256 trust anchor in postgres, and serves
-only bytes that match the stored hash. The DinD daemon rejects egress to the public
-npm hosts (`registry.npmjs.org`/`.com`, `registry.yarnpkg.com`,
-`registry.npmmirror.com`), pypi hosts (`pypi.org`, `files.pythonhosted.org`,
-`pypi.python.org`), and Go hosts (`proxy.golang.org`, `goproxy.io`, `goproxy.cn`)
-(see `scripts/dind-init.sh`), so workloads physically cannot fetch dependencies any
-other way — even if an agent overrides a registry. Go still verifies module
-checksums against `sum.golang.org` directly (that host is intentionally not
-blocked).
+DependaProxy is connected into each agent's private network at create time, so
+that agent's DinD workloads can reach it; the DinD daemon
+(`scripts/dind-init.sh`) blocks egress to the public npm / PyPI / Go hosts, so
+workloads physically cannot fetch a dependency outside DependaProxy.
+
+Full topology, resource naming, and the security boundary:
+[`docker-operator/README.md#architecture`](docker-operator/README.md#architecture).
 
 ---
 
 ## Prerequisites
 
-1. **Ubuntu 24.04 LTS** host (amd64 or arm64), systemd. The DinD daemon needs the
-   `sysbox-runc` runtime, so:
+1. **Ubuntu 24.04 LTS** host (amd64 or arm64), systemd. Each agent's DinD sidecar
+   needs the `sysbox-runc` runtime, so:
    ```sh
    sudo bash setup-ubuntu-host.sh
    ```
-   This installs Docker Engine 28.x + containerd 1.7.x (pinned + held) and
-   sysbox-ce 0.7.0, and verifies `docker run --runtime=sysbox-runc --rm alpine echo ok`.
+   This installs Docker Engine + containerd (pinned + held) and sysbox-ce, and
+   verifies `docker run --runtime=sysbox-runc --rm alpine echo ok`.
 
-2. **`ghcr.io/psenna/git-proxy:v0.0.11`** published (the git-proxy repo's `release`
-   workflow builds and pushes the image to GHCR on every GitHub release). v0.0.11
-   adds `ci.status` / `ci.log` graceful degradation when the PAT can read Actions
-   but not Checks, plus a warn-only startup permission preflight (additive;
-   `preflight.enabled` defaults true). v0.0.10 landed the security review:
-   read-protection bypasses via malformed/tree wants, ref-update object-id
-   validation before objects reach a git subprocess, per-agent repo
-   authorization, stray-object smuggling, and fail-closed auth when
-   `auth.tokens` is unset. v0.0.8 added `secret_scan` `ignore_strings`.
-   **Do not pin v0.0.9** — its release pipeline failed and it published no image.
+2. **`ghcr.io/psenna/git-proxy:v0.0.11`** published (the git-proxy repo's
+   `release` workflow pushes it to GHCR on every GitHub release). v0.0.11 adds
+   `ci.status` / `ci.log` graceful degradation when the PAT can read Actions but
+   not Checks, plus a warn-only startup permission preflight. v0.0.10 landed the
+   security review (read-protection bypasses, ref-update object-id validation,
+   per-agent repo authorization, fail-closed auth when `auth.tokens` is unset).
+   **Do not pin v0.0.9** — its release pipeline failed and published no image.
    If a newer tag is out, bump the `git-proxy` `image:` line in
-   `docker-compose.yaml`. To run a local build instead, comment out the `image:`
-   line and uncomment the `build:` block (`context: ../git-proxy`), then
-   `docker compose build git-proxy`.
+   `docker-operator/docker-compose.yaml`.
 
 3. **`ghcr.io/psenna/dependaproxy:v0.0.7`** published (the dependaproxy repo's
-   `release` workflow builds and pushes the image on every GitHub release).
-   v0.0.6/v0.0.7 land the security review: PyPI file-version binding to the served
-   artifact, a per-project validated-artifact trust store that re-checks the
-   deny-list on cache hits, provenance verification bound to the served digest,
-   project-key validation, and exec/filesystem-shaped middleware params pinned to
-   operator config rather than the admin API. v0.0.5 added the persistent
-   PostgreSQL `cve-check` cache. The v0.0.3 web UI / admin dashboard (served at
-   `/`, gated by `auth.admin_token`), the `cve-check` `min_severity` threshold and
-   v0.0.2's HTTP Basic auth are unchanged. The sandbox runs it with auth disabled
-   (see `dependaproxy.yaml`).
+   `release` workflow pushes it on every GitHub release). v0.0.6/v0.0.7 land the
+   security review (PyPI file-version binding, a per-project validated-artifact
+   trust store, provenance bound to the served digest). The sandbox runs it with
+   auth disabled (`auth.token: ""` in `dependaproxy.yaml`).
 
-4. **A GitHub fine-grained PAT** for the repo(s) the agent will work on:
-   https://github.com/settings/personal-access-tokens
+4. **A GitHub fine-grained PAT** for the repo(s) agents will work on
+   (https://github.com/settings/personal-access-tokens):
    - Read access to **actions** and **metadata**
    - Read and write access to **code**, **issues**, **pull requests**, and **workflows**
-   - (Discussions only if you use them.)
 
-5. **Ollama Cloud device auth** (only if you use `:cloud` models). The local
-   daemon authenticates to ollama.com with the SSH keypair in `./.ollama`
-   (`id_ed25519` + `config.json`) — **not** an API key. Either:
-   - copy your existing `.ollama/` folder (with the registered key) onto the host
-     next to `docker-compose.yaml` (the `ollama` service bind-mounts it), **or**
-   - start fresh: `docker compose up -d ollama` then
-     `docker compose exec ollama ollama signin` once and approve the URL it
-     prints. The key persists in `./.ollama`.
-   (`OLLAMA_API_KEY` is only for *direct* ollama.com API calls, which this stack
-   does not make — leave it unset.)
+5. **Ollama Cloud device auth** (only for `:cloud` models). The local daemon
+   authenticates to ollama.com with the SSH keypair in `./.ollama` (`id_ed25519`
+   + `config.json`) — **not** an API key. Either copy your existing `.ollama/`
+   folder onto the host next to `docker-compose.yaml`, or start fresh:
+   `docker compose up -d ollama` then `docker compose exec ollama ollama signin`
+   once. (`OLLAMA_API_KEY` is only for direct ollama.com API calls, which this
+   stack does not make.)
 
 ---
 
-## Setup
+## Quickstart
 
 ```sh
-# 1. Configure secrets (gitignored).
+# 1. Host runtime (once).
+sudo bash setup-ubuntu-host.sh
+
+# 2. Give git-proxy the GitHub PAT — edit credentials.yaml: put the PAT in
+#    `password` AND `token`, set the `repos` pattern to your OWNER/REPO.git.
+#    (Or export GITHUB_TOKEN and pass it to the git-proxy container.)
+#    NEVER commit a real PAT — credentials.yaml is tracked with placeholders.
+
+# 3. Configure the stack.
 cp .env.example .env
-#   edit .env: OLLAMA_MODEL, GITHUB_REPO, DEPENDAPROXY_TOKEN, (AGENT_TOKEN if you rotate it)
-#   For :cloud models, also put your registered .ollama/ folder here (see
-#   prerequisites #5) — the ollama service bind-mounts ./.ollama.
+#    edit .env: OPERATOR_API_TOKEN (openssl rand -hex 32), GITHUB_REPO,
+#    OLLAMA_MODEL / DEFAULT_AGENT_BACKEND, MAX_AGENTS.
+#    For :cloud models, put your registered .ollama/ folder next to this file.
+mkdir -p docker-operator/data/mirror docker-operator/data/audit docker-operator/data/dependaproxy-cache
 
-# 2. Give git-proxy the GitHub PAT. Two options:
-#    a) edit credentials.yaml: put the PAT in `password` AND `token`, and set the
-#       `repos` pattern to your OWNER/REPO.git (must match GITHUB_REPO in .env); or
-#    b) export GITHUB_TOKEN (env > file > empty — profile name GITHUB -> GITHUB_TOKEN)
-#       and pass it to the git-proxy container via docker-compose.yaml environment.
-#    NEVER commit a real PAT — credentials.yaml is tracked with placeholders only.
-
-# 3. DependaProxy auth is DISABLED in this stack (auth.token: "" in
-#    dependaproxy.yaml) — Go's module client refuses credentials over plaintext
-#    HTTP, and the proxy is on isolated internal networks. If you re-enable auth,
-#    set a token in dependaproxy.yaml AND DEPENDAPROXY_TOKEN in .env to the same
-#    value. Never commit a real token.
-
-# 4. Create the bind-mount dirs (git-proxy writes as uid 1000; dependaproxy as
-#    uid 65532 — see the uid note below if your host uid differs).
-mkdir -p data/mirror data/audit data/dependaproxy-cache
+# 4. Bring up the shared services + the operator.
+docker compose up -d
+docker compose ps
 ```
 
-> **uid note:** `git-proxy` runs as uid 1000 and `dependaproxy` as uid 65532. If
-> the `data/` dirs aren't writable by their uid, run
-> `sudo chown -R 1000:1000 data/mirror data/audit && sudo chown -R 65532:65532 data/dependaproxy-cache`.
-
----
-
-## Run
+Then open **`http://127.0.0.1:8000/?token=<OPERATOR_API_TOKEN>`** (the UI stores
+the token and strips it from the URL), click **New agent**, and a terminal
+opens on it. Or drive the REST API:
 
 ```sh
-docker compose up -d --build
-docker compose ps          # ollama + docker must be healthy; claude starts after them
-
-# Interactive Claude Code session (backed by Ollama, routed through git-proxy):
-docker compose exec claude claude
-
-# Headless one-shot:
-docker compose exec claude claude -p "Clone the repo, add hello.txt on feat/test, push, open a PR"
+curl -fsS -H "Authorization: Bearer $OPERATOR_API_TOKEN" http://127.0.0.1:8000/api/agents
 ```
 
-The `claude` entrypoint sets `git insteadOf` so every `https://github.com/<x>` URL
-is rewritten to `http://git-proxy:8080/<x>` with the agent Bearer attached, and
-drops the `use-git-proxy` + `use-docker` + `use-dependaproxy` skills and
-`CLAUDE.md` into `/workspace/.claude/`. So ordinary `git clone`/`push`/`fetch`
-flow through the proxy with no extra flags, and PRs / CI status / **CI job logs**
-(`broker.allow_check_logs` is on in `config.yaml`) / issues go through the broker
-via the `use-git-proxy` skill (no `gh` CLI); `use-dependaproxy` covers installing
-dependencies — including a committed lockfile — when the only route to a registry
-is the proxy. The entrypoint also writes the registry
-configs from env: `.npmrc` (`registry=http://dependaproxy:8080/npm`) to
-`/home/node/.npmrc` and a shared copy at `/workspace/.npmrc`, plus
-`/workspace/pip.env` (`PIP_INDEX_URL` + `PIP_TRUSTED_HOST`) and
-`/workspace/go.env` (`GOPROXY`). The `use-docker` skill passes these into
-workload containers via `--env-file`.
+`docker compose up` here just `include:`s `docker-operator/docker-compose.yaml`;
+run `docker compose` from `docker-operator/` instead if you prefer (put `.env`
+there — see `docker-operator/.env.example`). Everything else — the web UI
+walkthrough, per-agent backends, the full REST API, authenticating the API,
+in-place agent image upgrades, troubleshooting — is in
+[`docker-operator/README.md`](docker-operator/README.md).
 
-### Registries (DependaProxy)
-
-Every npm/pip/Go fetch in the sandbox goes through DependaProxy — there is no
-other way to get dependencies:
-
-- **claude's own npm** (`/home/node/.npmrc`) already points at the proxy; `npm`
-  on the agent container resolves `dependaproxy` on proxynet.
-- **Workload containers** mount/pass the shared configs, add the host entry for
-  the static dinernet IP (the nested daemon can't resolve compose names), and run
-  as uid 1000 so installed files belong to the agent:
-  ```sh
-  # npm
-  docker run --rm -u node -v /workspace:/work -w /work \
-    -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
-    node:22-alpine sh -c 'npm install'
-  # pip
-  docker run --rm -v /workspace:/work -w /work \
-    --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
-    python:3-alpine sh -c 'pip install -r requirements.txt'
-  # go
-  docker run --rm -v /workspace:/work -w /work \
-    --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
-    golang:1-alpine go mod download
-  ```
-- **Enforcement:** the DinD daemon (`scripts/dind-init.sh`) inserts iptables
-  REJECTs for the public npm/pypi/Go hosts, so workloads cannot reach a public
-  registry even if an agent overrides the registry setting.
-
-### Ollama: local vs cloud
-
-- **Cloud (default):** `OLLAMA_MODEL=glm-5.2:cloud` with the `./.ollama`
-  device key registered (prerequisites #5). The daemon proxies to ollama.com and
-  authenticates with that key — no `OLLAMA_API_KEY` needed.
-- **Local:** pull a model into the daemon, then switch the model:
-  ```sh
-  docker compose exec ollama ollama pull qwen3:8b
-  # in .env: OLLAMA_MODEL=qwen3:8b
-  docker compose up -d   # restart claude to pick up the new model
-  ```
-  Local models run on CPU (no GPU on the target host).
-
-### Dev dependencies (mysql, minio, postgres, …)
-
-Not in the base compose. The agent stands them up inside the isolated DinD daemon
-on demand — see the `use-docker` skill (e.g. `docker run -d --name mysql -e
-MYSQL_ROOT_PASSWORD=... mysql:8`). Workload containers share `/workspace` only
-and cannot reach git-proxy.
-
-### Claude Code plugins (optional)
-
-Plugins persist on the `claude-config` volume. Install from inside a session:
-```sh
-claude plugin install superpowers@claude-plugins-official
-claude plugin install code-simplifier@claude-plugins-official
-# …
-```
+> **uid note:** `git-proxy` runs as uid 1000, `dependaproxy` as uid 65532. If the
+> `docker-operator/data/` dirs aren't writable by their uid, run
+> `sudo chown -R 1000:1000 docker-operator/data/{mirror,audit} && sudo chown -R 65532:65532 docker-operator/data/dependaproxy-cache`.
 
 ---
 
 ## Credential-leak guarantees
 
-- **The agent never receives the GitHub PAT.** It only has `AGENT_TOKEN`, a
-  low-value bearer mapped to an auditable identity in `config.yaml` (`auth.tokens`).
-  The PAT lives only in `credentials.yaml` (bind-mounted read-only into git-proxy)
-  or the `GITHUB_TOKEN` env var; git-proxy attaches it on the proxy→GitHub leg.
+- **Agents never receive the GitHub PAT.** Each has only `AGENT_TOKEN`, a
+  low-value bearer mapped to an auditable identity in `config.yaml`
+  (`auth.tokens`). The PAT lives only in `credentials.yaml` (bind-mounted
+  read-only into git-proxy) or the `GITHUB_TOKEN` env var; git-proxy attaches it
+  on the proxy→GitHub leg.
 - **No `gh` CLI, no direct GitHub API.** `git` traffic is rewritten to the proxy;
-  PRs/issues/CI go through the broker. The agent has no token that grants upstream
-  access.
+  PRs / issues / CI go through the broker.
+- **The operator's Docker socket never reaches an agent.** The operator sits on
+  its own network, joined by nothing else, and drives agents through the socket —
+  never over the network. It logs a startup warning if it finds itself reachable
+  from the agent network.
 - **Push policy** (`config.yaml`): `secret_scan` rejects secret-bearing pushes
-  (redacted reasons), `history_protect` blocks force-push to `main`, `branch_pattern`
-  restricts pushes to `main` + `feat/*`, `read.deny: ["secrets/**"]` withholds
-  secret blobs from fetch.
-- **Audit log** is append-only JSONL at `data/audit/audit.jsonl` with no credential
-  content. No-leak check:
+  (redacted reasons), `history_protect` blocks force-push to `main`,
+  `branch_pattern` restricts pushes to `main` + `feat/*`,
+  `read.deny: ["secrets/**"]` withholds secret blobs from fetch.
+- **Audit log** is append-only JSONL at `docker-operator/data/audit/audit.jsonl`
+  with no credential content:
   ```sh
-  grep -E 'ghp_|github_pat_|x-access-token' data/audit/audit.jsonl   # should be empty
+  grep -E 'ghp_|github_pat_|x-access-token' docker-operator/data/audit/audit.jsonl   # should be empty
   ```
-- **No secrets in images.** All credentials are runtime env/bind-mounts; the
-  `.dockerignore` excludes `.env`, `credentials.yaml`, `dependaproxy.yaml`,
-  `data/`, and runtime state from the `claude` build context.
-- **Dependencies are proxy-only.** The public npm/pypi/Go registries are
-  network-blocked from the DinD daemon — so the agent cannot fetch dependencies
-  outside DependaProxy. DependaProxy auth is disabled in this stack (the proxy is
-  on isolated internal networks; Go's module client refuses credentials over
-  plaintext HTTP), so there is no proxy token to leak.
+- **No secrets in images.** All credentials are runtime env / bind-mounts; the
+  root `.dockerignore` keeps `.env`, `credentials.yaml`, `config.yaml`,
+  `dependaproxy.yaml` and runtime state out of the operator image build contexts.
+- **Dependencies are proxy-only.** The public npm / PyPI / Go registries are
+  network-blocked from every DinD daemon, and DependaProxy auth is disabled (the
+  proxy is on isolated internal networks), so there is no proxy token to leak.
 - **Repo self-check** before committing:
   ```sh
   bash scripts/check-no-secrets.sh
   ```
-  Fails on real PAT/key patterns in tracked files (`credentials.yaml` and
-  `.env.example` use placeholders that do not match).
-
----
-
-## Troubleshooting
-
-- **Bash tool fails with `EACCES: permission denied, mkdir '/home/node/.claude-sandbox/session-env'`** —
-  the `claude-config` named volume was created root-owned (it predates the
-  `mkdir` in the `Dockerfile` that seeds it node-owned). Recreate it once so it
-  picks up the node-owned seed from the rebuilt image:
-  ```sh
-  docker compose down
-  docker volume rm ai-sandbox_claude-config   # project-prefixed name; check `docker volume ls`
-  docker compose up -d --build
-  ```
-  (This touches only `claude-config`; `workspace` and `docker-cache` are
-  preserved. If you used `docker compose down -v`, all named volumes are
-  recreated — fine, they're caches/state, not the repo.)
-- **`docker` commands from the agent fail with `Client sent an HTTP request to an HTTPS server`** —
-  the `docker:27-dind` image defaults `DOCKER_TLS_CERTDIR=/certs`, which makes
-  the entrypoint start dockerd with `--tlsverify` on the TCP port while the agent
-  client connects plain HTTP. Fixed by `DOCKER_TLS_CERTDIR: ""` on the `docker`
-  service (plain HTTP on the isolated `dinernet`). If you removed that env line,
-  restore it, then `docker compose up -d --build docker` and retry.
-- **Subagents (Task/Explore) fail with `model may not exist or you may not have access`** (`claude-opus-5`/`claude-sonnet-5`) —
-  the sonnet/opus model tiers weren't mapped to the Ollama model. This is fixed
-  by `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` in
-  `docker-compose.yaml`; rebuild/recreate the `claude` container to pick it up:
-  `docker compose up -d --build claude`.
-- **Ollama `401` on `:cloud` models** — the local daemon authenticates the
-  *device* with the SSH keypair in `./.ollama` (set up by `ollama signin`), not
-  an API key. See prerequisites #5: bind-mount a registered `.ollama/` folder or
-  run `docker compose exec ollama ollama signin` once.
-
----
-
-## Verification (end-to-end, on the Ubuntu host)
-
-1. `curl http://127.0.0.1:8090/healthz` → `{"status":"ok"}`.
-2. `docker compose exec claude env | grep -i token` → only `AGENT_TOKEN`, no `ghp_`/`github_pat_`.
-3. From inside a `claude` session, clone the configured repo (rewritten to the
-   proxy), push a `feat/test` branch, open a PR via the `use-git-proxy` skill.
-   Confirm a push to `main` and a `--force` are both rejected by policy.
-4. DependaProxy + registry routing:
-   ```sh
-   # the proxy is up (open /healthz):
-   docker compose exec claude curl -s http://dependaproxy:8080/healthz          # {"status":"ok"}
-   # claude's OWN npm goes through the proxy:
-   docker compose exec claude npm view lodash version --registry http://dependaproxy:8080/npm
-   # a workload container installs through the proxy (mounts the shared .npmrc,
-   # runs as uid 1000 so installed files belong to the agent):
-   docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
-     -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
-     node:22-alpine sh -c 'npm install lodash && node -e "require(\"lodash\")"'
-   # pip through the proxy (passes pip.env):
-   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
-     --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
-     python:3-alpine sh -c 'pip install requests && python -c "import requests"'
-   # go through the proxy (passes go.env):
-   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
-     --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
-     golang:1-alpine sh -c 'cd /work && go mod init example.com/hello && go get github.com/google/uuid'
-   # the public registries are BLOCKED from workloads — these must fail:
-   docker compose exec claude docker run --rm -u node -v /workspace:/work -w /work \
-     node:22-alpine sh -c 'npm install --registry=https://registry.npmjs.org lodash' || echo 'blocked as expected'
-   docker compose exec claude docker run --rm -v /workspace:/work -w /work \
-     python:3-alpine sh -c 'pip install --index-url https://pypi.org/simple requests' || echo 'blocked as expected'
-   ```
-5. DinD isolation:
-   ```sh
-   docker compose exec claude docker run --rm -v /workspace:/work -w /work node:22-alpine node -e 'console.log(42)'
-   # the DinD daemon CANNOT reach git-proxy:
-   docker compose exec claude docker run --rm alpine sh -c 'wget -qO- http://git-proxy:8080 || echo blocked'
-   ```
-6. `bash scripts/check-no-secrets.sh` passes on a clean tree.
 
 ---
 
 ## Files
 
-- `docker-compose.yaml` — the 5-service stack.
-- `Dockerfile` — slim agent image (node:22-alpine + claude-code + git + docker-cli).
-- `claude-code/entrypoint.sh` — sets `insteadOf`/`extraHeader`, drops skills + CLAUDE.md, writes `.npmrc` + `pip.env` + `go.env` (npm/pip/go → DependaProxy), `exec "$@"`.
-- `claude-code/agent-context/CLAUDE.md` — always-loaded agent context (two execution surfaces, rules).
-- `claude-code/use-git-proxy/SKILL.md` — git-protocol + broker REST skill (sourced from the git-proxy repo).
-- `claude-code/use-docker/SKILL.md` — rootless DinD skill with mysql/minio/postgres recipes + mandatory npm/pip/go → DependaProxy.
-- `claude-code/use-sandbox/SKILL.md` — ai-sandbox operator sidecar control API (`/v1/wait`, `/v1/done`, `/v1/progress`, `/v1/status`) — only relevant inside an operator-managed SandboxEnvironment pod.
-- `claude-code/implement-issue/SKILL.md` — tiered-model issue pipeline (Opus plans, Sonnet implements, Opus validates & fixes → PR).
-- `claude-code/store-file/SKILL.md` — the docker-operator's centralized `/workspace/store` file store (`cp` recipes, persistence contract); baked into the docker-operator agent image only.
-- `config.yaml` — git-proxy config (github upstream, broker, policy, audit).
-- `credentials.yaml` — GitHub PAT profile (PLACEHOLDERS ONLY — never commit a real PAT).
-- `dependaproxy.yaml` — DependaProxy config (npm/pypi/goproxy registries, token placeholder, postgres DSN).
-- `scripts/dind-init.sh` — DinD entrypoint override that blocks egress to the public npm/pypi/Go registries.
-- `.env.example` — operator secrets template (copy to `.env`).
+- `docker-compose.yaml` — the default stack; a thin `include:` of
+  `docker-operator/docker-compose.yaml`.
+- `docker-operator/` — the Docker-native multi-agent orchestrator: the Go binary,
+  the agent image (`docker-operator/agent/`), its `docker-compose.yaml`, and its
+  own README. **Start here.**
+- `operator/` — the Kubernetes operator: `SandboxClass` / `SandboxEnvironment`
+  CRDs, the reconciler, the `sandboxctl` sidecar, a Helm chart.
+- `claude-code/` — assets baked into the agent images: `entrypoint.sh`,
+  `agent-context/CLAUDE.md`, and the `use-git-proxy` / `use-dependaproxy` /
+  `implement-issue` / `store-file` skills. (`use-docker` for the docker-operator
+  agent is a local fork in `docker-operator/agent/skills/`.)
+- `config.yaml` — git-proxy config (upstream, broker, policy, audit).
+- `credentials.yaml` — GitHub PAT profile (PLACEHOLDERS ONLY — never commit a
+  real PAT).
+- `dependaproxy.yaml` — DependaProxy config (registries, postgres DSN).
+- `scripts/dind-init.sh` — DinD entrypoint override that blocks egress to the
+  public npm / PyPI / Go registries (the single source of truth; the operator
+  embeds a copy).
+- `scripts/check-no-secrets.sh` — pre-commit secret-scan backstop.
+- `.env.example` — the stack's `.env` template (copy to `.env` at the repo root).
 - `setup-ubuntu-host.sh` — installs Docker + sysbox-ce on Ubuntu 24.04.
-- `scripts/check-no-secrets.sh` — pre-commit secret scan backstop.
-- `operator/` — the Kubernetes operator: `SandboxClass`/`SandboxEnvironment` CRDs, the reconciler, the `sandboxctl` sidecar, and a Helm chart. See [`operator/README.md`](operator/README.md) and the [compose-vs-operator comparison](#two-ways-to-run-this-the-compose-stack-or-the-kubernetes-operator) above; design context in [issue #15](https://github.com/psenna/ai-sandbox/issues/15).
+
+---
 
 ## Teardown
 
 ```sh
-docker compose down -v        # removes containers + named volumes (workspace, docker-cache, claude-config, pgdata)
-sudo rm -rf data              # git-proxy mirror cache + audit log + dependaproxy package cache
-# ./.ollama (the registered device key + models) is a bind mount, NOT a named
-# volume — `down -v` leaves it on the host. Remove it only if you want to.
+docker compose down -v        # containers + volumes (docker-operator_pgdata,
+                              # docker-operator_operator-state, docker-operator-filestore)
+sudo rm -rf docker-operator/data   # git-proxy mirror + audit + dependaproxy cache
+# ./.ollama (the registered device key + models) is a bind mount, not a named
+# volume — `down -v` leaves it. Any running agents' containers/volumes are the
+# operator's to remove (DELETE /api/agents/{id}, or the web UI) — `down` does not
+# touch them.
 ```

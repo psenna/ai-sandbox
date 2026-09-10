@@ -1,12 +1,12 @@
 # ai-sandbox operator
 
 A Kubernetes operator that runs the same kind of AI-coding-agent sandbox as
-the [root repository's compose stack](../README.md), but as a cluster
-resource: `kubectl apply` a `SandboxEnvironment` instead of attaching to a
-container, get many concurrent policy-isolated runs instead of one, and get
-freeze/wake so a run can pause for hours without holding a slot. See the
-root README's [compose-vs-operator
-comparison](../README.md#two-ways-to-run-this-the-compose-stack-or-the-kubernetes-operator)
+the [repository's default `docker-operator` stack](../docker-operator/README.md),
+but as a cluster resource: `kubectl apply` a `SandboxEnvironment` instead of
+clicking **New agent** in a web UI, get cluster-scheduled policy-isolated runs,
+and get freeze/wake so a run can pause for hours without holding a slot. See the
+root README's [docker-operator-vs-Kubernetes-operator
+comparison](../README.md#two-ways-to-run-this-the-docker-operator-or-the-kubernetes-operator)
 if you have not picked which one you want yet.
 
 ## What it does

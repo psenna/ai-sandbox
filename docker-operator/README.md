@@ -4,10 +4,11 @@ A Docker-native multi-agent orchestrator for ai-sandbox: create, list, watch
 and delete Claude Code agent containers through a REST API and a small web
 UI with a live terminal per agent — the same multi-agent, web-UI-driven
 experience as the [Kubernetes operator](../operator/README.md), but on
-plain Docker, single host, no cluster required. See the root README's
-[compose-vs-operator
-comparison](../README.md#two-ways-to-run-this-the-compose-stack-or-the-kubernetes-operator)
-for how this fits next to the other two ways to run this repo.
+plain Docker, single host, no cluster required. This is the repository's
+**default** stack — `docker compose up` at the repo root brings it up. See
+the root README's [docker-operator-vs-Kubernetes-operator
+comparison](../README.md#two-ways-to-run-this-the-docker-operator-or-the-kubernetes-operator)
+for when to reach for the cluster operator instead.
 
 V1 is a local-only tool: it binds `127.0.0.1`, and one shared GitHub repo +
 token serves every agent. The operator's own REST API and terminal
@@ -91,13 +92,13 @@ carrying the `ai-sandbox.docker-operator/managed` label on startup, so a
 mid-operation crash never leaves an orphaned container/volume/network
 untracked.
 
-**Each agent** gets its own DinD sidecar (mirrors the root compose stack's
-single `docker:27-dind` + `sysbox-runc`, templated per agent instead of a
-singleton) so it keeps `use-docker` capability without sharing a daemon —
-or a network — with any other agent. `docker-operator/agent/skills/
-use-docker/SKILL.md` is a local fork of the root stack's skill for exactly
-this reason: there is no longer one static DependaProxy IP shared by every
-agent, so its examples read `/workspace/dependaproxy-ip` (written by
+**Each agent** gets its own DinD sidecar (a `docker:27-dind` + `sysbox-runc`
+pair templated per agent, rather than one daemon shared by everyone) so it
+keeps `use-docker` capability without sharing a daemon — or a network — with
+any other agent. `docker-operator/agent/skills/
+use-docker/SKILL.md` is a local fork of the shared `claude-code/use-docker`
+skill for exactly this reason: there is no one static DependaProxy IP shared
+by every agent, so its examples read `/workspace/dependaproxy-ip` (written by
 `entrypoint.sh`) instead.
 
 **The terminal** is `tmux` inside the agent container, not a PTY the
@@ -334,9 +335,9 @@ docker-operator agent image only) describing the `cp` recipes both ways.
 Run these from the **`docker-operator/`** directory. You need `docker` and
 `docker compose` on `PATH`, and this repo checked out one level up (the
 compose file reads `../config.yaml`, `../credentials.yaml`,
-`../dependaproxy.yaml` — git-proxy/DependaProxy configuration shared with
-the root compose stack, already committed with safe placeholders, see the
-root [README's Setup section](../README.md#setup)). Total time depends
+`../dependaproxy.yaml` — git-proxy/DependaProxy configuration at the repo
+root, already committed with safe placeholders, see the root
+[README's Quickstart](../README.md#quickstart)). Total time depends
 mostly on pulling the `ollama` image.
 
 **Every command in this section is executed verbatim in CI** by
@@ -441,17 +442,17 @@ itself declares.
 Each agent's `dinernet` is already private and per-agent (never shared, see
 [Resource naming](#resource-naming-reference)) — the seam a squid-like
 forward proxy would sit on to restrict an agent's DinD workload containers
-to an allow-listed set of external hosts, the same way the root compose
-stack's single shared `dinernet` restricts everyone today via
-`scripts/dind-init.sh`. Nothing here implements that yet; the per-agent
+to an allow-listed set of external hosts, on top of what
+`scripts/dind-init.sh` already blocks (the public npm/PyPI/Go registries).
+Nothing here implements that yet; the per-agent
 network boundary exists specifically so it can be added later without
 rearchitecting anything above it.
 
 ## Development
 
 Copy [`.env.example`](.env.example) to `.env` and fill it in — see the root
-README's [Setup section](../README.md#setup) for `config.yaml`/
-`credentials.yaml`, which this stack shares with the root compose stack.
+README's [Quickstart](../README.md#quickstart) for `config.yaml` /
+`credentials.yaml`, which live at the repo root and this stack mounts via `../`.
 
 Before committing, run the repo-wide secret scan from the repository root:
 

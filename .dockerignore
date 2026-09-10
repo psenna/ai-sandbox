@@ -1,6 +1,10 @@
-# Keep secrets and runtime state out of the claude image build context.
-# (The Dockerfile only COPYs claude-code/** — this is a backstop so a stray
-# .env or credentials file can never leak into an image layer.)
+# Keep secrets and runtime state out of the operator image build contexts.
+# BOTH docker-operator images build with the context rooted here:
+#   - docker-operator/Dockerfile        (the operator binary; COPYs docker-operator/)
+#   - docker-operator/agent/Dockerfile  (the agent image; COPYs claude-code/** +
+#                                        docker-operator/agent/**)
+# Neither COPYs any path below, so this is a backstop: a stray .env / credentials
+# file / audit log can never land in a build context or an image layer.
 .git
 .gitignore
 .env
@@ -9,6 +13,11 @@ credentials.yaml
 config.yaml
 dependaproxy.yaml
 data/
+docker-operator/data/
+docker-operator/.env
+docker-operator/bin/
+docker-operator/cover.out
+docker-operator/.quickstart-artifacts/
 .ollama/
 .claude/
 code/

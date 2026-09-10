@@ -30,6 +30,7 @@ on:
       - 'docker-operator/hack/quickstart-check.sh'
       - 'docker-operator/docker-compose.yaml'
       - 'docker-operator/Dockerfile'
+      - 'docker-compose.yaml'
       - 'config.yaml'
       - 'credentials.yaml'
       - 'dependaproxy.yaml'
