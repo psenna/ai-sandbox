@@ -88,26 +88,40 @@
 		return backend;
 	}
 
-	// renderCreateForm renders the "New Agent" form. defaults pre-fills the
-	// backend choice, the Ollama server + two model fields and the repo from
-	// the operator's configuration (GET /api/agents' default_* fields). The
-	// Ollama server field is left blank with the operator's default shown as
-	// its placeholder, so submitting it untouched means "use the operator
-	// default". The caller wires the backend radio to show/hide
-	// .create-form__ollama and submits the form's values to POST /api/agents.
+	// renderCreateForm renders the "New Agent" form -- also the "Update agent"
+	// form when opts.{title,submitLabel} say so. defaults pre-fills the backend
+	// choice, the Ollama server + two model fields and the repo from the
+	// operator's configuration (GET /api/agents' default_* fields). The Ollama
+	// server field is left blank with the operator's default shown as its
+	// placeholder, so submitting it untouched means "use the operator default".
+	//
+	// opts.values, when given (the update form passes the agent record),
+	// OVERRIDES those defaults field by field so the form opens pre-filled with
+	// the agent's current backend/model/fast_model/ollama_url/repo/
+	// auto_compact_threshold/max_context_tokens and its current image tag. The
+	// caller wires the backend radio to show/hide .create-form__ollama and
+	// submits the form's values to POST /api/agents (or .../{id}/update).
 	function renderCreateForm(defaults, opts) {
 		defaults = defaults || {};
 		opts = opts || {};
 		var title = escapeHTML(opts.title || 'New agent');
 		var submitLabel = escapeHTML(opts.submitLabel || 'Create');
 		var values = opts.values || {};
-		var backend = defaults.backend === 'anthropic' ? 'anthropic' : 'ollama';
-		var model = escapeHTML(defaults.model || '');
-		var fastModel = escapeHTML(defaults.fastModel || '');
+		// values.* (the agent record, snake_case) wins over defaults.* (the
+		// operator config) so an update form opens on the agent's own settings.
+		var pick = function (v, d) { return (v === undefined || v === null || v === '') ? (d || '') : v; };
+		var backend = (values.backend || defaults.backend) === 'anthropic' ? 'anthropic' : 'ollama';
+		var model = escapeHTML(pick(values.model, defaults.model));
+		var fastModel = escapeHTML(pick(values.fast_model, defaults.fastModel));
 		var ollamaURL = escapeHTML(defaults.ollamaUrl || '');
-		var repo = escapeHTML(defaults.repo || '');
-		var autoCompact = escapeHTML(defaults.autoCompactThreshold || '');
-		var maxContextTokens = escapeHTML(defaults.maxContextTokens || '');
+		// Only emitted for the update form (opts.values carries a resolved
+		// ollama_url); the create form's field stays value-less so submitting
+		// it untouched means "use the operator default".
+		var ollamaURLAttr = values.ollama_url ? ' value="' + escapeHTML(values.ollama_url) + '"' : '';
+		var repo = escapeHTML(pick(values.repo, defaults.repo));
+		var autoCompact = escapeHTML(pick(values.auto_compact_threshold, defaults.autoCompactThreshold));
+		var maxContextTokens = escapeHTML(pick(values.max_context_tokens, defaults.maxContextTokens));
+		var selectedImageTag = values.image_tag || imageTagOf(values.image) || '';
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		var nameValue = escapeHTML(values.name || '');
 		var descriptionValue = escapeHTML(values.description || '');
@@ -120,7 +134,7 @@
 					'<input class="create-form__repo" type="text" value="' + repo + '" placeholder="owner/repo.git — blank for a bare terminal">' +
 				'</label>' +
 				'<label class="create-form__row">Agent image' +
-					renderImageTagSelect('create-form__image-tag', (defaults.imageTags || []), defaults.imageDefaultTag || '', values.image_tag || '') +
+					renderImageTagSelect('create-form__image-tag', (defaults.imageTags || []), defaults.imageDefaultTag || '', selectedImageTag) +
 				'</label>' +
 				'<label class="create-form__row">Auto-compact threshold' +
 					'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '" placeholder="Claude Code auto-compact threshold — blank to use the built-in default">' +
@@ -135,7 +149,7 @@
 				'</fieldset>' +
 				'<div class="create-form__ollama"' + ollamaHidden + '>' +
 					'<label class="create-form__row">Ollama server' +
-						'<input class="create-form__ollama-url" type="text" placeholder="' + (ollamaURL || 'operator default') + '">' +
+						'<input class="create-form__ollama-url" type="text"' + ollamaURLAttr + ' placeholder="' + (ollamaURL || 'operator default') + '">' +
 					'</label>' +
 					'<label class="create-form__row">Opus-tier model<input class="create-form__model" type="text" value="' + model + '"></label>' +
 					'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +

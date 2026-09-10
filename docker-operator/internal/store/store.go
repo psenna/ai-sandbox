@@ -66,6 +66,15 @@ const (
 	// StatusDeleting means teardown has begun. It is set first, before any
 	// resource is touched, which is what frees the slot immediately.
 	StatusDeleting Status = "deleting"
+	// StatusUpdating means an in-place update is running: the agent's
+	// container is being recreated (a new image, or a changed create-form
+	// field) under the same agent ID and the same volumes. It is set before
+	// any Docker call, so the old container's own "die"/"stop" event -- which
+	// the recreate generates -- hits the "not running" guard in
+	// MarkUnexpectedExit and does not flip the record to error. A record stuck
+	// in this state across a restart is proof of a crash mid-update; Reconcile
+	// marks it error (never tearing its volumes down).
+	StatusUpdating Status = "updating"
 )
 
 // Valid reports whether s is one of the defined states. Update rejects a
@@ -73,7 +82,7 @@ const (
 // make a record invisible to the capacity count.
 func (s Status) Valid() bool {
 	switch s {
-	case StatusCreating, StatusRunning, StatusStopped, StatusError, StatusDeleting:
+	case StatusCreating, StatusRunning, StatusStopped, StatusError, StatusDeleting, StatusUpdating:
 		return true
 	default:
 		return false
@@ -83,14 +92,17 @@ func (s Status) Valid() bool {
 // CountsTowardCapacity reports whether an agent in this state occupies one
 // of the MAX_AGENTS slots.
 //
-// Only creating and running do. Deleting is excluded on purpose, so a delete
-// frees the slot the moment it is marked rather than after the slow Docker
-// teardown. Stopped and error are excluded because an agent in either state
-// is waiting on a human to delete or retry it and should not hold the host's
-// last slot hostage; note this means the cap bounds *live* agents, not the
-// volumes a stopped agent still occupies on disk.
+// Creating, running and updating do. Deleting is excluded on purpose, so a
+// delete frees the slot the moment it is marked rather than after the slow
+// Docker teardown. Updating IS included: an updating agent is a live agent
+// mid-recreate that keeps its ID, its volumes and its slot -- releasing the
+// slot here would let a racing create over-admit against the cap. Stopped and
+// error are excluded because an agent in either state is waiting on a human to
+// delete or retry it and should not hold the host's last slot hostage; note
+// this means the cap bounds *live* agents, not the volumes a stopped agent
+// still occupies on disk.
 func (s Status) CountsTowardCapacity() bool {
-	return s == StatusCreating || s == StatusRunning
+	return s == StatusCreating || s == StatusRunning || s == StatusUpdating
 }
 
 // Agent is one persisted agent record.
@@ -110,9 +122,10 @@ type Agent struct {
 	Description string `json:"description"`
 
 	// Backend is the LLM backend this agent was created against:
-	// config.BackendOllama or config.BackendAnthropic. Immutable after
-	// create -- switching an existing agent's backend would need its
-	// environment rebuilt, i.e. a fresh container. Empty on records written
+	// config.BackendOllama or config.BackendAnthropic. Set at create; Update
+	// may change it (which is exactly why Update recreates the container --
+	// switching an existing agent's backend needs its environment rebuilt).
+	// Empty on records written
 	// before this field existed; internal/agent treats empty as
 	// BackendOllama for backward compatibility.
 	Backend string `json:"backend,omitempty"`

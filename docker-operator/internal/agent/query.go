@@ -106,7 +106,18 @@ func (m *Manager) ClearAnthropicAuth(ctx context.Context) error {
 // without writing a spurious UpdatedAt bump; the actual status change still
 // happens inside store.Update's own transaction, so a status change racing
 // this check is not lost, only possibly redone.
-func (m *Manager) MarkUnexpectedExit(ctx context.Context, id string, newStatus store.Status, message string) error {
+//
+// containerID is the ID of the container the event fired on (the Docker
+// event's actor ID). When it and the record's own ContainerID are both set
+// and differ, the event belongs to a container this record no longer owns --
+// the classic case is the OLD container's "die"/"stop" that an in-place
+// Update's recreate generates, arriving after Update has already stamped the
+// record with the NEW container's ID. That is not an unexpected exit, so it is
+// a no-op. Checked both before store.Update and inside its mutator, because
+// the record's ContainerID can change between the two. An empty containerID
+// (an event source that names none) disables the guard, preserving the old
+// behaviour.
+func (m *Manager) MarkUnexpectedExit(ctx context.Context, id, containerID string, newStatus store.Status, message string) error {
 	a, err := m.store.Get(ctx, id)
 	if err != nil {
 		return err
@@ -114,8 +125,14 @@ func (m *Manager) MarkUnexpectedExit(ctx context.Context, id string, newStatus s
 	if a.Status != store.StatusRunning {
 		return nil
 	}
+	if isStaleContainerEvent(containerID, a.ContainerID) {
+		return nil
+	}
 	_, err = m.store.Update(ctx, id, func(ag *store.Agent) error {
 		if ag.Status != store.StatusRunning {
+			return nil
+		}
+		if isStaleContainerEvent(containerID, ag.ContainerID) {
 			return nil
 		}
 		ag.Status = newStatus
@@ -123,6 +140,13 @@ func (m *Manager) MarkUnexpectedExit(ctx context.Context, id string, newStatus s
 		return nil
 	})
 	return err
+}
+
+// isStaleContainerEvent reports whether a container event fired on eventID
+// concerns a container the record (now on recordID) no longer owns. Both must
+// be non-empty to conclude anything: an empty eventID disables the guard.
+func isStaleContainerEvent(eventID, recordID string) bool {
+	return eventID != "" && recordID != "" && eventID != recordID
 }
 
 // Rename updates an agent's Name and/or Description. A nil pointer leaves

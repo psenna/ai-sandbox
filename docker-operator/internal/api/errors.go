@@ -28,12 +28,16 @@ type ErrorBody struct {
 
 // Known error codes.
 const (
-	CodeBadJSON          = "bad_json"
-	CodeMissingField     = "missing_field"
-	CodeInvalidParam     = "invalid_param"
-	CodeNotFound         = "not_found"
-	CodeAtCapacity       = "at_capacity"
-	CodeNoAnthropicAuth  = "no_anthropic_auth"
+	CodeBadJSON         = "bad_json"
+	CodeMissingField    = "missing_field"
+	CodeInvalidParam    = "invalid_param"
+	CodeNotFound        = "not_found"
+	CodeAtCapacity      = "at_capacity"
+	CodeNoAnthropicAuth = "no_anthropic_auth"
+	// CodeNotUpdatable is returned (409) by POST /api/agents/{id}/update when
+	// the agent is not in a state an in-place update can start from
+	// (only running, stopped and error are updatable).
+	CodeNotUpdatable     = "not_updatable"
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeInternal         = "internal"
 

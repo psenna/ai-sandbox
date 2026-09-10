@@ -5,13 +5,17 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
 const (
@@ -151,6 +155,65 @@ func TestStartAgentImageRefresher_PollsOnceThenTicks(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if got := r.count(); got != stable {
 		t.Errorf("refresher ran %d more times after stop", got-stable)
+	}
+}
+
+// TestHandleContainerEvent_PassesActorID proves handleContainerEvent forwards
+// the Docker event's actor ID to MarkUnexpectedExit: a "die" event whose actor
+// is not the agent record's current container (the stale OLD container an
+// in-place update recreated away) is ignored, while one on the current
+// container still flips the record.
+func TestHandleContainerEvent_PassesActorID(t *testing.T) {
+	ctx := context.Background()
+	log, _ := capturingLogger()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.db"), 5)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	mgr := agent.NewManager(dockerclienttest.New(), nil, st, config.Config{AgentImage: "x:dev"}, log, agent.Options{})
+
+	a, err := st.Create(ctx, store.CreateSpec{ID: "agt_evt"})
+	if err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	if _, err := st.Update(ctx, a.ID, func(ag *store.Agent) error {
+		ag.ContainerID = "current-container"
+		ag.Status = store.StatusRunning
+		return nil
+	}); err != nil {
+		t.Fatalf("store.Update: %v", err)
+	}
+
+	evt := func(actorID string) dockerclient.Event {
+		return dockerclient.Event{
+			Type:    dockerclient.EventTypeContainer,
+			Action:  dockerclient.ActionDie,
+			ActorID: actorID,
+			Attributes: map[string]string{
+				agent.LabelRole:    string(agent.RoleAgent),
+				agent.LabelAgentID: a.ID,
+			},
+		}
+	}
+
+	handleContainerEvent(ctx, mgr, evt("stale-old-container"), log)
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Fatalf("after a stale-actor die event, Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+
+	handleContainerEvent(ctx, mgr, evt("current-container"), log)
+	got, err = st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusError {
+		t.Fatalf("after a current-actor die event, Status = %q, want %q", got.Status, store.StatusError)
 	}
 }
 
