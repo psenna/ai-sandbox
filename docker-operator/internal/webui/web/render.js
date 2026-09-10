@@ -283,54 +283,40 @@
 		return 'checked ' + days + ' day' + (days === 1 ? '' : 's') + ' ago';
 	}
 
-	// renderImageTagSelect renders a <select> whose first option is the
-	// operator's default image tag (labelled "<tag> (default)" and the fallback
-	// selection), followed by the discovered date-time tags newest-first and
-	// de-duplicated (the default removed from that tail). A truthy selectedTag
-	// that is not otherwise listed is added so it stays selectable. Every value
-	// is escaped.
+	// renderImageTagSelect renders a <select> over the union of the discovered
+	// tags, the operator's default tag, and selectedTag -- de-duplicated and
+	// ordered newest-first (a plain descending string sort: chronological for
+	// the YYYYMMDD-HHMMSS date-time tags, and "latest" sorts above the digits).
+	// The operator's default keeps its natural position and is only marked
+	// "<tag> (default)"; it is not hoisted to the top. selectedTag (else the
+	// default, else "") is the selected option. Every value is escaped.
 	function renderImageTagSelect(cls, tags, operatorDefaultTag, selectedTag) {
 		var def = String(operatorDefaultTag || '');
 		var selected = String(selectedTag || '');
-		var options = [];
-		var seen = {};
 
-		options.push({ value: def, label: def ? def + ' (default)' : '(operator default)' });
-		seen[def] = true;
-
-		newestFirstUnique(tags).forEach(function (t) {
-			if (seen[t]) return;
-			seen[t] = true;
-			options.push({ value: t, label: t });
+		var all = {};
+		(tags || []).forEach(function (t) {
+			t = String(t || '');
+			if (t) all[t] = true;
 		});
+		if (def) all[def] = true;
+		if (selected) all[selected] = true;
 
-		if (selected && !seen[selected]) {
-			options.push({ value: selected, label: selected });
-			seen[selected] = true;
-		}
+		var ordered = Object.keys(all).sort().reverse();
+		var matched = selected && all[selected] ? selected : def;
 
-		var matched = selected && seen[selected] ? selected : def;
 		var html = '<select class="' + escapeHTML(cls) + '">';
-		options.forEach(function (o) {
-			html += '<option value="' + escapeHTML(o.value) + '"' +
-				(o.value === matched ? ' selected' : '') + '>' + escapeHTML(o.label) + '</option>';
+		if (!def) {
+			// No operator default (e.g. a digest-pinned AGENT_IMAGE): offer a
+			// blank option so "leave as the operator default" stays submittable.
+			html += '<option value=""' + (matched === '' ? ' selected' : '') + '>(operator default)</option>';
+		}
+		ordered.forEach(function (t) {
+			var label = t === def ? t + ' (default)' : t;
+			html += '<option value="' + escapeHTML(t) + '"' +
+				(t === matched ? ' selected' : '') + '>' + escapeHTML(label) + '</option>';
 		});
 		return html + '</select>';
-	}
-
-	// newestFirstUnique returns the date-time tags of tags, de-duplicated and
-	// sorted newest-first.
-	function newestFirstUnique(tags) {
-		var seen = {};
-		var out = [];
-		(tags || []).forEach(function (t) {
-			if (!isDateTimeTag(t) || seen[t]) return;
-			seen[t] = true;
-			out.push(t);
-		});
-		out.sort();
-		out.reverse();
-		return out;
 	}
 
 	// renderAgentImagePanel renders the sidebar "Agent image" panel body from
