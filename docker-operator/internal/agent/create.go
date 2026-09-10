@@ -313,42 +313,17 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
 
-	// Resolve the backend before reserving a slot: an invalid backend, or a
-	// backend=anthropic request with no stored credential, is the caller's
-	// mistake and must not consume a slot even briefly.
-	rb, err := m.resolveBackend(ctx, req)
+	// Resolve every create-form field before reserving a slot: an invalid
+	// backend, a backend=anthropic request with no stored credential, a
+	// malformed repo / threshold, or a malformed per-agent image tag is the
+	// caller's mistake and must not consume a slot even briefly. Update shares
+	// resolveSpec (everything but the image ref, which it resolves itself
+	// because a per-agent tag substitution needs the record's own repository).
+	rs, err := m.resolveSpec(ctx, req)
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
 
-	// Same reasoning for the repo: a malformed one is a bad request, not a
-	// reason to burn a slot. Empty (no per-agent repo, no operator default)
-	// is fine -- the agent boots as a bare terminal.
-	repo := firstNonEmpty(req.Repo, m.cfg.GithubRepo)
-	if repo != "" && !config.ValidGithubRepo(repo) {
-		return store.Agent{}, fmt.Errorf("creating an agent: %w: %q", ErrInvalidRepo, repo)
-	}
-
-	// Auto-compact threshold: per-agent value, else the operator default.
-	// Empty (both) means the variable is omitted from the agent's environment
-	// in agentEnv, so the agent keeps Claude Code's built-in default. A
-	// resolved non-empty value must be an integer between 50 and 100: like the
-	// repo above, a malformed one is a bad request and must not consume a
-	// slot.
-	autoCompact := firstNonEmpty(req.AutoCompactThreshold, m.cfg.AutoCompactThreshold)
-	if autoCompact != "" && !config.ValidAutoCompactThreshold(autoCompact) {
-		return store.Agent{}, fmt.Errorf("creating an agent: %w: %q", ErrInvalidAutoCompactThreshold, autoCompact)
-	}
-
-	// Max-context token budget: the same per-agent-else-operator pattern. No
-	// validation: the token budget is a plain number with no sensible fixed
-	// range (it depends on the model's context window), so any non-negative
-	// integer shape the operator or caller names is passed through.
-	maxContextTokens := firstNonEmpty(req.MaxContextTokens, m.cfg.MaxContextTokens)
-
-	// Resolve the agent image reference before reserving a slot: a malformed
-	// per-agent tag is a bad request and must not burn a MAX_AGENTS slot, the
-	// same reasoning as the backend and repo checks above.
 	imageRef, err := m.resolveAgentImageRef(req.ImageTag)
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
@@ -360,21 +335,70 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	// which internal/api maps to 409.
 	a, err := m.store.Create(ctx, store.CreateSpec{
 		ID: id, Name: req.Name, Description: req.Description,
-		Backend: rb.kind, Model: rb.model, FastModel: rb.fastModel,
-		OllamaURL: rb.ollamaURL, Repo: repo,
-		AutoCompactThreshold: autoCompact,
-		MaxContextTokens:     maxContextTokens,
+		Backend: rs.rb.kind, Model: rs.rb.model, FastModel: rs.rb.fastModel,
+		OllamaURL: rs.rb.ollamaURL, Repo: rs.repo,
+		AutoCompactThreshold: rs.autoCompact,
+		MaxContextTokens:     rs.maxContextTokens,
 		Image:                imageRef,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
 	}
 
-	if err := m.build(ctx, &a, rb); err != nil {
+	if err := m.build(ctx, &a, rs.rb); err != nil {
 		m.rollback(ctx, a, err)
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
 	}
 	return a, nil
+}
+
+// resolvedSpec is the create-form fields resolved (request value, else
+// operator default) and validated: the backend, the repo, and the two
+// Claude-Code tuning knobs. Both Create and Update work them out this way, so
+// the resolution -- and its 4xx-mappable error space -- lives in one place.
+type resolvedSpec struct {
+	rb               resolvedBackend
+	repo             string
+	autoCompact      string
+	maxContextTokens string
+}
+
+// resolveSpec turns a CreateRequest into a resolvedSpec, or an error a caller
+// can map to a 4xx (ErrInvalidBackend, ErrNoAnthropicAuth, ErrInvalidRepo,
+// ErrInvalidOllamaURL, ErrInvalidAutoCompactThreshold). It mutates nothing --
+// it is called before either flow reserves a slot or touches Docker.
+func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest) (resolvedSpec, error) {
+	// The backend, from the request + operator config + (for anthropic) the
+	// stored shared credential.
+	rb, err := m.resolveBackend(ctx, req)
+	if err != nil {
+		return resolvedSpec{}, err
+	}
+
+	// The repo: a malformed one is a bad request, not a reason to burn a slot.
+	// Empty (no per-agent repo, no operator default) is fine -- the agent boots
+	// as a bare terminal.
+	repo := firstNonEmpty(req.Repo, m.cfg.GithubRepo)
+	if repo != "" && !config.ValidGithubRepo(repo) {
+		return resolvedSpec{}, fmt.Errorf("%w: %q", ErrInvalidRepo, repo)
+	}
+
+	// Auto-compact threshold: per-agent value, else the operator default.
+	// Empty (both) means the variable is omitted from the agent's environment
+	// in agentEnv, so the agent keeps Claude Code's built-in default. A
+	// resolved non-empty value must be an integer between 50 and 100.
+	autoCompact := firstNonEmpty(req.AutoCompactThreshold, m.cfg.AutoCompactThreshold)
+	if autoCompact != "" && !config.ValidAutoCompactThreshold(autoCompact) {
+		return resolvedSpec{}, fmt.Errorf("%w: %q", ErrInvalidAutoCompactThreshold, autoCompact)
+	}
+
+	// Max-context token budget: the same per-agent-else-operator pattern. No
+	// validation: the token budget is a plain number with no sensible fixed
+	// range (it depends on the model's context window), so any non-negative
+	// integer shape the operator or caller names is passed through.
+	maxContextTokens := firstNonEmpty(req.MaxContextTokens, m.cfg.MaxContextTokens)
+
+	return resolvedSpec{rb: rb, repo: repo, autoCompact: autoCompact, maxContextTokens: maxContextTokens}, nil
 }
 
 // resolveBackend turns a CreateRequest's backend fields + the operator config
@@ -688,8 +712,13 @@ func (m *Manager) connectDependaproxy(ctx context.Context, a *store.Agent) error
 }
 
 // startAgentContainer creates and starts the agent container itself.
-func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend) error {
-	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a, rb))
+//
+// claudeArgs are appended to the tmux-boot.sh Cmd and forwarded to `claude`
+// inside the session (tmux-boot.sh ends `... new-session ... claude "$@"`).
+// Create passes none (byte-identical to the historical Cmd); Update passes
+// "--continue" so the recreated container resumes the previous Claude session.
+func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend, claudeArgs ...string) error {
+	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a, rb, claudeArgs...))
 	if err != nil {
 		return fmt.Errorf("creating the agent container %q: %w", a.ContainerName, err)
 	}
@@ -709,11 +738,15 @@ func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb re
 // /workspace/dependaproxy-ip) and ends in `exec "$@"`. Cmd is what is
 // overridden, to tmux-boot.sh -- which is why the image's own CMD can stay
 // ["bash"] and a plain `docker run` of it remains an ordinary shell.
-func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend) dockerclient.ContainerSpec {
+//
+// claudeArgs are appended after tmuxBootPath; tmux-boot.sh forwards them to
+// `claude` ("$@"). Empty (Create's call) leaves Cmd == [tmux-boot.sh], the
+// historical value. Update passes "--continue".
+func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend, claudeArgs ...string) dockerclient.ContainerSpec {
 	spec := dockerclient.ContainerSpec{
 		Name:   a.ContainerName,
 		Image:  firstNonEmpty(a.Image, m.cfg.AgentImage),
-		Cmd:    []string{tmuxBootPath},
+		Cmd:    append([]string{tmuxBootPath}, claudeArgs...),
 		Env:    m.agentEnv(a, rb),
 		Labels: labelsFor(a.ID, RoleAgent),
 		Mounts: []dockerclient.Mount{

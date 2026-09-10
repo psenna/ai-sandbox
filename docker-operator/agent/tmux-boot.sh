@@ -8,6 +8,13 @@
 # (/entrypoint.sh) runs first -- it writes the git-proxy and DependaProxy
 # configuration -- and ends in `exec "$@"`, which is how control reaches here.
 #
+# Positional args to this script are forwarded verbatim to `claude` in the
+# session (see the new-session line below). Create passes none, so "$@"
+# expands to nothing and the session runs a plain `claude` -- byte-identical
+# to before. The in-place update flow passes "--continue" so the recreated
+# container resumes the previous Claude Code session from the preserved
+# CLAUDE_CONFIG_DIR volume.
+#
 # Why a tmux session rather than exec'ing `claude` directly:
 #
 #  1. The web UI terminal is a `docker exec ... tmux attach -t main`, so the
@@ -49,7 +56,7 @@ OUTPUT_LOG=/workspace/.agent-output.log
 # server, apply the global option, and only then spawn the pane -- no window in
 # which the pane can die unprotected. Confirmed to survive both a normal exit
 # (pane_dead=1, status=3) and a missing binary (pane_dead=1, status=127).
-tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude
+tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude "$@"
 
 # Capture everything the pane writes to a durable, unbounded file, so the
 # operator can read an agent's output programmatically (internal/wsbridge's
