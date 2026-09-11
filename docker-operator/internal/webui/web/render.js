@@ -101,6 +101,11 @@
 	// auto_compact_threshold/max_context_tokens and its current image tag. The
 	// caller wires the backend radio to show/hide .create-form__ollama and
 	// submits the form's values to POST /api/agents (or .../{id}/update).
+	//
+	// Auto mode is the one field NOT merged with pick(): values.auto_mode (an
+	// agent record) is always already resolved to "on"/"off", never "", so
+	// the update form opens on the agent's actual current setting rather than
+	// re-showing "operator default" for an agent that explicitly chose one.
 	function renderCreateForm(defaults, opts) {
 		defaults = defaults || {};
 		opts = opts || {};
@@ -121,6 +126,13 @@
 		var repo = escapeHTML(pick(values.repo, defaults.repo));
 		var autoCompact = escapeHTML(pick(values.auto_compact_threshold, defaults.autoCompactThreshold));
 		var maxContextTokens = escapeHTML(pick(values.max_context_tokens, defaults.maxContextTokens));
+		// Auto mode is tri-state: "" (use the operator default, shown as the
+		// select's first option), "on" or "off". values.auto_mode (the update
+		// form's agent record) is already the RESOLVED value, never "" -- so
+		// it is only used to pick which option is selected, not merged with
+		// defaults the way pick() merges the other fields above.
+		var autoModeValue = values.auto_mode || '';
+		var operatorAutoModeLabel = defaults.autoMode === 'off' ? 'off' : 'on';
 		var selectedImageTag = values.image_tag || imageTagOf(values.image) || '';
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		var nameValue = escapeHTML(values.name || '');
@@ -141,6 +153,13 @@
 				'</label>' +
 				'<label class="create-form__row">Max-context tokens' +
 					'<input class="create-form__max-context-tokens" type="text" value="' + maxContextTokens + '" placeholder="Claude Code max-context tokens — blank to use the built-in default">' +
+				'</label>' +
+				'<label class="create-form__row">Auto mode' +
+					'<select class="create-form__auto-mode">' +
+						'<option value=""' + (autoModeValue === '' ? ' selected' : '') + '>Operator default (' + operatorAutoModeLabel + ')</option>' +
+						'<option value="on"' + (autoModeValue === 'on' ? ' selected' : '') + '>On</option>' +
+						'<option value="off"' + (autoModeValue === 'off' ? ' selected' : '') + '>Off</option>' +
+					'</select>' +
 				'</label>' +
 				'<fieldset class="create-form__row create-form__backend">' +
 					'<legend>Backend</legend>' +
@@ -198,6 +217,7 @@
 						row('Repository', agent.repo, '—') +
 						row('Auto-compact threshold', agent.auto_compact_threshold, 'built-in default') +
 						row('Max-context tokens', agent.max_context_tokens, 'built-in default') +
+						row('Auto mode', agent.auto_mode === 'on' ? 'On' : agent.auto_mode === 'off' ? 'Off' : '', '—') +
 					'</dl>' +
 				'</section>' +
 				'<section class="agent-info__section">' +
