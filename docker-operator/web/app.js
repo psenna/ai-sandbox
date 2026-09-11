@@ -14,7 +14,7 @@
 		agents: [],
 		maxAgents: 0,
 		selectedID: null,
-		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '' },
+		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '', autoMode: 'on' },
 		agentImage: { tags: [], newest: '', operatorDefault: '', checkedAt: null, lastError: '' },
 	};
 
@@ -69,6 +69,7 @@
 			repo: data.default_repo || '',
 			autoCompactThreshold: data.default_auto_compact_threshold || '',
 			maxContextTokens: data.default_max_context_tokens || '',
+			autoMode: data.default_auto_mode || 'on',
 		};
 		renderSidebar();
 	}
@@ -132,6 +133,12 @@
 			// when-entered rule.
 			var maxContextTokens = form.querySelector('.create-form__max-context-tokens').value.trim();
 			if (maxContextTokens) body.max_context_tokens = maxContextTokens;
+			// Auto mode follows the same backend-agnostic, send-only-when-
+			// not-"operator default" rule: the select's first option's value
+			// is "", meaning "omit the field and let the operator default
+			// apply".
+			var autoMode = form.querySelector('.create-form__auto-mode').value;
+			if (autoMode) body.auto_mode = autoMode;
 			// The image-tag <select>'s first option is the operator default;
 			// only send image_tag when the user picked something else.
 			var sel = form.querySelector('.create-form__image-tag');

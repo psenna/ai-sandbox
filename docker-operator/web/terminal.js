@@ -606,6 +606,8 @@
 				if (autoCompact) body.auto_compact_threshold = autoCompact;
 				var maxContextTokens = form.querySelector('.create-form__max-context-tokens').value.trim();
 				if (maxContextTokens) body.max_context_tokens = maxContextTokens;
+				var autoMode = form.querySelector('.create-form__auto-mode').value;
+				if (autoMode) body.auto_mode = autoMode;
 				var sel = form.querySelector('.create-form__image-tag');
 				if (sel && sel.value && sel.value !== operatorDefaultTag) body.image_tag = sel.value;
 				if (backend === 'ollama') {

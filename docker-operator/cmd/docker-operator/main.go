@@ -39,11 +39,16 @@ var version = "dev"
 // error instead.
 const dockerPingTimeout = 10 * time.Second
 
-// reconcileTimeout bounds the one-shot startup reconcile pass (task 6). It
-// only lists Docker resources and, for records stuck mid-operation, tears
-// down a handful of them -- generous headroom for a slow host, not a
-// realistic budget.
-const reconcileTimeout = time.Minute
+// reconcileTimeout bounds the one-shot startup reconcile pass. Listing Docker
+// resources and tearing down a handful of records stuck mid-operation is
+// fast, but the pass also wakes every StatusRunning agent whose containers
+// did not survive a host/Docker-daemon restart (agent.Manager.Reconcile's
+// wakeStoppedAgents): each one may cold-start a whole DinD daemon (up to
+// agent.Options.DindHealthTimeout, 3 minutes by default) and wait for tmux
+// (up to TmuxReadyTimeout). Sized for MAX_AGENTS agents needing a full cold
+// start back-to-back, with headroom -- generous, not a realistic budget for a
+// healthy host, where every step above returns almost immediately.
+const reconcileTimeout = 30 * time.Minute
 
 // shutdownTimeout bounds how long graceful shutdown waits for in-flight
 // requests (including open terminal WebSockets) to finish before the
@@ -126,7 +131,7 @@ func run(log *slog.Logger) error {
 		log.Error("startup reconcile pass reported errors", "error", err)
 	}
 	log.Info("startup reconcile complete",
-		"records", report.Records, "cleaned_up", len(report.CleanedUp), "unmanaged", len(report.Unmanaged))
+		"records", report.Records, "cleaned_up", len(report.CleanedUp), "unmanaged", len(report.Unmanaged), "woken", len(report.Woken))
 
 	stopStatusSync := startStatusSync(docker, mgr, log)
 	defer stopStatusSync()

@@ -214,6 +214,15 @@ services:
       # built-in default.
       AGENT_MAX_CONTEXT_TOKENS: "${AGENT_MAX_CONTEXT_TOKENS:-}"
 
+      # Whether a create/update request that names no per-agent override
+      # starts an agent's `claude` process in auto mode (--permission-mode
+      # auto, which reviews tool calls with a classifier instead of stopping
+      # for interactive approval) rather than Claude Code's normal
+      # interactive-approval default. On by default -- this is an unattended,
+      # containerised setup. Per-agent values on the create form /
+      # POST /api/agents ("auto_mode": "on"|"off") override it.
+      AGENT_AUTO_MODE: "${AGENT_AUTO_MODE:-true}"
+
       # Centralized per-agent file store. FILESTORE_DIR (the path the operator
       # sees it at) and FILESTORE_VOLUME (the Docker volume name the daemon
       # resolves each agent's subpath mount against) are TWO NAMES FOR THE

@@ -90,7 +90,17 @@ BoltDB file (`internal/store`), which is also the sole source of truth
 `internal/agent.Reconcile` cross-references against every Docker resource
 carrying the `ai-sandbox.docker-operator/managed` label on startup, so a
 mid-operation crash never leaves an orphaned container/volume/network
-untracked.
+untracked. The same startup pass also walks every agent the store believes
+is `running` and starts back up whichever of its DinD sidecar or agent
+container the daemon reports as not actually running — the state a host or
+Docker-daemon restart leaves behind when nothing carries a restart policy.
+A container that's already running is left completely untouched; only the
+agent container, if it needs restarting, is recreated (never a plain
+`docker start`, since a stopped container's `claude` args are fixed at
+create time) with `claude --resume` so it picks its previous session back
+up. `POST /api/agents/{id}/update` performs the same DinD health check
+before recreating the agent container, so an update against a sidecar that
+died for any reason doesn't just trade one broken state for another.
 
 **Each agent** gets its own DinD sidecar (a `docker:27-dind` + `sysbox-runc`
 pair templated per agent, rather than one daemon shared by everyone) so it
@@ -174,9 +184,9 @@ anything else on the same Docker host.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` (so the create form needs no second request). |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","ollama_url","repo"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE`. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
-| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `ollama_url`, `repo`). |
+| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` / `default_auto_mode` (so the create form needs no second request). |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE`. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `ollama_url`, `repo`, `auto_mode`). |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
 | `POST` | `/api/agents/{id}/update` | In-place update: recreate **only** the agent container under the same agent ID. Body is the `POST /api/agents` body (every create-form field is editable here, including `backend` and `image_tag`). The DinD sidecar, private network, dependaproxy attachment and the three volumes are kept — so `/workspace`, the Claude config and the DinD cache all survive — but the running tmux/`claude` session ends; the new container resumes it with `claude --continue` (history is in the preserved config volume). Only a `running`/`stopped`/`error` agent is updatable (`409 not_updatable` otherwise); `404` if unknown; `400` on a bad field; a failure after the old container is gone leaves the agent `error` with its volumes intact for a retry (no auto-rollback). |
@@ -235,6 +245,18 @@ The backend, Ollama server and models are fixed once an agent is created
 (changing them would need the container's environment rebuilt).
 `DEFAULT_AGENT_BACKEND` sets which one the form (and an API request that
 names none) starts on.
+
+## Auto mode
+
+Every agent's `claude` process can start in **auto mode**
+(`--permission-mode auto`), where a classifier reviews tool calls instead of
+stopping for interactive approval — the intended way to run an unattended,
+containerised agent. `AGENT_AUTO_MODE` (default `true`) sets the operator-wide
+default; the **New Agent** form's **Auto mode** field (`on`/`off`, or
+"Operator default") overrides it per agent, backend-agnostic. The setting is
+fixed once an agent is created or last updated — recreating the container
+(`POST /api/agents/{id}/update`, or the startup reconcile pass waking a
+stopped agent back up) is what applies a changed value.
 
 ## Choosing a repo
 
