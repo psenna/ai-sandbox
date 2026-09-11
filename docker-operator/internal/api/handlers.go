@@ -62,6 +62,10 @@ type AgentManager interface {
 	DefaultRepo() string
 	DefaultAutoCompactThreshold() string
 	DefaultMaxContextTokens() string
+	// DefaultAutoMode is config.AutoModeOn/AutoModeOff, resolved from the
+	// operator's AGENT_AUTO_MODE; the create form shows it as what "operator
+	// default" resolves to.
+	DefaultAutoMode() string
 
 	// AgentImage/DockerRuntime are the operator-level parameters every agent
 	// inherits (its container image, its DinD sidecar's runtime); the
@@ -217,6 +221,11 @@ type createAgentRequest struct {
 	// image repository. Empty means the operator's configured image. A
 	// malformed tag is rejected with 400 on the "image_tag" field.
 	ImageTag string `json:"image_tag"`
+	// AutoMode overrides the operator's AGENT_AUTO_MODE default for this one
+	// agent's `claude` process: "on", "off", or "" to use that default.
+	// Backend-agnostic. An unrecognised non-empty value is rejected with 400
+	// on the "auto_mode" field.
+	AutoMode string `json:"auto_mode"`
 }
 
 // updateAgentRequest is the POST /api/agents/{id}/update body: every
@@ -255,6 +264,8 @@ func validateAgentFields(req createAgentRequest) *apiErr {
 		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo"}
 	case req.AutoCompactThreshold != "" && !config.ValidAutoCompactThreshold(req.AutoCompactThreshold):
 		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold"}
+	case req.AutoMode != "" && !config.ValidAutoMode(req.AutoMode):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"auto_mode" must be "on", "off" or omitted`, "auto_mode"}
 	default:
 		return nil
 	}
@@ -269,6 +280,7 @@ func toCreateRequest(req createAgentRequest) agent.CreateRequest {
 		AutoCompactThreshold: req.AutoCompactThreshold,
 		MaxContextTokens:     req.MaxContextTokens,
 		ImageTag:             req.ImageTag,
+		AutoMode:             req.AutoMode,
 	}
 }
 
@@ -334,6 +346,10 @@ type agentListResponse struct {
 	// AGENT_MAX_CONTEXT_TOKENS; the UI then shows a blank field meaning
 	// "the agent uses Claude Code's built-in default".
 	DefaultMaxContextTokens string `json:"default_max_context_tokens"`
+	// DefaultAutoMode is config.AutoModeOn or config.AutoModeOff, resolved
+	// from the operator's AGENT_AUTO_MODE; the create form shows it as what
+	// leaving its "Auto mode" field on "operator default" resolves to.
+	DefaultAutoMode string `json:"default_auto_mode"`
 }
 
 // agentOperatorInfo is the operator-level part of the /api/agents/{id}/info
@@ -404,6 +420,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		DefaultRepo:                 h.mgr.DefaultRepo(),
 		DefaultAutoCompactThreshold: h.mgr.DefaultAutoCompactThreshold(),
 		DefaultMaxContextTokens:     h.mgr.DefaultMaxContextTokens(),
+		DefaultAutoMode:             h.mgr.DefaultAutoMode(),
 	})
 }
 
@@ -433,6 +450,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
 		case agent.IsInvalidAutoCompactThreshold(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
+		case agent.IsInvalidAutoMode(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_mode" must be "on", "off" or omitted`, "auto_mode")
 		case agent.IsInvalidImageTag(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"image_tag" is not a valid image tag`, "image_tag")
 		default:
@@ -704,6 +723,8 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"repo" must be "owner/repo" or "owner/repo.git"`, "repo")
 		case agent.IsInvalidAutoCompactThreshold(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_compact_threshold" must be an integer between 50 and 100`, "auto_compact_threshold")
+		case agent.IsInvalidAutoMode(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"auto_mode" must be "on", "off" or omitted`, "auto_mode")
 		default:
 			h.internalError(w, "updating agent "+id, err)
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -56,6 +57,11 @@ func (m *Manager) DefaultAutoCompactThreshold() string { return m.cfg.AutoCompac
 // empty means the variable is omitted from the agent so it uses Claude Code's
 // built-in default.
 func (m *Manager) DefaultMaxContextTokens() string { return m.cfg.MaxContextTokens }
+
+// DefaultAutoMode exposes the operator's DefaultAutoMode (AGENT_AUTO_MODE)
+// as config.AutoModeOn/AutoModeOff, so the create form can pre-fill and show
+// what "operator default" resolves to.
+func (m *Manager) DefaultAutoMode() string { return config.AutoModeString(m.cfg.DefaultAutoMode) }
 
 // AgentImage and DockerRuntime expose the operator-level parameters that
 // apply to every agent regardless of its create-time request: the agent

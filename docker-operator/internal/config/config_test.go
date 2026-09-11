@@ -83,6 +83,7 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		AgentModel:                "glm-5.3:cloud",
 		AgentFastModel:            "glm-5.3-flash:cloud",
 		DependaproxyContainer:     "docker-operator-dependaproxy",
+		DefaultAutoMode:           true,
 		FilestoreDir:              "/var/lib/docker-operator/filestore",
 		FilestoreVolume:           "docker-operator-filestore",
 		FilestoreMaxUploadBytes:   104857600,
@@ -161,6 +162,8 @@ var fieldCases = []struct {
 		func(c Config) string { return c.MaxContextTokens }},
 	{"DependaproxyContainer", "DEPENDAPROXY_CONTAINER", "dependaproxy-container", "env-dependaproxy", "flag-dependaproxy",
 		func(c Config) string { return c.DependaproxyContainer }},
+	{"DefaultAutoMode", "AGENT_AUTO_MODE", "auto-mode", "false", "true",
+		func(c Config) string { return strconv.FormatBool(c.DefaultAutoMode) }},
 	{"FilestoreDir", "FILESTORE_DIR", "filestore-dir", "/env/filestore", "/flag/filestore",
 		func(c Config) string { return c.FilestoreDir }},
 	{"FilestoreVolume", "FILESTORE_VOLUME", "filestore-volume", "env-filestore-vol", "flag-filestore-vol",
@@ -270,6 +273,58 @@ func TestLoad_AgentImageRefreshIntervalEnvParsing(t *testing.T) {
 				t.Errorf("AgentImageRefreshInterval = %s, want %s", c.AgentImageRefreshInterval, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoad_AutoModeEnvParsing(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{"true", "true", true, false},
+		{"false", "false", false, false},
+		{"blank falls back to the true default", "", true, false},
+		{"nonsense", "nonsense", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load(nil, envWith(map[string]string{"AGENT_AUTO_MODE": tc.value}))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Load with AGENT_AUTO_MODE=%q: expected error, got nil", tc.value)
+				}
+				if !strings.Contains(err.Error(), "AGENT_AUTO_MODE") {
+					t.Errorf("Load error = %v, want it to name AGENT_AUTO_MODE", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load with AGENT_AUTO_MODE=%q: unexpected error: %v", tc.value, err)
+			}
+			if c.DefaultAutoMode != tc.want {
+				t.Errorf("DefaultAutoMode = %v, want %v", c.DefaultAutoMode, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnvBool(t *testing.T) {
+	get := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	if b, err := envBool(get(nil), "X", true); err != nil || b != true {
+		t.Errorf("envBool(unset) = (%v, %v), want (true, nil)", b, err)
+	}
+	if b, err := envBool(get(map[string]string{"X": "  "}), "X", true); err != nil || b != true {
+		t.Errorf("envBool(blank) = (%v, %v), want (true, nil)", b, err)
+	}
+	if b, err := envBool(get(map[string]string{"X": "false"}), "X", true); err != nil || b != false {
+		t.Errorf("envBool(false) = (%v, %v), want (false, nil)", b, err)
+	}
+	if _, err := envBool(get(map[string]string{"X": "garbage"}), "X", true); err == nil || !strings.Contains(err.Error(), "X") {
+		t.Errorf("envBool(garbage) err = %v, want one naming X", err)
 	}
 }
 
@@ -546,6 +601,30 @@ func TestValidOllamaURL(t *testing.T) {
 	}
 }
 
+func TestValidAutoMode(t *testing.T) {
+	valid := []string{"", AutoModeOn, AutoModeOff}
+	for _, s := range valid {
+		if !ValidAutoMode(s) {
+			t.Errorf("ValidAutoMode(%q) = false, want true", s)
+		}
+	}
+	invalid := []string{"On", "OFF", "true", "false", "1", "0", " "}
+	for _, s := range invalid {
+		if ValidAutoMode(s) {
+			t.Errorf("ValidAutoMode(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestAutoModeString(t *testing.T) {
+	if got := AutoModeString(true); got != AutoModeOn {
+		t.Errorf("AutoModeString(true) = %q, want %q", got, AutoModeOn)
+	}
+	if got := AutoModeString(false); got != AutoModeOff {
+		t.Errorf("AutoModeString(false) = %q, want %q", got, AutoModeOff)
+	}
+}
+
 // TestLoadValidate_NeverPanics is the acceptance criterion's "clear error,
 // not a panic" stated directly: every variable gets every hostile value, and
 // the only acceptable outcomes are a Config or an error.
@@ -562,6 +641,7 @@ func TestLoadValidate_NeverPanics(t *testing.T) {
 		"DEPENDAPROXY_PYPI_URL", "DEPENDAPROXY_GOPROXY_URL", "DOCKER_RUNTIME",
 		"OLLAMA_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
 		"AGENT_MODEL", "AGENT_FAST_MODEL", "DEPENDAPROXY_CONTAINER",
+		"AGENT_AUTO_MODE",
 	}
 
 	for _, name := range names {

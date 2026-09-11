@@ -48,6 +48,7 @@ type fakeManager struct {
 	defaultRepo                 string
 	defaultAutoCompactThreshold string
 	defaultMaxContextTokens     string
+	defaultAutoMode             string
 
 	agentImage    string
 	dockerRuntime string
@@ -79,6 +80,7 @@ func newFakeManager(maxAgents int) *fakeManager {
 		defaultFastModel: "glm-5.3-flash:cloud",
 		defaultOllamaURL: "http://ollama:11434",
 		defaultRepo:      "psenna/ai-sandbox.git",
+		defaultAutoMode:  config.AutoModeOn,
 		agentImage:       "ghcr.io/psenna/ai-sandbox-agent:latest",
 	}
 }
@@ -107,6 +109,7 @@ func (f *fakeManager) Create(_ context.Context, req agent.CreateRequest) (store.
 		Repo:                 req.Repo,
 		AutoCompactThreshold: req.AutoCompactThreshold,
 		MaxContextTokens:     req.MaxContextTokens,
+		AutoMode:             req.AutoMode,
 		Status:               store.StatusCreating,
 	}
 	f.agents[a.ID] = a
@@ -153,6 +156,7 @@ func (f *fakeManager) Update(_ context.Context, id string, req agent.UpdateReque
 	a.Repo = req.Repo
 	a.AutoCompactThreshold = req.AutoCompactThreshold
 	a.MaxContextTokens = req.MaxContextTokens
+	a.AutoMode = req.AutoMode
 	a.Status = store.StatusRunning
 	f.agents[id] = a
 	return a, nil
@@ -187,6 +191,7 @@ func (f *fakeManager) DefaultOllamaURL() string            { return f.defaultOll
 func (f *fakeManager) DefaultRepo() string                 { return f.defaultRepo }
 func (f *fakeManager) DefaultAutoCompactThreshold() string { return f.defaultAutoCompactThreshold }
 func (f *fakeManager) DefaultMaxContextTokens() string     { return f.defaultMaxContextTokens }
+func (f *fakeManager) DefaultAutoMode() string             { return f.defaultAutoMode }
 
 func (f *fakeManager) AgentImage() string    { return f.agentImage }
 func (f *fakeManager) DockerRuntime() string { return f.dockerRuntime }
@@ -462,6 +467,40 @@ func TestCreate_AutoCompactThreshold(t *testing.T) {
 	}
 }
 
+func TestCreate_AutoMode(t *testing.T) {
+	for _, v := range []string{"", "on", "off"} {
+		t.Run("auto_mode="+v+" is passed through and recorded", func(t *testing.T) {
+			mgr := newFakeManager(5)
+			h := newTestHandler(mgr, dockerclienttest.New())
+
+			rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{AutoMode: v})
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+			}
+			if a := decodeAgent(t, rec); a.AutoMode != v {
+				t.Errorf("created agent AutoMode = %q, want %q", a.AutoMode, v)
+			}
+		})
+	}
+
+	for _, bad := range []string{"On", "true", "1", "always"} {
+		t.Run("an invalid auto_mode "+bad+" is a 400 before the manager is called", func(t *testing.T) {
+			mgr := newFakeManager(5)
+			mgr.createErr = errors.New("Create must not be reached")
+			h := newTestHandler(mgr, dockerclienttest.New())
+
+			rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{AutoMode: bad})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+			}
+			env := decodeEnvelope(t, rec)
+			if env.Error.Code != CodeInvalidParam || env.Error.Field != "auto_mode" {
+				t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "auto_mode")
+			}
+		})
+	}
+}
+
 func TestCreate_MaxContextTokens(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
@@ -579,9 +618,13 @@ func TestList(t *testing.T) {
 		t.Errorf("DefaultAutoCompactThreshold/DefaultMaxContextTokens = %q/%q, want empty when the operator set neither default",
 			resp.DefaultAutoCompactThreshold, resp.DefaultMaxContextTokens)
 	}
+	if resp.DefaultAutoMode != "on" {
+		t.Errorf("DefaultAutoMode = %q, want %q (newFakeManager's default)", resp.DefaultAutoMode, "on")
+	}
 
 	mgr.defaultAutoCompactThreshold = "85"
 	mgr.defaultMaxContextTokens = "200000"
+	mgr.defaultAutoMode = "off"
 	rec = doJSON(t, h, "GET", "/api/agents", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
@@ -593,6 +636,9 @@ func TestList(t *testing.T) {
 	if resp.DefaultAutoCompactThreshold != "85" || resp.DefaultMaxContextTokens != "200000" {
 		t.Errorf("defaults = %q/%q, want the operator's configured thresholds",
 			resp.DefaultAutoCompactThreshold, resp.DefaultMaxContextTokens)
+	}
+	if resp.DefaultAutoMode != "off" {
+		t.Errorf("DefaultAutoMode = %q, want %q", resp.DefaultAutoMode, "off")
 	}
 }
 

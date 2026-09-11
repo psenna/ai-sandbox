@@ -439,3 +439,61 @@ func TestOptions_WithDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoModeArgs(t *testing.T) {
+	if got := autoModeArgs(store.Agent{AutoMode: config.AutoModeOn}); len(got) != 2 || got[0] != "--permission-mode" || got[1] != "auto" {
+		t.Errorf("autoModeArgs(on) = %v, want [--permission-mode auto]", got)
+	}
+	if got := autoModeArgs(store.Agent{AutoMode: config.AutoModeOff}); got != nil {
+		t.Errorf("autoModeArgs(off) = %v, want nil", got)
+	}
+	if got := autoModeArgs(store.Agent{}); got != nil {
+		t.Errorf("autoModeArgs(unset, a pre-feature record) = %v, want nil", got)
+	}
+}
+
+// TestCreate_AutoMode_ResolvesAndValidates covers the three shapes a create
+// request's AutoMode can take: no override (inherits the operator's
+// DefaultAutoMode), an explicit override, and an invalid value (rejected
+// before a slot is reserved, like every other create-form field).
+func TestCreate_AutoMode_ResolvesAndValidates(t *testing.T) {
+	cfg := testConfig(5)
+	cfg.DefaultAutoMode = true
+	m, _, st := newTestManagerCfg(t, cfg)
+	ctx := context.Background()
+
+	inherited, err := m.Create(ctx, CreateRequest{Name: "inherits-operator-default"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if inherited.AutoMode != config.AutoModeOn {
+		t.Errorf("AutoMode = %q, want %q (the operator default)", inherited.AutoMode, config.AutoModeOn)
+	}
+	spec := m.agentSpec(inherited, resolvedBackend{kind: inherited.Backend}, autoModeArgs(inherited)...)
+	if len(spec.Cmd) != 3 || spec.Cmd[1] != "--permission-mode" || spec.Cmd[2] != "auto" {
+		t.Errorf("Cmd = %v, want [%q --permission-mode auto]", spec.Cmd, tmuxBootPath)
+	}
+
+	overridden, err := m.Create(ctx, CreateRequest{Name: "explicit-off", AutoMode: config.AutoModeOff})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if overridden.AutoMode != config.AutoModeOff {
+		t.Errorf("AutoMode = %q, want %q (the per-agent override)", overridden.AutoMode, config.AutoModeOff)
+	}
+
+	before, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, err := m.Create(ctx, CreateRequest{Name: "bad", AutoMode: "sometimes"}); !IsInvalidAutoMode(err) {
+		t.Errorf("Create with auto_mode=%q: err = %v, want IsInvalidAutoMode", "sometimes", err)
+	}
+	after, err := st.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("an invalid auto_mode consumed a slot: %d records before, %d after", len(before), len(after))
+	}
+}

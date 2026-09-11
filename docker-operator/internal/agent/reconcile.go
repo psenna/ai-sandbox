@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -30,6 +31,11 @@ type Report struct {
 	// Unmanaged lists the managed-labelled Docker resources no record claims.
 	// They were reported, not touched.
 	Unmanaged []Unmanaged
+	// Woken lists the IDs of StatusRunning records whose DinD sidecar and/or
+	// agent container were not actually running (typically because the host
+	// or the Docker daemon restarted without the operator's own containers
+	// carrying a restart policy) and have been started back up.
+	Woken []string
 }
 
 // Reconcile is the startup pass that squares Docker's actual state with the
@@ -55,14 +61,27 @@ type Report struct {
 //     history -- are always intact at that point, and teardown would destroy
 //     them. The user retries Update, which is idempotent.
 //
-// Records in running, stopped or error are left untouched: keeping their status
-// honest against the daemon is the event-stream goroutine's job (task 13), not
-// a startup sweep's.
+// Records in stopped or error are left untouched: keeping their status honest
+// against the daemon is the event-stream goroutine's job (task 13), not a
+// startup sweep's -- a StatusStopped or StatusError agent already reflects a
+// decision the operator (or a human) made while it was watching, and this
+// pass has no business overriding it.
+//
+// A StatusRunning record is different: it is the store's memory of "this
+// agent is supposed to be running", and a host or Docker-daemon restart can
+// silently invalidate that -- the daemon comes back up with every one of
+// this agent's containers Exited, because none of them carry a restart
+// policy (task 13's event goroutine, which would normally notice and flip
+// the record to stopped/error, was not running to see it happen). So after
+// the stuck-record sweep above, Reconcile also walks every StatusRunning
+// record and starts back up whichever of its DinD sidecar and agent
+// container is not actually running -- see wakeStoppedAgents. A container
+// that IS already running is left completely untouched.
 //
 // Reconcile reports the first listing failure as an error but does not abort on
-// a per-agent teardown failure: one stuck agent must not prevent the others
-// from being cleaned up. Whatever it could not remove is still labelled, so the
-// next pass finds it again.
+// a per-agent teardown or wake-up failure: one stuck or unrecoverable agent
+// must not prevent the others from being cleaned up or woken. Whatever it
+// could not remove is still labelled, so the next pass finds it again.
 //
 // The centralized file store is out of scope here: its volume carries no
 // managed label, so findUnmanaged (which filters server-side by that label)
@@ -126,9 +145,183 @@ func (m *Manager) Reconcile(ctx context.Context) (Report, error) {
 		rep.CleanedUp = append(rep.CleanedUp, a.ID)
 	}
 
+	woken, wakeErrs := m.wakeStoppedAgents(ctx, agents)
+	rep.Woken = woken
+	errs = append(errs, wakeErrs...)
+
 	m.log.InfoContext(ctx, "reconcile pass complete",
-		"records", rep.Records, "cleaned_up", len(rep.CleanedUp), "unmanaged", len(rep.Unmanaged))
+		"records", rep.Records, "cleaned_up", len(rep.CleanedUp), "unmanaged", len(rep.Unmanaged), "woken", len(rep.Woken))
 	return rep, errors.Join(errs...)
+}
+
+// wakeStoppedAgents walks every StatusRunning record and starts back up
+// whichever of its DinD sidecar and agent container is not actually running
+// on the daemon -- see Reconcile's doc comment for why StatusRunning is the
+// one status this pass acts on. It returns the IDs it successfully woke and
+// collects (rather than aborting on) a per-agent failure, so one agent whose
+// resources are unrecoverable does not stop the pass from waking the rest.
+//
+// A woken agent that failed is left StatusError (see wakeAgent), never
+// silently re-marked StatusRunning against a reality that does not back it
+// up.
+func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) ([]string, []error) {
+	var woken []string
+	var errs []error
+	for _, a := range agents {
+		if a.Status != store.StatusRunning {
+			continue
+		}
+		awoke, err := m.wakeAgent(ctx, a)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("waking agent %q: %w", a.ID, err))
+			continue
+		}
+		if awoke {
+			woken = append(woken, a.ID)
+		}
+	}
+	return woken, errs
+}
+
+// wakeAgent checks agent a's DinD sidecar and agent container against the
+// daemon's actual state and starts back up whichever of the two is not
+// running. It reports awoke=true only when it actually had to start
+// something; a fully already-running agent is left completely untouched and
+// reports awoke=false, nil.
+//
+// The agent container, when it needs restarting, is NOT simply `docker
+// start`ed: a stopped container's ENTRYPOINT/Cmd -- including whatever
+// claude session-resumption arg it was created or last updated with --
+// replays unchanged on a plain start, and tmux itself does not survive the
+// container stopping (its server dies with the container's PID 1), so a
+// plain restart would boot a brand new tmux session anyway, just with a
+// possibly-stale claude arg. Instead the agent container is recreated
+// exactly like an in-place Update -- same volumes, same network, same
+// DinD sidecar, same agent ID -- but with "--resume" so the fresh session
+// picks the agent's previous Claude Code conversation back up from the
+// preserved CLAUDE_CONFIG_DIR volume, the same way "--continue" does for an
+// explicit Update.
+//
+// Any failure marks the record StatusError (never tearing anything down --
+// exactly failUpdate's contract, which this mirrors): the workspace, Claude-
+// config and DinD-cache volumes are always left intact, and the user can
+// retry via Update once the underlying cause (a genuinely missing sidecar or
+// container, most likely) is fixed.
+func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
+	dindAwoke, err := m.ensureDindRunning(ctx, a)
+	if err != nil {
+		m.markWakeError(ctx, a.ID, fmt.Errorf("the dind sidecar: %w", err))
+		return false, fmt.Errorf("the dind sidecar: %w", err)
+	}
+
+	ref := firstNonEmpty(a.ContainerID, a.ContainerName, agentContainerName(a.ID))
+	c, err := m.docker.ContainerInspect(ctx, ref)
+	switch {
+	case dockerclient.IsNotFound(err):
+		err = fmt.Errorf("the agent container %q no longer exists; recreate this agent", ref)
+		m.markWakeError(ctx, a.ID, err)
+		return false, err
+	case err != nil:
+		err = fmt.Errorf("inspecting the agent container %q: %w", ref, err)
+		m.markWakeError(ctx, a.ID, err)
+		return false, err
+	case c.State == dockerclient.StateRunning:
+		// Already running: don't touch it. The sidecar may still have needed
+		// waking above -- that alone counts as having woken the agent.
+		return dindAwoke, nil
+	}
+
+	m.log.InfoContext(ctx, "the agent container is not running (state %q); recreating it to resume the previous session",
+		"agent_id", a.ID, "agent_container", ref, "state", c.State)
+
+	rb, err := m.resolveBackendFromAgent(ctx, a)
+	if err != nil {
+		err = fmt.Errorf("resolving the backend to restart the agent container: %w", err)
+		m.markWakeError(ctx, a.ID, err)
+		return false, err
+	}
+	if err := m.removeAgentContainer(ctx, a); err != nil {
+		err = fmt.Errorf("removing the old agent container: %w", err)
+		m.markWakeError(ctx, a.ID, err)
+		return false, err
+	}
+	if err := m.startAgentContainer(ctx, &a, rb, append(autoModeArgs(a), "--resume")...); err != nil {
+		m.markWakeError(ctx, a.ID, fmt.Errorf("starting the agent container: %w", err))
+		return false, err
+	}
+	if err := m.waitTmuxSession(ctx, a); err != nil {
+		m.markWakeError(ctx, a.ID, err)
+		return false, err
+	}
+	return true, nil
+}
+
+// resolveBackendFromAgent re-derives a's resolvedBackend (the model routing
+// and, for the anthropic backend, the CURRENT shared credential) from the
+// agent record's already-resolved fields, for the one path that recreates an
+// agent container with no caller-supplied CreateRequest: wakeAgent. It is
+// exactly what resolveBackend computes for a create/update request that
+// changed none of these fields, so re-resolving is idempotent.
+func (m *Manager) resolveBackendFromAgent(ctx context.Context, a store.Agent) (resolvedBackend, error) {
+	return m.resolveBackend(ctx, CreateRequest{
+		Backend: a.Backend, Model: a.Model, FastModel: a.FastModel, OllamaURL: a.OllamaURL,
+	})
+}
+
+// markWakeError settles a failed wake-up attempt the same way failUpdate
+// settles a failed in-place update: StatusError with an explanatory message,
+// no container ID (it may already be gone), and every volume left exactly as
+// it is. Logged, not returned -- the caller already has the error that
+// matters, and this write itself uses a context detached from ctx so it
+// still lands even when ctx is what is failing.
+func (m *Manager) markWakeError(ctx context.Context, id string, cause error) {
+	if _, err := m.store.Update(context.WithoutCancel(ctx), id, func(ag *store.Agent) error {
+		ag.Status = store.StatusError
+		ag.ErrorMessage = "could not bring this agent back up after a host/daemon restart " +
+			"(its workspace, Claude-config and DinD-cache volumes are intact -- fix the cause and retry via Update): " + cause.Error()
+		ag.ContainerID = ""
+		return nil
+	}); err != nil {
+		m.log.ErrorContext(ctx, "could not record a failed wake-up attempt; the record stays running against a reality that does not back it up",
+			"agent_id", id, "error", err)
+	}
+}
+
+// ensureDindRunning makes sure agent a's DinD sidecar is actually running,
+// starting it and waiting for it to report healthy when it is not. It
+// reports awoke=true only when it actually had to start the container; an
+// already-running sidecar is left completely untouched (awoke=false, nil).
+//
+// It does not attempt to create a missing sidecar: a DinD container that
+// does not exist at all is not a "stopped" container recoverable by
+// starting it -- that is a lost resource with no automatic recovery story,
+// reported as an error rather than silently doing something more drastic.
+//
+// Shared by wakeAgent (the startup reconcile pass) and Update (an in-place
+// update's recreated agent container needs the sidecar answering on
+// DOCKER_HOST from the moment it boots, and Update otherwise never touches
+// the sidecar at all).
+func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, error) {
+	ref := firstNonEmpty(a.DindContainerID, a.DindContainerName, dindContainerName(a.ID))
+	c, err := m.docker.ContainerInspect(ctx, ref)
+	switch {
+	case dockerclient.IsNotFound(err):
+		return false, fmt.Errorf("the dind sidecar %q no longer exists; recreate this agent", ref)
+	case err != nil:
+		return false, fmt.Errorf("inspecting the dind sidecar %q: %w", ref, err)
+	case c.State == dockerclient.StateRunning:
+		return false, nil
+	}
+
+	m.log.InfoContext(ctx, "the dind sidecar is not running; starting it back up",
+		"agent_id", a.ID, "dind_container", ref, "state", c.State)
+	if err := m.docker.ContainerStart(ctx, ref); err != nil {
+		return false, fmt.Errorf("starting the dind sidecar %q: %w", ref, err)
+	}
+	if err := m.waitHealthy(ctx, ref, a.DindContainerName); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // findUnmanaged lists every managed-labelled container, network and volume and

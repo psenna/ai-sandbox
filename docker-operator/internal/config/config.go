@@ -49,6 +49,12 @@ const (
 
 	defaultAgentBackend = BackendOllama
 
+	// defaultAutoMode is the operator-wide default for whether a new agent's
+	// `claude` process starts in auto mode (--permission-mode auto), so it
+	// does not stop to ask for interactive tool-permission approval. On by
+	// design -- see Config.DefaultAutoMode.
+	defaultAutoMode = true
+
 	// defaultAgentImageRefreshInterval is how often the operator polls the
 	// registry for the agent image's published tags. cmd/docker-operator
 	// clamps a smaller value up to 1m.
@@ -75,6 +81,30 @@ const (
 
 // ValidBackend reports whether s is one of the two supported backend names.
 func ValidBackend(s string) bool { return s == BackendOllama || s == BackendAnthropic }
+
+// AutoModeOn / AutoModeOff are the two resolved values store.Agent.AutoMode
+// takes once a create/update request's optional override (which may also be
+// "", meaning "use the operator's DefaultAutoMode") has been resolved
+// against the operator's default. They are also the two accepted values of a
+// create/update request's own "auto_mode" field, alongside "".
+const (
+	AutoModeOn  = "on"
+	AutoModeOff = "off"
+)
+
+// ValidAutoMode reports whether s is an acceptable per-agent auto-mode
+// override: "" (use the operator default), "on" or "off".
+func ValidAutoMode(s string) bool { return s == "" || s == AutoModeOn || s == AutoModeOff }
+
+// AutoModeString renders a resolved bool (Config.DefaultAutoMode, or a
+// per-agent override already resolved against it) as the "on"/"off" string
+// store.Agent.AutoMode and the API's JSON fields use.
+func AutoModeString(on bool) string {
+	if on {
+		return AutoModeOn
+	}
+	return AutoModeOff
+}
 
 // redacted is what every stringification path of Secret emits in place of
 // the real value.
@@ -294,6 +324,17 @@ type Config struct {
 	// the create flow connects to each new agent's private dinernet.
 	DependaproxyContainer string
 
+	// DefaultAutoMode is whether a create/update request that names no
+	// per-agent override starts the agent's `claude` process in auto mode
+	// (`--permission-mode auto`, which reviews tool calls with a classifier
+	// instead of stopping for interactive approval) rather than Claude
+	// Code's normal interactive-approval default. Defaults to true: auto
+	// mode is the intended way agents run in this unattended, containerised
+	// setup. A create/update request may override it per agent (the create
+	// form's "Auto mode" field / POST /api/agents' "auto_mode" field, one of
+	// "", "on" or "off" -- "" means "use this operator default").
+	DefaultAutoMode bool
+
 	// FilestoreDir and FilestoreVolume are TWO NAMES FOR THE SAME STORAGE:
 	// the centralized per-agent file store (issue #122). FilestoreDir is the
 	// path the operator sees it at (a directory it opens directly, and under
@@ -352,6 +393,11 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	}
 
 	maxUpload, err := envInt64(getenv, "FILESTORE_MAX_UPLOAD_BYTES", defaultFilestoreMaxUploadBytes)
+	if err != nil {
+		return Config{}, err
+	}
+
+	autoMode, err := envBool(getenv, "AGENT_AUTO_MODE", defaultAutoMode)
 	if err != nil {
 		return Config{}, err
 	}
@@ -439,6 +485,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.DependaproxyContainer, "dependaproxy-container",
 		envOr(getenv, "DEPENDAPROXY_CONTAINER", defaultDependaproxyContainer),
 		"name of the shared DependaProxy container the create flow connects to each new agent's private dinernet (env DEPENDAPROXY_CONTAINER)")
+	fs.BoolVar(&c.DefaultAutoMode, "auto-mode",
+		autoMode,
+		"whether a create/update request that names no per-agent override starts the agent's claude process in auto mode (--permission-mode auto) instead of Claude Code's interactive-approval default (env AGENT_AUTO_MODE)")
 	fs.StringVar(&c.FilestoreDir, "filestore-dir",
 		envOr(getenv, "FILESTORE_DIR", defaultFilestoreDir),
 		"absolute path the operator sees the centralized per-agent file store at; empty disables the whole file-store feature (env FILESTORE_DIR)")
@@ -743,6 +792,21 @@ func envDuration(getenv func(string) string, name string, def time.Duration) (ti
 		return 0, fmt.Errorf("%s: %q is not a valid duration: %w", name, v, err)
 	}
 	return d, nil
+}
+
+// envBool returns the boolean environment value for name, or def when it is
+// unset or blank. Like envInt, an unparseable value is a loud error rather
+// than a silent fall back to the default.
+func envBool(getenv func(string) string, name string, def bool) (bool, error) {
+	v := strings.TrimSpace(getenv(name))
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s: %q is not a valid boolean: %w", name, v, err)
+	}
+	return b, nil
 }
 
 // envInt64 is envInt for an int64-valued variable (FILESTORE_MAX_UPLOAD_BYTES).

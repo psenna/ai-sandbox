@@ -164,6 +164,21 @@ test('renderCreateForm: the auto-compact and max-context fields render blank wit
 	assert.match(html, /class="create-form__max-context-tokens" type="text" value=""/);
 });
 
+test('renderCreateForm: the auto-mode select defaults to "operator default" and labels it from defaults.autoMode', () => {
+	const on = Render.renderCreateForm({ autoMode: 'on' });
+	assert.match(on, /<option value=""\s+selected>Operator default \(on\)<\/option>/);
+	const off = Render.renderCreateForm({ autoMode: 'off' });
+	assert.match(off, /<option value=""\s+selected>Operator default \(off\)<\/option>/);
+});
+
+test('renderCreateForm: opts.values.auto_mode selects the matching option, not "operator default"', () => {
+	const html = Render.renderCreateForm({ autoMode: 'on' }, { values: { auto_mode: 'off' } });
+	assert.match(html, /<option value="off" selected>Off<\/option>/);
+	// The auto-mode select's own "operator default" option -- not any other
+	// select on the page -- must be the unselected one.
+	assert.match(html, /<select class="create-form__auto-mode"><option value="">Operator default/);
+});
+
 test('renderCreateForm: a model default containing HTML is escaped in the value attribute', () => {
 	const html = Render.renderCreateForm({ model: '"><script>x</script>' });
 	assert.doesNotMatch(html, /<script>x<\/script>/);
@@ -197,6 +212,7 @@ test('renderAgentInfo: renders both sections with the agent\'s resolved values',
 			repo: 'acme/widget.git',
 			auto_compact_threshold: '85',
 			max_context_tokens: '200000',
+			auto_mode: 'on',
 		},
 		operator: { agent_image: 'ghcr.io/example/agent:1.2.3', docker_runtime: 'crun' },
 	});
@@ -208,6 +224,7 @@ test('renderAgentInfo: renders both sections with the agent\'s resolved values',
 	assert.match(html, /ghcr\.io\/example\/agent:1\.2\.3/);
 	assert.match(html, /crun/);
 	assert.match(html, /Ollama/);
+	assert.match(html, />On</);
 });
 
 test('renderAgentInfo: blank parameters render their placeholder, not an empty cell', () => {

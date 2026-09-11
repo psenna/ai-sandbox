@@ -138,6 +138,19 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 		return m.failUpdate(ctx, &a, err)
 	}
 
+	// The recreated agent container needs its DinD sidecar answering on
+	// DOCKER_HOST from the moment it boots. Update normally leaves the
+	// sidecar alone entirely (see the doc comment above), but an agent that
+	// went through a host/daemon restart without the operator's startup
+	// reconcile pass ever running against it (or whose sidecar died for some
+	// other reason) can reach here with a stopped sidecar; recreating the
+	// agent container on top of a dead DOCKER_HOST would just trade one
+	// broken state for another. ensureDindRunning is a no-op when the sidecar
+	// is already running.
+	if _, err := m.ensureDindRunning(ctx, a); err != nil {
+		return m.failUpdate(ctx, &a, fmt.Errorf("checking the dind sidecar before recreating the agent container: %w", err))
+	}
+
 	// Remove the agent container ONLY. From here on, any failure is
 	// unrecoverable without a retry: failUpdate.
 	if err := m.removeAgentContainer(ctx, a); err != nil {
@@ -155,6 +168,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 		ag.Repo = rs.repo
 		ag.AutoCompactThreshold = rs.autoCompact
 		ag.MaxContextTokens = rs.maxContextTokens
+		ag.AutoMode = rs.autoMode
 		ag.Image = newRef
 		ag.ContainerID = ""
 		// Re-assert the ID-derived resource names agentSpec reads, in case the
@@ -179,7 +193,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	if err := m.ensureAgentFiles(ctx, a); err != nil {
 		return m.failUpdate(ctx, &a, err)
 	}
-	if err := m.startAgentContainer(ctx, &a, rs.rb, "--continue"); err != nil {
+	if err := m.startAgentContainer(ctx, &a, rs.rb, append(autoModeArgs(a), "--continue")...); err != nil {
 		return m.failUpdate(ctx, &a, err)
 	}
 	if err := m.waitTmuxSession(ctx, a); err != nil {

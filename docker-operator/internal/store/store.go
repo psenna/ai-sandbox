@@ -163,6 +163,15 @@ type Agent struct {
 	// container so the agent uses Claude Code's built-in default.
 	MaxContextTokens string `json:"max_context_tokens,omitempty"`
 
+	// AutoMode is whether this agent's `claude` process is started with
+	// `--permission-mode auto` (config.AutoModeOn/AutoModeOff), resolved at
+	// create/update time from the request's per-agent override or else the
+	// operator's DefaultAutoMode. Empty on a record written before this field
+	// existed; internal/agent treats empty as AutoModeOff for backward
+	// compatibility -- an existing agent's behavior must not change just
+	// because the operator upgraded.
+	AutoMode string `json:"auto_mode,omitempty"`
+
 	// Image is the fully resolved agent container image reference this agent
 	// was created against (the operator's AgentImage, or its repository with a
 	// per-agent tag substituted in). Set once at create time. Empty on records
@@ -229,10 +238,10 @@ type CreateSpec struct {
 	// Description is the initial free-form description. May be empty.
 	Description string
 	// Backend, Model, FastModel, OllamaURL, Repo, AutoCompactThreshold,
-	// MaxContextTokens and Image are recorded on the new agent verbatim.
-	// internal/agent resolves them (request value or operator default) and
-	// validates them before calling Create; the store only persists what it
-	// is given.
+	// MaxContextTokens, AutoMode and Image are recorded on the new agent
+	// verbatim. internal/agent resolves them (request value or operator
+	// default) and validates them before calling Create; the store only
+	// persists what it is given.
 	Backend              string
 	Model                string
 	FastModel            string
@@ -240,6 +249,7 @@ type CreateSpec struct {
 	Repo                 string
 	AutoCompactThreshold string
 	MaxContextTokens     string
+	AutoMode             string
 	Image                string
 }
 
@@ -402,6 +412,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		Repo:                 spec.Repo,
 		AutoCompactThreshold: spec.AutoCompactThreshold,
 		MaxContextTokens:     spec.MaxContextTokens,
+		AutoMode:             spec.AutoMode,
 		Image:                spec.Image,
 		Status:               StatusCreating,
 		CreatedAt:            now,

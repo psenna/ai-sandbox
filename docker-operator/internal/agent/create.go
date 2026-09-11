@@ -39,9 +39,13 @@ var ErrInvalidOllamaURL = errors.New("invalid agent ollama_url")
 // AutoCompactThreshold that is not an integer between 50 and 100.
 var ErrInvalidAutoCompactThreshold = errors.New("invalid agent auto_compact_threshold")
 
+// ErrInvalidAutoMode is returned by Create for an AutoMode that is not "",
+// config.AutoModeOn or config.AutoModeOff.
+var ErrInvalidAutoMode = errors.New("invalid agent auto_mode")
+
 // IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo / IsInvalidOllamaURL /
-// IsInvalidAutoCompactThreshold let internal/api map the create-time request
-// errors without importing the sentinels by name.
+// IsInvalidAutoCompactThreshold / IsInvalidAutoMode let internal/api map the
+// create-time request errors without importing the sentinels by name.
 func IsNoAnthropicAuth(err error) bool  { return errors.Is(err, ErrNoAnthropicAuth) }
 func IsInvalidBackend(err error) bool   { return errors.Is(err, ErrInvalidBackend) }
 func IsInvalidRepo(err error) bool      { return errors.Is(err, ErrInvalidRepo) }
@@ -49,6 +53,7 @@ func IsInvalidOllamaURL(err error) bool { return errors.Is(err, ErrInvalidOllama
 func IsInvalidAutoCompactThreshold(err error) bool {
 	return errors.Is(err, ErrInvalidAutoCompactThreshold)
 }
+func IsInvalidAutoMode(err error) bool { return errors.Is(err, ErrInvalidAutoMode) }
 
 // resolvedBackend is everything about an agent's LLM backend that its
 // container environment needs, worked out once in Create from the request,
@@ -288,6 +293,11 @@ type CreateRequest struct {
 	// NOT required to be one of the discovered tags. The resolved reference is
 	// stamped on the record as store.Agent.Image.
 	ImageTag string
+	// AutoMode overrides the operator's DefaultAutoMode for this one agent:
+	// config.AutoModeOn, config.AutoModeOff, or "" to use that default. It is
+	// backend-agnostic. Create validates it (config.ValidAutoMode) and stores
+	// the resolved value on store.Agent.AutoMode.
+	AutoMode string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -339,6 +349,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		OllamaURL: rs.rb.ollamaURL, Repo: rs.repo,
 		AutoCompactThreshold: rs.autoCompact,
 		MaxContextTokens:     rs.maxContextTokens,
+		AutoMode:             rs.autoMode,
 		Image:                imageRef,
 	})
 	if err != nil {
@@ -361,6 +372,7 @@ type resolvedSpec struct {
 	repo             string
 	autoCompact      string
 	maxContextTokens string
+	autoMode         string
 }
 
 // resolveSpec turns a CreateRequest into a resolvedSpec, or an error a caller
@@ -398,7 +410,17 @@ func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest) (resolvedS
 	// integer shape the operator or caller names is passed through.
 	maxContextTokens := firstNonEmpty(req.MaxContextTokens, m.cfg.MaxContextTokens)
 
-	return resolvedSpec{rb: rb, repo: repo, autoCompact: autoCompact, maxContextTokens: maxContextTokens}, nil
+	// Auto mode: per-agent override, else the operator's DefaultAutoMode.
+	// Unlike auto-compact/max-context there is no "omit and let Claude Code
+	// decide" escape hatch -- the resolved value is always a concrete
+	// config.AutoModeOn/AutoModeOff, because agentSpec always has to decide
+	// one way or the other whether to pass --permission-mode auto.
+	if req.AutoMode != "" && !config.ValidAutoMode(req.AutoMode) {
+		return resolvedSpec{}, fmt.Errorf("%w: %q", ErrInvalidAutoMode, req.AutoMode)
+	}
+	autoMode := firstNonEmpty(req.AutoMode, config.AutoModeString(m.cfg.DefaultAutoMode))
+
+	return resolvedSpec{rb: rb, repo: repo, autoCompact: autoCompact, maxContextTokens: maxContextTokens, autoMode: autoMode}, nil
 }
 
 // resolveBackend turns a CreateRequest's backend fields + the operator config
@@ -470,7 +492,7 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 	if err := m.connectDependaproxy(ctx, a); err != nil {
 		return err
 	}
-	if err := m.startAgentContainer(ctx, a, rb); err != nil {
+	if err := m.startAgentContainer(ctx, a, rb, autoModeArgs(*a)...); err != nil {
 		return err
 	}
 	if err := m.waitTmuxSession(ctx, *a); err != nil {
@@ -711,12 +733,31 @@ func (m *Manager) connectDependaproxy(ctx context.Context, a *store.Agent) error
 	})
 }
 
+// autoModeArgs returns the leading claude CLI args that put a's `claude`
+// process into auto mode (`--permission-mode auto`, which reviews tool calls
+// with a classifier instead of stopping for interactive approval), or nil
+// when a.AutoMode is not config.AutoModeOn. Every startAgentContainer call
+// site prepends this ahead of whatever session-resumption flag it passes
+// (none for a fresh create, "--continue" for Update, "--resume" for the
+// reconcile pass waking an agent whose container did not survive a host/
+// daemon restart), so auto mode applies the same way regardless of how the
+// session starts.
+func autoModeArgs(a store.Agent) []string {
+	if a.AutoMode != config.AutoModeOn {
+		return nil
+	}
+	return []string{"--permission-mode", "auto"}
+}
+
 // startAgentContainer creates and starts the agent container itself.
 //
 // claudeArgs are appended to the tmux-boot.sh Cmd and forwarded to `claude`
 // inside the session (tmux-boot.sh ends `... new-session ... claude "$@"`).
-// Create passes none (byte-identical to the historical Cmd); Update passes
-// "--continue" so the recreated container resumes the previous Claude session.
+// Create passes autoModeArgs alone (nil when auto mode is off, byte-identical
+// to the historical Cmd); Update appends "--continue" so the recreated
+// container resumes the previous Claude session; the reconcile pass's wake-up
+// appends "--resume" instead, since the old container's tmux session did not
+// survive being stopped.
 func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend, claudeArgs ...string) error {
 	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a, rb, claudeArgs...))
 	if err != nil {
