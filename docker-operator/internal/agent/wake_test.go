@@ -222,10 +222,10 @@ func (f *flakyContainerStart) ContainerStart(ctx context.Context, id string) err
 	// immediately never gets to report healthy) before stopping it, so
 	// waitHealthy's Health==Healthy case does not race the State==Exited
 	// case it is meant to hit.
-	if err := f.Fake.SetHealth(id, dockerclient.HealthStarting); err != nil {
+	if err := f.SetHealth(id, dockerclient.HealthStarting); err != nil {
 		return err
 	}
-	return f.Fake.ContainerStop(ctx, id, 0)
+	return f.ContainerStop(ctx, id, 0)
 }
 
 var _ dockerclient.Client = (*flakyContainerStart)(nil)
