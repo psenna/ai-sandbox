@@ -178,6 +178,17 @@ type Options struct {
 	// on a context detached from the caller's: the usual reason a create fails
 	// is that its context was cancelled, and rollback must still happen.
 	TeardownTimeout time.Duration
+	// DindWakeRetries bounds how many additional times ensureDindRunning
+	// retries starting a dind sidecar that exits immediately (rather than
+	// timing out) instead of failing on the first attempt. This specifically
+	// covers the startup race right after a host reboot: the docker-operator
+	// container (and the sidecars it wakes back up) can come up before the
+	// host's sysbox-runc systemd units have finished initializing, so the
+	// very first start of a sysbox-runc container fails even though the
+	// runtime is correctly installed and every later attempt succeeds.
+	DindWakeRetries int
+	// DindWakeRetryDelay is the pause between DindWakeRetries attempts.
+	DindWakeRetryDelay time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -198,6 +209,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.TeardownTimeout <= 0 {
 		o.TeardownTimeout = 2 * time.Minute
+	}
+	if o.DindWakeRetries <= 0 {
+		o.DindWakeRetries = 5
+	}
+	if o.DindWakeRetryDelay <= 0 {
+		o.DindWakeRetryDelay = 5 * time.Second
 	}
 	return o
 }
@@ -683,6 +700,25 @@ func (m *Manager) dindSpec(a store.Agent) dockerclient.ContainerSpec {
 	}
 }
 
+// dindExitedError reports that waitHealthy saw the dind sidecar exit before
+// ever reporting healthy, as opposed to a timeout or an inspect failure.
+// ensureDindRunning's retry loop specifically watches for this type: it is
+// exactly the failure mode produced when the configured container runtime
+// (sysbox-runc) has not finished initializing yet right after a host
+// reboot, even though it is correctly installed and a retry moments later
+// succeeds. errors.As, not string-matching, is what makes that retry safe --
+// the message below is free to change without breaking it.
+type dindExitedError struct {
+	name     string
+	exitCode int
+	runtime  string
+}
+
+func (e *dindExitedError) Error() string {
+	return fmt.Sprintf("the dind sidecar %q exited with code %d before becoming healthy "+
+		"(is the %q runtime installed on this host?)", e.name, e.exitCode, e.runtime)
+}
+
 // waitHealthy polls until the container's healthcheck passes, it dies, or the
 // timeout expires. Polling rather than subscribing to the event stream keeps
 // this self-contained: there is exactly one waiter, and the event goroutine
@@ -698,8 +734,7 @@ func (m *Manager) waitHealthy(ctx context.Context, id, name string) error {
 		case c.Health == dockerclient.HealthHealthy:
 			return nil
 		case c.State == dockerclient.StateExited || c.State == dockerclient.StateDead:
-			return fmt.Errorf("the dind sidecar %q exited with code %d before becoming healthy "+
-				"(is the %q runtime installed on this host?)", name, c.ExitCode, m.cfg.DockerRuntime)
+			return &dindExitedError{name: name, exitCode: c.ExitCode, runtime: m.cfg.DockerRuntime}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("the dind sidecar %q did not become healthy within %s (state %q, health %q)",

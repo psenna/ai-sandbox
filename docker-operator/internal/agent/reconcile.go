@@ -297,6 +297,16 @@ func (m *Manager) markWakeError(ctx context.Context, id string, cause error) {
 // starting it -- that is a lost resource with no automatic recovery story,
 // reported as an error rather than silently doing something more drastic.
 //
+// A sidecar that exits immediately (rather than timing out) is retried up to
+// Options.DindWakeRetries times, DindWakeRetryDelay apart, before this gives
+// up: right after a host reboot, the operator (and the sidecars it wakes
+// back up here) can start before the host's sysbox-runc systemd units have
+// finished initializing, so the very first start of a sysbox-runc container
+// fails even though the runtime is correctly installed and a retry moments
+// later succeeds. Any other waitHealthy failure (a timeout, or the sidecar
+// having vanished) is not this kind of transient startup race and is
+// returned on the first attempt.
+//
 // Shared by wakeAgent (the startup reconcile pass) and Update (an in-place
 // update's recreated agent container needs the sidecar answering on
 // DOCKER_HOST from the moment it boots, and Update otherwise never touches
@@ -315,13 +325,25 @@ func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, e
 
 	m.log.InfoContext(ctx, "the dind sidecar is not running; starting it back up",
 		"agent_id", a.ID, "dind_container", ref, "state", c.State)
-	if err := m.docker.ContainerStart(ctx, ref); err != nil {
-		return false, fmt.Errorf("starting the dind sidecar %q: %w", ref, err)
+
+	for attempt := 1; ; attempt++ {
+		if err := m.docker.ContainerStart(ctx, ref); err != nil {
+			return false, fmt.Errorf("starting the dind sidecar %q: %w", ref, err)
+		}
+		err := m.waitHealthy(ctx, ref, a.DindContainerName)
+		if err == nil {
+			return true, nil
+		}
+		var exited *dindExitedError
+		if !errors.As(err, &exited) || attempt > m.opts.DindWakeRetries {
+			return false, err
+		}
+		m.log.WarnContext(ctx, "the dind sidecar exited immediately; this looks like the sysbox-runc runtime not being fully initialized yet right after a host/daemon restart -- retrying",
+			"agent_id", a.ID, "dind_container", ref, "attempt", attempt, "max_attempts", m.opts.DindWakeRetries+1, "error", err)
+		if err := sleepCtx(ctx, m.opts.DindWakeRetryDelay); err != nil {
+			return false, err
+		}
 	}
-	if err := m.waitHealthy(ctx, ref, a.DindContainerName); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // findUnmanaged lists every managed-labelled container, network and volume and
