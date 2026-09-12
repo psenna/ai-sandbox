@@ -19,6 +19,18 @@
 # checksums against it directly (it returns hashes, not module content).
 set -eu
 
+# A prior dockerd in THIS SAME container can be killed abruptly (a host power
+# loss/hard reboot, an OOM kill) with no chance to remove its own pidfile.
+# /var/run/docker.pid then lingers on the container's writable layer across a
+# restart (only `docker rm` clears it), and the next dockerd refuses to start,
+# misreading the stale file as "another instance is still running" --
+# "failed to start daemon ...: process with PID N is still running" -- even
+# though nothing is. Since this script is the only thing that ever starts
+# dockerd in this container, any pidfile found here is necessarily stale by
+# definition: removing it first is always safe, first boot included (rm -f
+# no-ops when there is nothing to remove).
+rm -f /var/run/docker.pid
+
 # Start dockerd with the compose command args (TCP + unix sockets), backgrounded
 # so we can insert the iptables rules while it runs.
 dockerd "$@" &
