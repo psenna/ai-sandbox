@@ -5,7 +5,7 @@ description: Use when the agent needs to run code or stand up service dependenci
 
 # Use Docker (rootless DinD)
 
-You are running inside the `claude` container of the ai-sandbox stack. A
+You are running inside the agent container of the ai-sandbox stack. A
 **rootless Docker-in-Docker daemon** is available at `DOCKER_HOST=tcp://docker:2375`
 (set in your environment). Use it to run code in any language and to stand up
 service dependencies — without installing anything on the agent itself.
@@ -15,6 +15,12 @@ node** — only the Node runtime Claude Code itself runs on. Every dev task
 (`node script.js`, `python script.py`, `go test`, `npm install`, running a
 database) happens inside a container launched against this daemon. Do not try to
 run dev tooling directly on the agent; it is not there by design.
+
+Every agent gets its **own private** `dinernet` — so there is no single fixed
+DependaProxy address. The operator connects DependaProxy to your network when
+it creates you, reads back the address it was assigned, and the entrypoint
+writes that address to **`/workspace/dependaproxy-ip`**. Every `--add-host`
+below reads that file instead of a literal.
 
 ## The one rule that matters most: `/workspace` is the only shared path
 
@@ -55,10 +61,12 @@ error — do not try to work around the block.
 docker run --rm -u node -v /workspace:/work -w /work node:22-alpine node script.js
 # npm install/test: mount the entrypoint-generated .npmrc (registry + token) and
 # add the dependaproxy host entry (the nested daemon cannot resolve the compose
-# name — the static dinernet IP is 172.23.0.10). With -u node, HOME=/home/node,
-# so npm reads /home/node/.npmrc.
+# name — the entrypoint writes this agent's dinernet IP to
+# /workspace/dependaproxy-ip). With -u node, HOME=/home/node, so npm reads
+# /home/node/.npmrc.
 docker run --rm -u node -v /workspace:/work -w /work \
-  -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
+  -v /workspace/.npmrc:/home/node/.npmrc:ro \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   node:22-alpine sh -c 'npm install && npm test'
 
 # Python: pass the entrypoint-generated pip.env (PIP_INDEX_URL + PIP_TRUSTED_HOST)
@@ -66,7 +74,8 @@ docker run --rm -u node -v /workspace:/work -w /work \
 # bind-mounted pip.conf files, so env vars are used.)
 docker run --rm -v /workspace:/work -w /work python:3-alpine python script.py
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
+  --env-file /work/pip.env \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   python:3-alpine sh -c 'pip install -r requirements.txt && python script.py'
 
 # Go: pass the entrypoint-generated go.env (GOPROXY) via --env-file, and add the
@@ -74,11 +83,13 @@ docker run --rm -v /workspace:/work -w /work \
 # persist. Go still verifies module checksums against sum.golang.org directly
 # (that host is intentionally not blocked).
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
+  --env-file /work/go.env \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   -e GOMODCACHE=/work/.gocache/mod -e GOCACHE=/work/.gocache/build \
   golang:1-alpine go test ./...
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
+  --env-file /work/go.env \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   golang:1-alpine go build -o /work/app .
 ```
 
@@ -87,6 +98,74 @@ persist only if they are written under `/workspace` (the shared volume) OR a nam
 volume you create. State written elsewhere inside the container is lost when `--rm`
 removes it. For Go, set `GOMODCACHE`/`GOCACHE` under `/work` if you want build
 caches to persist.
+
+## Building an image or running Compose (DependaProxy in nested builds)
+
+The one-liners above are single `docker run`s. `docker build` and `docker
+compose` launch their own nested containers — a build's `RUN` steps, a
+compose service — and each gets its own network namespace, so they need the
+same two things wired in separately: the `dependaproxy` host entry (the
+per-agent dinernet IP in `/workspace/dependaproxy-ip`) **and** the registry
+config.
+
+### `docker build`
+
+`--add-host` works on `docker build` too. Pass the registry settings as
+build args — they carry no token, so nothing secret is baked into a layer —
+and declare the matching `ARG`s in the Dockerfile stage that installs
+dependencies:
+
+```sh
+DP=$(cat /workspace/dependaproxy-ip)
+docker build \
+  --add-host="dependaproxy:$DP" \
+  --build-arg NPM_CONFIG_REGISTRY=http://dependaproxy:8080/npm \
+  --build-arg PIP_INDEX_URL=http://dependaproxy:8080/pypi/simple \
+  --build-arg PIP_TRUSTED_HOST=dependaproxy \
+  --build-arg GOPROXY=http://dependaproxy:8080/goproxy \
+  -t myapp:dev -f Dockerfile /workspace
+```
+
+```dockerfile
+# In the Dockerfile, BEFORE the RUN that installs dependencies. A declared
+# ARG is visible to that stage's RUN steps as an environment variable, which
+# is exactly what npm / pip / go read — no ENV line needed.
+ARG NPM_CONFIG_REGISTRY
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+ARG GOPROXY
+RUN npm ci          # or: pip install -r requirements.txt / go mod download
+```
+
+If you cannot edit the Dockerfile, mount `.npmrc` as a BuildKit secret:
+`docker build --secret id=npmrc,src=/workspace/.npmrc ...` with
+`RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci` (still pass
+`--add-host`).
+
+### `docker compose`
+
+Put the host entry and registry env on each service that fetches
+dependencies. Keep it in a git-ignored `compose.override.yaml` so the
+committed compose file stays proxy-agnostic:
+
+```yaml
+# compose.override.yaml — auto-merged by `docker compose`, git-ignored
+services:
+  app:
+    extra_hosts:
+      - "dependaproxy:${DEPENDAPROXY_IP}"
+    environment:
+      NPM_CONFIG_REGISTRY: http://dependaproxy:8080/npm
+      # pip:  PIP_INDEX_URL=http://dependaproxy:8080/pypi/simple
+      #       PIP_TRUSTED_HOST=dependaproxy
+      # go:   GOPROXY=http://dependaproxy:8080/goproxy
+```
+
+```sh
+DEPENDAPROXY_IP=$(cat /workspace/dependaproxy-ip) docker compose up --build
+```
+
+`extra_hosts` applies to `docker compose build` as well as `up`.
 
 ## Registries → DependaProxy (mandatory)
 
@@ -102,7 +181,7 @@ matches the stored hash. Three hard constraints:
   registry, the fetch will fail with a connection error — do not try to work
   around the block.
 - **Always mount/pass the generated config + host entry** (see the one-liners
-  above). The claude entrypoint writes three artifacts to `/workspace` (DependaProxy
+  above). The claude entrypoint writes four artifacts to `/workspace` (DependaProxy
   auth is disabled in this stack, so they carry no token):
   - `/workspace/.npmrc` — npm registry `http://dependaproxy:8080/npm`. Mount as
     `/home/node/.npmrc:ro` and run as `node`.
@@ -110,8 +189,12 @@ matches the stored hash. Three hard constraints:
     `PIP_TRUSTED_HOST=dependaproxy`. Pass via `--env-file /work/pip.env`.
   - `/workspace/go.env` — `GOPROXY=http://dependaproxy:8080/goproxy`. Pass via
     `--env-file /work/go.env`.
-  All three need `--add-host=dependaproxy:172.23.0.10` (the nested daemon cannot
-  resolve the compose name).
+  - `/workspace/dependaproxy-ip` — the address DependaProxy answers on from
+    inside the DinD daemon. It is **per-agent**, so read it, never memorise it.
+  The first three all need
+  `--add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)"` (the nested
+  daemon cannot resolve the `dependaproxy` service name). For `docker build` /
+  `docker compose`, see *Building an image or running Compose* above.
 
 A package blocked by DependaProxy's validation (default: published less than 7 days
 ago) returns a 403 — read the error and pick a different version; the block is
@@ -189,7 +272,7 @@ docker run --rm --link minio minio/mc:latest \
 
 Workload containers you launch are on the daemon's default bridge network; they
 reach each other by container name (`pg`, `mysql`, `minio`, …). They are NOT on
-the compose `dinernet` and cannot reach `git-proxy` — that is intentional.
+the agent's `dinernet` and cannot reach `git-proxy` — that is intentional.
 
 ## Two execution surfaces — don't cross them
 
@@ -210,4 +293,5 @@ container). The Docker daemon is isolated from git-proxy on purpose.
   pull images — that is its whole scope.
 - If `docker` commands fail with "Cannot connect to the Docker daemon", the
   `docker` service may still be starting; wait a few seconds and retry (the
-  compose `depends_on: service_healthy` normally prevents this).
+  operator only starts you once the DinD sidecar reports healthy, so this
+  normally cannot happen).

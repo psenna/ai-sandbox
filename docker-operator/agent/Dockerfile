@@ -1,30 +1,38 @@
 # syntax=docker/dockerfile:1
 #
-# The docker-operator's agent image: the repo-root Dockerfile's agent, minus the
-# Kubernetes-operator-only skills, plus tmux.
+# The docker-operator's agent image: this is the ONLY Dockerfile in the repo
+# that bakes any claude-code/*/SKILL.md file (the single-agent "compose
+# stack" Dockerfile this once mirrored was retired -- see the repo-root
+# docker-compose.yaml's header -- and the Kubernetes operator's own workload
+# image is built elsewhere). tmux is the one thing genuinely specific to this
+# image: the operator runs `claude` inside a detachable tmux session so the
+# web UI terminal survives the operator/browser restarting; the WS bridge is
+# a `docker exec ... tmux attach -t main` (see internal/wsbridge).
 #
-# BUILT WITH REPO-ROOT CONTEXT so it can COPY the same real assets the root
-# image uses (claude-code/*/SKILL.md, agent-context/CLAUDE.md, entrypoint.sh)
-# without vendoring copies that would silently drift:
+# BUILT WITH REPO-ROOT CONTEXT so it can COPY claude-code/*/SKILL.md,
+# agent-context/CLAUDE.md and entrypoint.sh directly, without vendoring
+# copies that would silently drift:
 #
 #   docker build -f docker-operator/agent/Dockerfile \
 #     -t ghcr.io/psenna/ai-sandbox-docker-operator-agent:dev .
 #
-# Two deliberate differences from the root Dockerfile:
+# Five skills, not eight: use-sandbox / freeze / unfreeze describe the
+# Kubernetes operator's sidecar control API and its snapshot-based
+# freeze/wake -- neither exists here, and a docker-operator agent that read
+# them would be actively misled. This image DOES bake store-file (the
+# docker-operator's centralized /workspace/store file store), which the k8s
+# operator's image does not, since it has no such store.
 #
-#  1. tmux. The operator runs `claude` inside a detachable tmux session so the
-#     web UI terminal survives the operator/browser restarting; the WS bridge
-#     is a `docker exec ... tmux attach -t main` (see internal/wsbridge).
-#  2. Five skills, not eight. use-sandbox / freeze / unfreeze describe the
-#     Kubernetes operator's sidecar control API and its snapshot-based
-#     freeze/wake -- neither exists here, and a docker-operator agent that read
-#     them would be actively misled. This image DOES bake store-file (the
-#     docker-operator's centralized /workspace/store file store), which the
-#     root image does not, since the k8s operator has no such store.
-#     use-docker is the LOCAL fork
-#     (docker-operator/agent/skills/use-docker/SKILL.md): each agent gets a
-#     private dinernet, so the compose stack's static dependaproxy IP is
-#     meaningless and the fork reads /workspace/dependaproxy-ip instead.
+# use-git-proxy is the ONE local fork left
+# (docker-operator/agent/skills/use-git-proxy/SKILL.md): it ships in the
+# separate git-proxy repository and is vendored here (claude-code/use-git-proxy/
+# SKILL.md, untouched, for diffing against upstream on the next re-vendor);
+# the fork is the same content trimmed of two sections that only make sense
+# for a reader who does not already have the skill installed for them. Every
+# other skill here is baked straight from claude-code/ with no fork: nothing
+# else in this repo builds from those files, so there is no second copy to
+# drift out of sync -- if you touch use-docker or use-dependaproxy, edit
+# claude-code/{use-docker,use-dependaproxy}/SKILL.md directly.
 #
 # CMD stays ["bash"]. The operator overrides Cmd at container-create time
 # (tmux-boot.sh), which keeps this Dockerfile agnostic about which orchestrator
@@ -32,11 +40,10 @@
 
 FROM node:22-alpine
 
-# Same package set as the root Dockerfile (git for git-proxy clone/fetch/push,
-# ca-certificates, bash for the entrypoint + the Claude Code installer, curl for
-# the broker leg + the installer, libgcc/libstdc++/ripgrep for the native binary
-# on musl, docker-cli as a client-only talker to the per-agent rootless DinD
-# sidecar), plus tmux.
+# git for git-proxy clone/fetch/push, ca-certificates, bash for the entrypoint
+# + the Claude Code installer, curl for the broker leg + the installer,
+# libgcc/libstdc++/ripgrep for the native binary on musl, docker-cli as a
+# client-only talker to the per-agent rootless DinD sidecar, plus tmux.
 RUN apk add --no-cache git ca-certificates bash curl libgcc libstdc++ ripgrep docker-cli tmux && \
     rm -rf /var/cache/apk/*
 
@@ -57,12 +64,12 @@ ENV LANG=C.UTF-8
 
 # Bake the skills + the always-loaded CLAUDE.md; the entrypoint copies them into
 # /workspace/.claude/skills/ and /workspace/CLAUDE.md at startup.
-COPY claude-code/use-git-proxy/SKILL.md                /opt/skills/use-git-proxy/SKILL.md
-COPY docker-operator/agent/skills/use-docker/SKILL.md  /opt/skills/use-docker/SKILL.md
-COPY claude-code/use-dependaproxy/SKILL.md             /opt/skills/use-dependaproxy/SKILL.md
-COPY claude-code/implement-issue/SKILL.md              /opt/skills/implement-issue/SKILL.md
-COPY claude-code/store-file/SKILL.md                   /opt/skills/store-file/SKILL.md
-COPY claude-code/agent-context/CLAUDE.md               /opt/agent-context/CLAUDE.md
+COPY docker-operator/agent/skills/use-git-proxy/SKILL.md  /opt/skills/use-git-proxy/SKILL.md
+COPY claude-code/use-docker/SKILL.md                      /opt/skills/use-docker/SKILL.md
+COPY claude-code/use-dependaproxy/SKILL.md                /opt/skills/use-dependaproxy/SKILL.md
+COPY claude-code/implement-issue/SKILL.md                 /opt/skills/implement-issue/SKILL.md
+COPY claude-code/store-file/SKILL.md                      /opt/skills/store-file/SKILL.md
+COPY claude-code/agent-context/CLAUDE.md                  /opt/agent-context/CLAUDE.md
 
 COPY claude-code/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

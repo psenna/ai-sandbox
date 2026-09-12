@@ -11,27 +11,37 @@ name: docker-operator agent image
 # header -- the agent image now has a real published home.
 #
 # Trigger: a push to `main` that touches docker-operator/agent/** (the
-# Dockerfile, tmux-boot.sh, the forked use-docker skill) or this workflow
-# file. A pull request touching the same paths BUILDS the image (both
-# architectures) but does not push, so a broken Dockerfile still fails a
-# check. workflow_dispatch runs it on demand -- use it for the very first
-# publish, or to re-cut :latest without an agent/ change.
-#
-# NOTE: the Dockerfile also COPYs assets from OUTSIDE docker-operator/agent/
-# (claude-code/entrypoint.sh and four claude-code/*/SKILL.md files). Changing
-# one of those alone does NOT rebuild the image here -- run this workflow via
-# workflow_dispatch after such a change, or fold it into an agent/ commit.
-
+# Dockerfile, tmux-boot.sh, the use-git-proxy fork) OR one of the assets the
+# Dockerfile COPYs from OUTSIDE docker-operator/agent/ -- claude-code/
+# entrypoint.sh, claude-code/agent-context/CLAUDE.md, and the four
+# claude-code/*/SKILL.md files it bakes unforked (use-docker,
+# use-dependaproxy, implement-issue, store-file) -- or this workflow file. A
+# pull request touching the same paths BUILDS the image (both architectures)
+# but does not push, so a broken Dockerfile still fails a check.
+# workflow_dispatch runs it on demand -- use it for the very first publish,
+# or to re-cut :latest with no path-filter-matching change at all.
 on:
   push:
     branches: [main]
     paths:
       - 'docker-operator/agent/**'
+      - 'claude-code/entrypoint.sh'
+      - 'claude-code/agent-context/CLAUDE.md'
+      - 'claude-code/use-docker/SKILL.md'
+      - 'claude-code/use-dependaproxy/SKILL.md'
+      - 'claude-code/implement-issue/SKILL.md'
+      - 'claude-code/store-file/SKILL.md'
       - '.github/workflows/docker-operator-agent-image.yml'
   pull_request:
     branches: [main]
     paths:
       - 'docker-operator/agent/**'
+      - 'claude-code/entrypoint.sh'
+      - 'claude-code/agent-context/CLAUDE.md'
+      - 'claude-code/use-docker/SKILL.md'
+      - 'claude-code/use-dependaproxy/SKILL.md'
+      - 'claude-code/implement-issue/SKILL.md'
+      - 'claude-code/store-file/SKILL.md'
       - '.github/workflows/docker-operator-agent-image.yml'
   workflow_dispatch:
 
