@@ -150,7 +150,7 @@ services:
       LISTEN_ADDR: "0.0.0.0:8000"
       STATE_DB_PATH: "/var/lib/docker-operator/state.db"
       MAX_AGENTS: "${MAX_AGENTS:-5}"
-      AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-agent:20260909-144348}"
+      AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-agent:20260910-110802}"
       # Agent-image tag discovery: the operator polls the registry for
       # AGENT_IMAGE's :YYYYMMDD-HHMMSS tags and surfaces them in the web UI.
       # REFRESH_INTERVAL is a Go duration (floored at 1m); REGISTRY_URL is
