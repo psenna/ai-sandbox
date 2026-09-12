@@ -56,6 +56,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: docker-operator-ollama
+    restart: unless-stopped
     environment:
       OLLAMA_NUM_CTX: "${OLLAMA_NUM_CTX:-131072}"
     volumes:
@@ -77,6 +78,7 @@ services:
   git-proxy:
     image: ghcr.io/psenna/git-proxy:v0.0.11
     container_name: docker-operator-gitproxy
+    restart: unless-stopped
     user: "1000:1000"
     ports:
       - "127.0.0.1:8080:8080" # git-protocol leg (clone/fetch/push)
@@ -92,6 +94,7 @@ services:
   postgres:
     image: postgres:18
     container_name: docker-operator-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: dependaproxy
       POSTGRES_PASSWORD: dependaproxy-secret
@@ -116,6 +119,7 @@ services:
   dependaproxy:
     image: ghcr.io/psenna/dependaproxy:v0.0.7
     container_name: docker-operator-dependaproxy
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -132,6 +136,7 @@ services:
       dockerfile: docker-operator/Dockerfile
     image: docker-operator:0.1.0
     container_name: docker-operator
+    restart: unless-stopped
     depends_on:
       ollama:
         condition: service_healthy
