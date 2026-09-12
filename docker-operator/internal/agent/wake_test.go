@@ -194,6 +194,138 @@ func TestUpdate_StoppedDind_StartsItBackUp(t *testing.T) {
 	}
 }
 
+// flakyContainerStart wraps a Fake so ContainerStart against target leaves
+// the container Exited (rather than Running/healthy) for the first
+// failCount calls against it, then behaves normally -- simulating the
+// transient race right after a host reboot where the operator (or the
+// sidecar it wakes back up) starts before the host's sysbox-runc systemd
+// units have finished initializing, so the first attempt(s) to start a
+// sysbox-runc container fail even though the runtime is correctly
+// installed.
+type flakyContainerStart struct {
+	*dockerclienttest.Fake
+	target    string
+	failCount int
+	calls     int
+}
+
+func (f *flakyContainerStart) ContainerStart(ctx context.Context, id string) error {
+	if id != f.target || f.calls >= f.failCount {
+		return f.Fake.ContainerStart(ctx, id)
+	}
+	f.calls++
+	if err := f.Fake.ContainerStart(ctx, id); err != nil {
+		return err
+	}
+	// AutoHealthy marks the container healthy the instant ContainerStart
+	// runs; reset that back to "starting" (a real dind sidecar that exits
+	// immediately never gets to report healthy) before stopping it, so
+	// waitHealthy's Health==Healthy case does not race the State==Exited
+	// case it is meant to hit.
+	if err := f.Fake.SetHealth(id, dockerclient.HealthStarting); err != nil {
+		return err
+	}
+	return f.Fake.ContainerStop(ctx, id, 0)
+}
+
+var _ dockerclient.Client = (*flakyContainerStart)(nil)
+
+// TestReconcile_DindExitsImmediately_RetriedUntilHealthy proves
+// ensureDindRunning's retry loop: a dind sidecar that exits immediately on
+// its first attempts (fewer than Options.DindWakeRetries) is retried rather
+// than failed outright, exactly the sysbox-runc-not-ready-yet boot race
+// ensureDindRunning's doc comment describes.
+func TestReconcile_DindExitsImmediately_RetriedUntilHealthy(t *testing.T) {
+	f := dockerclienttest.New()
+	f.AutoHealthy = true
+	cfg := testConfig(5)
+	newDependaproxy(t, f, cfg.DependaproxyContainer)
+	f.AddImage(dindImage)
+	f.AddImage(cfg.AgentImage)
+	st := newTestStore(t, 5)
+	wrapped := &flakyContainerStart{Fake: f}
+	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), testOptions())
+
+	a := createRunningAgent(t, m)
+	ctx := context.Background()
+	if err := f.ContainerStop(ctx, a.DindContainerID, 0); err != nil {
+		t.Fatalf("simulating a stopped dind sidecar: %v", err)
+	}
+
+	// Fewer failures than the configured retry budget (testOptions:
+	// DindWakeRetries = 3): the sidecar must come up healthy anyway.
+	wrapped.target = a.DindContainerID
+	wrapped.failCount = 2
+
+	rep, err := m.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(rep.Woken) != 1 || rep.Woken[0] != a.ID {
+		t.Fatalf("Woken = %v, want [%q]", rep.Woken, a.ID)
+	}
+
+	dind, err := f.ContainerInspect(ctx, a.DindContainerID)
+	if err != nil {
+		t.Fatalf("inspecting the dind sidecar: %v", err)
+	}
+	if dind.State != dockerclient.StateRunning {
+		t.Errorf("dind State = %q, want %q (should have succeeded after retrying)", dind.State, dockerclient.StateRunning)
+	}
+
+	got, err := m.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+}
+
+// TestReconcile_DindExitsImmediately_ExhaustsRetries_MarksError proves the
+// retry loop still gives up: a sidecar that keeps exiting immediately past
+// Options.DindWakeRetries is reported as a failure and the record is marked
+// error, exactly like a dind sidecar that is gone for good.
+func TestReconcile_DindExitsImmediately_ExhaustsRetries_MarksError(t *testing.T) {
+	f := dockerclienttest.New()
+	f.AutoHealthy = true
+	cfg := testConfig(5)
+	newDependaproxy(t, f, cfg.DependaproxyContainer)
+	f.AddImage(dindImage)
+	f.AddImage(cfg.AgentImage)
+	st := newTestStore(t, 5)
+	wrapped := &flakyContainerStart{Fake: f}
+	opts := testOptions()
+	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), opts)
+
+	a := createRunningAgent(t, m)
+	ctx := context.Background()
+	if err := f.ContainerStop(ctx, a.DindContainerID, 0); err != nil {
+		t.Fatalf("simulating a stopped dind sidecar: %v", err)
+	}
+
+	// More failures than the retry budget allows (initial attempt +
+	// DindWakeRetries retries): it must never come up.
+	wrapped.target = a.DindContainerID
+	wrapped.failCount = opts.DindWakeRetries + 1
+
+	rep, err := m.Reconcile(ctx)
+	if err == nil {
+		t.Fatal("Reconcile: want a non-nil error, the sidecar never becomes healthy")
+	}
+	if len(rep.Woken) != 0 {
+		t.Errorf("Woken = %v, want none", rep.Woken)
+	}
+
+	got, err := m.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusError {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusError)
+	}
+}
+
 // TestUpdate_DindGone_FailsWithVolumesIntact proves Update's ensureDindRunning
 // check fails loudly -- rather than recreating the agent container against a
 // dead DOCKER_HOST -- when the sidecar cannot be recovered at all, and that
