@@ -28,7 +28,7 @@
 #     own DinD sidecar, plus dependaproxy connected into it dynamically at
 #     create time so workload containers inside that agent's nested daemon
 #     can reach it (there is no longer one static dependaproxy IP shared by
-#     every agent -- see docker-operator/agent/skills/use-docker/SKILL.md).
+#     every agent -- see claude-code/use-docker/SKILL.md).
 #
 # The docker-operator container is the one thing in this whole repo that
 # holds a real Docker credential (the bind-mounted socket below) -- it is

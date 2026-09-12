@@ -16,7 +16,10 @@ stack. You have TWO execution surfaces:
   containers). The public npm/pypi/Go registries are network-blocked by the
   sandbox; do not try to bypass the block. DependaProxy auth is disabled in this
   stack, so the generated `/workspace/.npmrc`, `/workspace/pip.env`, and
-  `/workspace/go.env` carry no token.
+  `/workspace/go.env` carry no token. A workload container also needs a
+  `--add-host` for the `dependaproxy` name (the DinD daemon cannot resolve it):
+  read the address from `/workspace/dependaproxy-ip`, never hardcode one — it
+  is assigned per agent. See `use-docker`.
 
 ## Docker rules (read before you `docker run`)
 

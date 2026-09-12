@@ -12,9 +12,10 @@ gets its own `feat/*` branch and PR.
 ## Inputs
 
 - `args` = issue number(s) and options, e.g. `implement-issue 61` or
-  `implement-issue 61 62 --repo psenna/dependaproxy --merge`. Parse:
+  `implement-issue 61 62 --repo owner/repo --merge`. Parse:
   - issue numbers: the positional integers.
-  - `--repo <owner/repo>` (default `psenna/dependaproxy`).
+  - `--repo <owner/repo>` (default: the `GITHUB_REPO` environment variable, if
+    set; if both are unset, ask the user which repo).
   - `--merge` (wait for CI green, then squash-merge the PR).
   - `--base <branch>` (PR base; default `main`).
 - If no issue numbers are given, ask the user which issues to implement.
@@ -23,9 +24,13 @@ gets its own `feat/*` branch and PR.
 
 ### 0. Fetch the issue
 Use the `use-git-proxy` broker: `GET /<owner%2Frepo.git>/issues/<N>` with the
-`Authorization: Bearer ${AGENT_TOKEN}` header. Capture `{title, body}`. If the
-repo's default branch / conventions are unknown, also note the repo root on disk
-(e.g. `/workspace/dependaproxy`).
+`Authorization: Bearer ${AGENT_TOKEN}` header. Capture `{title, body}`. Note the
+repo root on disk (e.g. `/workspace/<repo-name>`). If the repo's own
+conventions (language, build tool, test command, branch/PR conventions) are not
+already known, read its README / CONTRIBUTING / CLAUDE.md and skim its existing
+code structure now — do NOT assume a stack. The only conventions that hold
+across every repo served through git-proxy are: `feat/*` branches, and pushes/
+PRs go through the `use-git-proxy` broker.
 
 ### 1. PLAN — Opus
 Launch a **Plan** subagent with **model: opus**:
@@ -34,14 +39,14 @@ Agent({
   subagent_type: "Plan",
   model: "opus",
   description: "plan issue #N",
-  prompt: "<issue title + body verbatim> + repo layout + the dependaproxy
-           conventions (Go 1.25, module github.com/psenna/dependaproxy, TDD,
-           middleware registered per-adapter in internal/registry/{npm,pypi}/adapter.go,
-           validation=retrieval=mutation middleware patterns, tests via `make`
-           in a DinD golang:1.25 container, feat/* branches, git-proxy broker
-           for push/PR/CI). Produce a concrete, file-level implementation plan:
-           files to create/modify, the approach, the build sequence, and the
-           verification steps (which make targets, which DP_TEST_* env)."
+  prompt: "<issue title + body verbatim> + the repo's layout and its OWN
+           conventions (from its README/CONTRIBUTING/CLAUDE.md and existing
+           code -- its language, build tool, module/package layout, and how it
+           runs tests; do not assume a stack this repo hasn't shown you).
+           Produce a concrete, file-level implementation plan: files to
+           create/modify, the approach, the build sequence, and the
+           verification steps (the exact command(s) to build/lint/test, and
+           any service or env var the tests need)."
 })
 ```
 The Plan agent is read-only — it returns the plan text. Read it; if it's missing
@@ -58,11 +63,13 @@ Agent({
   model: "sonnet",
   description: "implement issue #N",
   prompt: "<the Opus plan> + 'Implement this on the current feat/<slug> branch
-           in <repo dir>. Follow TDD where the plan says so. Run `make vet`,
-           `make fmt-check`, and the relevant `make test`/`go test` targets
-           inside the DinD golang container (see use-docker + the Makefile) to
-           confirm it builds and the new tests pass. gofmt -w any drift. Do NOT
-           push or open a PR yet. Report what you changed and the test result.'"
+           in <repo dir>. Follow TDD where the plan says so. Run the repo's own
+           build/lint/test commands (per the plan's verification steps) --
+           inside a DinD container matching the repo's language, per the
+           use-docker skill, never directly on this container -- to confirm it
+           builds and the new tests pass. Apply the repo's own formatter if it
+           has one. Do NOT push or open a PR yet. Report what you changed and
+           the test result.'"
 })
 ```
 After it returns, verify the working tree has the expected changes and that the
@@ -71,10 +78,11 @@ Restore file ownership if container runs left repo files root-owned:
 `docker run --rm -v /workspace:/work alpine chown -R 1000:1000 /work/<repo>`.
 
 ### 3. VALIDATE & FIX — Opus
-Run the full gate yourself (not in a subagent) so you see the raw output:
-`make vet`, `make fmt-check`, `make lint`, `make vuln`, and `make test` (with the
-gated env set when the issue needs it: `DP_TEST_PG_DSN` via `make db`,
-`DP_TEST_MINIO_*` via `make minio`). Collect any failures.
+Run the repo's own full validation gate yourself (not in a subagent) so you see
+the raw output: whatever combination of vet/format-check/lint/vulnerability-scan/
+test the repo defines (its README, Makefile, `package.json` scripts, or CI config
+say what these are), starting any service the tests need first (e.g. a database
+or object store, via the use-docker skill). Collect any failures.
 
 Then launch an **Opus** subagent to review the diff and fix **major** flaws:
 ```
@@ -114,11 +122,11 @@ ownership-restore step if it ran container commands.
   PR checks page) and fix → push → re-poll.
 - Reference the issue in the PR body (e.g. "Closes #N") so merging closes it.
 
-## Conventions & guardrails (dependaproxy)
+## Conventions & guardrails
 - Branches: `feat/*` only (git-proxy rejects pushes outside `main`/`feat/*`).
-- Go runs in DinD `golang:1.25` via the Makefile, never directly on the host.
-  The Makefile `DOCKER_RUN` already sets `safe.directory` and forwards
-  `DP_TEST_*`; for ad-hoc `go` commands replicate that env (see the Makefile).
+- Whatever language the repo uses, run its build/lint/test toolchain inside a
+  DinD container matching that language (see the use-docker skill), never
+  directly on this agent's own container.
 - No tokens in commits/files (git-proxy `secret_scan` rejects them; reasons are
   redacted and safe to repeat).
 - Default path / existing behavior must stay green: run the existing suite, not

@@ -105,11 +105,19 @@ died for any reason doesn't just trade one broken state for another.
 **Each agent** gets its own DinD sidecar (a `docker:27-dind` + `sysbox-runc`
 pair templated per agent, rather than one daemon shared by everyone) so it
 keeps `use-docker` capability without sharing a daemon — or a network — with
-any other agent. `docker-operator/agent/skills/
-use-docker/SKILL.md` is a local fork of the shared `claude-code/use-docker`
-skill for exactly this reason: there is no one static DependaProxy IP shared
-by every agent, so its examples read `/workspace/dependaproxy-ip` (written by
-`entrypoint.sh`) instead.
+any other agent: there is no one static DependaProxy IP shared by every
+agent, so `claude-code/use-docker/SKILL.md` and
+`claude-code/use-dependaproxy/SKILL.md`'s examples read
+`/workspace/dependaproxy-ip` (written by `entrypoint.sh`) instead of a
+literal. This Dockerfile is the only one in the repo that bakes any
+`claude-code/*/SKILL.md` file (the single-agent compose stack this once also
+served was retired), so those two are plain, unforked files — the one actual
+fork is `docker-operator/agent/skills/use-git-proxy/SKILL.md`, since
+`use-git-proxy` ships in the separate git-proxy repository:
+`claude-code/use-git-proxy/SKILL.md` stays an untouched vendored copy (to
+diff against upstream on the next re-vendor) while the fork trims the two
+sections (installing the skill elsewhere, operator-only config notes) that
+don't apply to an agent that already has it baked in.
 
 **The terminal** is `tmux` inside the agent container, not a PTY the
 operator owns: the WebSocket bridge (`internal/wsbridge`) is just a

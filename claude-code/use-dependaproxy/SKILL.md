@@ -21,6 +21,11 @@ In the ai-sandbox stack the proxy is `http://dependaproxy:8080` and the public
 registries are **network-blocked** — a client that bypasses the proxy fails with
 a connection error. Do not try to work around the block; route through the proxy.
 
+Every agent gets its **own private** Docker network (`dinernet`), so there is
+no single fixed DependaProxy address — the entrypoint writes the address
+assigned to *this* agent's network to `/workspace/dependaproxy-ip`. Read it,
+never hardcode an address.
+
 ## The validation gates — what a 403 means
 
 A `403` from the proxy is a **deliberate rejection**, not a transient error. The
@@ -41,26 +46,30 @@ Read the reason, change the version, retry. Never try to defeat the gate.
 
 ## Per-ecosystem client config (DinD workload containers)
 
-The ai-sandbox entrypoint writes three config files to `/workspace`
-(auth disabled in that stack, so they carry no token). The nested DinD daemon
-cannot resolve the compose name, so every workload container also needs
-`--add-host=dependaproxy:172.23.0.10`.
+The ai-sandbox entrypoint writes three config files to `/workspace` (auth is
+disabled in this stack, so they carry no token), plus this agent's own
+DependaProxy address at `/workspace/dependaproxy-ip`. The nested DinD daemon
+cannot resolve the `dependaproxy` service name, so every workload container
+also needs `--add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)"`.
 
 ```sh
 # npm — mount the generated .npmrc, run as uid 1000
 docker run --rm -u node -v /workspace:/work -w /work \
-  -v /workspace/.npmrc:/home/node/.npmrc:ro --add-host=dependaproxy:172.23.0.10 \
+  -v /workspace/.npmrc:/home/node/.npmrc:ro \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   node:22-alpine sh -c 'npm install && npm test'
 
 # pip — pass the generated pip.env (PIP_INDEX_URL + PIP_TRUSTED_HOST)
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/pip.env --add-host=dependaproxy:172.23.0.10 \
+  --env-file /work/pip.env \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   python:3-alpine sh -c 'pip install -r requirements.txt && python script.py'
 
 # Go — pass the generated go.env (GOPROXY). Module checksums are still verified
 # against sum.golang.org directly (that host is intentionally not blocked).
 docker run --rm -v /workspace:/work -w /work \
-  --env-file /work/go.env --add-host=dependaproxy:172.23.0.10 \
+  --env-file /work/go.env \
+  --add-host="dependaproxy:$(cat /workspace/dependaproxy-ip)" \
   -e GOMODCACHE=/work/.gocache/mod -e GOCACHE=/work/.gocache/build \
   golang:1-alpine go test ./...
 ```

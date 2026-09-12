@@ -24,7 +24,17 @@ SHARED_DIR      ?= /workspace
 CACHE_SUBDIR    ?= .gocache-docker-operator
 DEPENDAPROXY_IP ?= 172.23.0.10
 GO_ENV_FILE     ?= $(SHARED_DIR)/go.env
-SKILL_FORK      ?= agent/skills/use-docker/SKILL.md
+# Skills baked into the agent image that must never hardcode the retired
+# single-agent compose stack's static DependaProxy address: every deployment
+# of this Dockerfile is the docker-operator, where the address is per-agent
+# (see skill-check below). Paths are relative to this directory, i.e.
+# ../claude-code/... -- these are NOT forks (nothing else in the repo builds
+# from claude-code/{use-docker,use-dependaproxy}, so there is only one copy
+# of each to keep correct).
+SKILLS_NO_STATIC_IP ?= ../claude-code/use-docker/SKILL.md ../claude-code/use-dependaproxy/SKILL.md
+# use-git-proxy IS a fork (it vendors a separate, external repo) -- see
+# skill-check's second check below.
+GIT_PROXY_SKILL_FORK ?= agent/skills/use-git-proxy/SKILL.md
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION   ?= v1.6.0
@@ -90,25 +100,46 @@ vuln:
 		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
 		govulncheck ./...'
 
-# The agent's use-docker skill is a deliberate FORK of
-# claude-code/use-docker/SKILL.md: every agent gets a PRIVATE dinernet, so the
-# compose stack's static dependaproxy address is meaningless here and the
-# examples must read /workspace/dependaproxy-ip (written by entrypoint.sh from
-# DEPENDAPROXY_DINERNET_IP) instead. Guard against a copy-paste refresh from
-# upstream silently reintroducing the literal -- it would fail as a connect
-# timeout at runtime, not an error.
+# Every deployment of this Dockerfile is the docker-operator, where each
+# agent gets a PRIVATE dinernet -- so use-docker/use-dependaproxy's examples
+# must read /workspace/dependaproxy-ip (written by entrypoint.sh from
+# DEPENDAPROXY_DINERNET_IP), never a hardcoded address. Guard against someone
+# reintroducing the retired single-agent compose stack's static IP from
+# memory or an old snippet -- it would fail as a connect timeout at runtime,
+# not an error.
 skill-check:
-	@test -f $(SKILL_FORK) || { echo "$(SKILL_FORK): missing"; exit 1; }
-	@if grep -qF '172.23.0.10' $(SKILL_FORK); then \
-		echo "$(SKILL_FORK): hardcoded dependaproxy IP 172.23.0.10 -- read /workspace/dependaproxy-ip instead"; \
+	@for f in $(SKILLS_NO_STATIC_IP); do \
+		test -f "$$f" || { echo "$$f: missing"; exit 1; }; \
+		if grep -qF '172.23.0.10' "$$f"; then \
+			echo "$$f: hardcoded dependaproxy IP 172.23.0.10 -- read /workspace/dependaproxy-ip instead"; \
+			exit 1; \
+		fi; \
+		echo "skill-check: OK -- no hardcoded dependaproxy IP in $$f"; \
+	done
+	@# $(GIT_PROXY_SKILL_FORK) is a trimmed fork of
+	@# ../claude-code/use-git-proxy/SKILL.md (vendored from the separate
+	@# git-proxy repo, kept untouched for diffing against upstream): it drops
+	@# the "Installing / obtaining this skill" section (moot -- this agent
+	@# already has it baked in) and the operator-only "Operator configuration
+	@# notes" section. Guard against a naive re-copy from upstream silently
+	@# reintroducing either -- a smaller model spends less attention on the
+	@# sections that actually matter with them gone. The fork-note check
+	@# catches a wholesale re-copy even if upstream renames a heading.
+	@test -f $(GIT_PROXY_SKILL_FORK) || { echo "$(GIT_PROXY_SKILL_FORK): missing"; exit 1; }
+	@if grep -qE '^#+ .*Installing / obtaining this skill' $(GIT_PROXY_SKILL_FORK) || \
+		grep -qE '^#+ .*Operator configuration notes' $(GIT_PROXY_SKILL_FORK); then \
+		echo "$(GIT_PROXY_SKILL_FORK): a trimmed section reappeared -- re-apply the trim (see the fork note at the top of the file)"; \
 		exit 1; \
 	fi
-	@echo "skill-check: OK -- no hardcoded dependaproxy IP in $(SKILL_FORK)"
+	@if ! grep -qF 'This is a trimmed fork' $(GIT_PROXY_SKILL_FORK); then \
+		echo "$(GIT_PROXY_SKILL_FORK): the fork note is gone -- looks like a wholesale re-copy from upstream; re-apply the trim"; \
+		exit 1; \
+	fi
+	@echo "skill-check: OK -- $(GIT_PROXY_SKILL_FORK) stays trimmed"
 
 # The agent image needs repo-root context (it COPYs claude-code/*/SKILL.md and
-# docker-operator/agent/skills/use-docker/SKILL.md alike), so CURDIR (this
-# directory) is wrong -- build from the parent, same as docker-compose.yaml's
-# own `context: .` for the root image.
+# docker-operator/agent/skills/use-git-proxy/SKILL.md alike), so CURDIR (this
+# directory) is wrong -- build from the parent.
 agent-image:
 	$(DOCKER) build -f agent/Dockerfile -t $(AGENT_IMAGE) ..
 
@@ -136,11 +167,19 @@ agent-image-smoke:
 		exit 1; \
 	fi; \
 	echo "OK: $$actual" | tr '\n' ' '; echo
-	@echo "--- use-docker is the local fork, not the shared copy ---"
+	@echo "--- use-docker and use-dependaproxy don't hardcode the retired compose stack's static IP ---"
 	@if docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'grep -qF 172.23.0.10 /opt/skills/use-docker/SKILL.md'; then \
-		echo "FAIL: shared use-docker skill baked in, not the fork"; exit 1; \
+		echo "FAIL: use-docker skill hardcodes the static dependaproxy IP"; exit 1; \
 	fi
-	@echo "OK: use-docker is the fork"
+	@if docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'grep -qF 172.23.0.10 /opt/skills/use-dependaproxy/SKILL.md'; then \
+		echo "FAIL: use-dependaproxy skill hardcodes the static dependaproxy IP"; exit 1; \
+	fi
+	@echo "OK: no hardcoded dependaproxy IP baked in"
+	@echo "--- use-git-proxy is the trimmed fork, not the untrimmed vendored copy ---"
+	@if docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'grep -qE "^#+ .*Installing / obtaining this skill" /opt/skills/use-git-proxy/SKILL.md'; then \
+		echo "FAIL: untrimmed use-git-proxy skill baked in, not the fork"; exit 1; \
+	fi
+	@echo "OK: use-git-proxy is the trimmed fork"
 	@echo "--- tmux-boot.sh is present and executable ---"
 	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/tmux-boot.sh'
 	@echo "OK: /usr/local/bin/tmux-boot.sh"
