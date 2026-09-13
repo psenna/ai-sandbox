@@ -38,7 +38,38 @@
 # (tmux-boot.sh), which keeps this Dockerfile agnostic about which orchestrator
 # runs it -- the same image still works under plain `docker run`.
 
+# NPM_REGISTRY / GOPROXY: build-time overrides for the two registries this
+# Dockerfile's own LSP-binary installs use (below). Default to the public
+# registries, which is what CI's unrestricted GitHub Actions runners reach
+# directly (see docker-operator-agent-image.yml -- no proxy wired in there).
+# A sandboxed dev build whose only egress is DependaProxy overrides both and
+# adds the resolver entry the nested daemon can't provide on its own:
+#   docker build \
+#     --build-arg NPM_REGISTRY=http://dependaproxy:8080/npm \
+#     --build-arg GOPROXY=http://dependaproxy:8080/goproxy \
+#     --add-host dependaproxy:$(cat /workspace/dependaproxy-ip) ...
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG GOPROXY=https://proxy.golang.org,direct
+
+# gopls, built in its own stage so the final image doesn't carry a Go
+# toolchain -- only the compiled binary (COPY --from, below) does. Alpine
+# base to match the final image's arch/libc and keep this throwaway stage
+# small under the QEMU-emulated arm64 leg of the multi-arch build. 1.26, not
+# docker-operator's own 1.25 toolchain (Makefile's GOLANG_IMAGE): confirmed
+# by a failed build that gopls@v0.23.0 requires go >= 1.26.0. Pinned (not
+# @latest) for reproducibility, matching this repo's other tool-version pins
+# (Makefile's GOLANGCI_LINT_VERSION/GOVULNCHECK_VERSION) -- bump deliberately.
+FROM golang:1.26-alpine AS gopls-builder
+ARG GOPROXY
+ENV GOPROXY=${GOPROXY}
+RUN go install golang.org/x/tools/gopls@v0.23.0
+
 FROM node:22-alpine
+# Re-declared: a build ARG declared before the first FROM is visible to every
+# stage's FROM line, but a stage must re-declare it to use its value in a RUN
+# (confirmed the hard way -- without this line, the npm install below ignored
+# --build-arg NPM_REGISTRY and hit the public registry directly).
+ARG NPM_REGISTRY
 
 # git for git-proxy clone/fetch/push, ca-certificates, bash for the entrypoint
 # + the Claude Code installer, curl for the broker leg + the installer,
@@ -46,6 +77,20 @@ FROM node:22-alpine
 # client-only talker to the per-agent rootless DinD sidecar, plus tmux.
 RUN apk add --no-cache git ca-certificates bash curl libgcc libstdc++ ripgrep docker-cli tmux && \
     rm -rf /var/cache/apk/*
+
+# gopls: copied from the builder stage above, root-owned like the other
+# system binaries (docker-cli, tmux) already on PATH here.
+COPY --from=gopls-builder /go/bin/gopls /usr/local/bin/gopls
+
+# typescript-language-server + pyright (which ships `pyright-langserver`
+# despite being a Python tool -- its core is a Node/TS implementation, so it
+# needs no Python interpreter): installed globally as root, before USER node
+# below, since node:22-alpine's default global npm prefix isn't
+# node-writable. ARG NPM_REGISTRY as explained above; unset again after so it
+# doesn't leak into a plain `docker run` of the image or a later npm use.
+RUN npm config set registry "$NPM_REGISTRY" && \
+    npm install -g typescript-language-server typescript pyright && \
+    npm config delete registry
 
 # A UTF-8 locale so tmux runs in UTF-8 mode. tmux picks its charset from
 # LC_ALL / LC_CTYPE / LANG; with none set the attach client falls back to a
@@ -124,6 +169,45 @@ ENV USE_BUILTIN_RIPGREP=0
 # /workspace above -- without this the claude-config volume is root-owned and
 # Claude Code cannot write its session dir (EACCES on .../session-env).
 RUN mkdir -p /home/node/.claude-sandbox
+# CLAUDE_CONFIG_DIR must be set for the plugin bake below to land in the
+# right place: it is NOT ~/.claude (claude's default), it's this directory --
+# the one internal/agent/create.go's configMount mounts the per-agent
+# claude-config VOLUME onto at runtime (CLAUDE_CONFIG_DIR is also set in the
+# container's own Env there, to the same value; setting it here too just
+# keeps a plain `docker run` of this image consistent).
+#
+# Baking plugins HERE, not under /workspace, matters for the same copy-up
+# reasoning as /workspace/.claude-sandbox above: each agent's claude-config
+# volume is fresh and EMPTY the first time it's mounted over this path, so
+# Docker's copy-up seeds it with everything installed below -- once, on that
+# first mount. Unlike /workspace's skills (which entrypoint.sh re-copies on
+# every boot to pick up image updates), plugin state has to stay the user's
+# own mutable, durable session state after that -- a plugin installed or
+# removed inside a running agent must survive --continue/--resume, so nothing
+# here re-syncs it on later boots.
+ENV CLAUDE_CONFIG_DIR=/home/node/.claude-sandbox
+# claude-plugins-official is Anthropic's official, curated marketplace
+# (normally auto-added on first interactive launch -- a `docker build` RUN
+# never "starts interactively", so it's added explicitly here).
+# obra/superpowers-marketplace is third-party (not Anthropic-vetted): a
+# widely used structured planning/TDD skills framework. Notably, this repo's
+# own docs/superpowers/{plans,specs}/ already follow ITS output convention --
+# baking it in makes that workflow available to every agent, not just
+# whoever authored those docs locally.
+#
+# Every plugin below is pure skills/agents/commands or an LSP config (no MCP
+# server needing credentials this sandbox doesn't have), and none of them
+# talk to github.com/gitlab.com directly the way e.g. the official `github`
+# plugin or commit-commands' `/commit-push-pr` would -- see the PR
+# description for the plugins deliberately left out and why.
+RUN claude plugin marketplace add anthropics/claude-plugins-official && \
+    claude plugin marketplace add obra/superpowers-marketplace && \
+    for p in security-guidance code-simplifier feature-dev claude-md-management \
+             frontend-design modern-web-guidance \
+             typescript-lsp gopls-lsp pyright-lsp; do \
+      claude plugin install "$p@claude-plugins-official" -y; \
+    done && \
+    claude plugin install superpowers@superpowers-marketplace -y
 WORKDIR /workspace
 ENTRYPOINT ["/entrypoint.sh"]
 # Default: idle bash. The operator overrides Cmd at create time (task 9).
