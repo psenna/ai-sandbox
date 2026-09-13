@@ -70,12 +70,17 @@ type fakeManager struct {
 	refreshErr   error
 	refreshCalls int
 
-	templates          map[string]store.Template
-	nextTemplateID     int
-	listTemplatesErr   error
-	createTemplateErr  error
-	updateTemplateErr  error
-	deleteTemplateErr  error
+	templates map[string]store.Template
+
+	nextTemplateID int
+
+	listTemplatesErr error
+
+	createTemplateErr error
+
+	updateTemplateErr error
+
+	deleteTemplateErr error
 }
 
 func newFakeManager(maxAgents int) *fakeManager {
