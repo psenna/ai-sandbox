@@ -185,6 +185,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	if err != nil {
 		return m.failUpdate(ctx, &a, fmt.Errorf("recording the updated agent config: %w", err))
 	}
+	m.stampImageID(ctx, &a)
 
 	// The file store's per-agent and shared subpaths must exist before the
 	// daemon resolves agentSpec's subpath mounts. Create asserts this too; the

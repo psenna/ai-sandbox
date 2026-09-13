@@ -155,6 +155,9 @@ func checkCreateCallOrder(t *testing.T, f *dockerclienttest.Fake, m *Manager, go
 	wantPrefix := []dockerclienttest.Call{
 		{Op: dockerclienttest.OpImageInspect, Target: dindImage},
 		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImage},
+		// stampImageID's own inspect, right after ensureImages, to record
+		// store.Agent.ImageID.
+		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImage},
 		{Op: dockerclienttest.OpVolumeCreate, Target: want.workspace},
 		{Op: dockerclienttest.OpVolumeCreate, Target: want.claudeConfig},
 		{Op: dockerclienttest.OpVolumeCreate, Target: want.dindCache},
