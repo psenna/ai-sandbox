@@ -123,6 +123,21 @@ const (
 	// plus dind-init.sh, and swapping it is not a supported configuration.
 	dindImage = "docker:27-dind"
 
+	// dindSmokeTestImage is what the sidecar's own healthcheck actually runs
+	// (dindSpec's Healthcheck.Test): "docker run --rm <this> true", not
+	// "docker info". A daemon that only answers "docker info" can still be
+	// unable to create a single container -- confirmed for real: a sysbox-
+	// backed sidecar that survives a host reboot while sysbox-mgr/sysbox-fs
+	// restart underneath it keeps answering API calls but loses whatever
+	// runtime-level registration made container creation (and the mount
+	// setup it depends on) work, forever, until it is recreated. "docker
+	// info" alone would report that sidecar healthy indefinitely. Kept
+	// deliberately tiny so the smoke test itself is cheap on every healthcheck
+	// interval; dind-init.sh pre-pulls this exact literal (kept in sync by
+	// hand -- see its own comment) so the first healthcheck after a sidecar
+	// starts doesn't have to pull it under Healthcheck.Timeout.
+	dindSmokeTestImage = "busybox:1.36.1"
+
 	// dindAlias is the DNS name the sidecar answers to on its agent's
 	// dinernet, so the reused entrypoint.sh and use-docker skill's
 	// DOCKER_HOST=tcp://docker:2375 keep working per agent, unchanged.
@@ -647,6 +662,33 @@ func (m *Manager) startDind(ctx context.Context, a *store.Agent) error {
 	return m.waitHealthy(ctx, id, a.DindContainerName)
 }
 
+// recreateDind tears down and recreates the DinD sidecar container in place
+// -- same agent ID, same dinernet, same two volumes, a fresh container --
+// for a sidecar ensureDindRunning found running but unhealthy, or one whose
+// existing container would not come up healthy even after every start
+// retry: its own healthcheck (see dindSmokeTestImage) has already proven it
+// can no longer create containers, and restarting an already-running
+// container (or retrying a plain start) does not redo whatever runtime-level
+// setup broke. Mirrors removeAgentContainer + startDind's shape for the
+// agent container itself, but only ever touches the sidecar -- the network
+// and volumes an agent's workload image cache and workspace live on are
+// never recreated, exactly like an in-place agent Update never recreates
+// them either.
+func (m *Manager) recreateDind(ctx context.Context, a *store.Agent) error {
+	ref := firstNonEmpty(a.DindContainerID, a.DindContainerName, dindContainerName(a.ID))
+	var errs []error
+	if err := m.docker.ContainerStop(ctx, ref, m.opts.StopTimeout); err != nil {
+		errs = append(errs, fmt.Errorf("stopping the unhealthy dind sidecar %q: %w", ref, err))
+	}
+	if err := m.docker.ContainerRemove(ctx, ref); err != nil {
+		errs = append(errs, fmt.Errorf("removing the unhealthy dind sidecar %q: %w", ref, err))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	return m.startDind(ctx, a)
+}
+
 // dindSpec templates docker-compose.yaml's `docker` service for one agent.
 func (m *Manager) dindSpec(a store.Agent) dockerclient.ContainerSpec {
 	return dockerclient.ContainerSpec{
@@ -690,10 +732,20 @@ func (m *Manager) dindSpec(a store.Agent) dockerclient.ContainerSpec {
 
 		// docker:dind ships no healthcheck, so one is declared here -- it is
 		// the signal create waits on before starting the agent container.
+		//
+		// "docker run --rm <tiny image> true", not "docker info": a real
+		// container-creation smoke test, not just daemon liveness -- see
+		// dindSmokeTestImage's doc comment for why "docker info" alone is not
+		// enough. This runs on every Interval for the sidecar's entire
+		// lifetime (Docker's own healthcheck loop, not anything the operator
+		// polls itself), so Health stays truthful continuously rather than
+		// only at the moments internal/agent happens to check it. Timeout is
+		// longer than a plain "docker info" needs: create+start+wait+remove
+		// of even a tiny, pre-pulled image is heavier than one API call.
 		Healthcheck: &dockerclient.Healthcheck{
-			Test:        []string{"CMD", "docker", "info"},
+			Test:        []string{"CMD", "docker", "run", "--rm", dindSmokeTestImage, "true"},
 			Interval:    5 * time.Second,
-			Timeout:     3 * time.Second,
+			Timeout:     8 * time.Second,
 			Retries:     30,
 			StartPeriod: 10 * time.Second,
 		},

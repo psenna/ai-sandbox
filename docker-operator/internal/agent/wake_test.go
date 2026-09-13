@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
@@ -282,11 +283,13 @@ func TestReconcile_DindExitsImmediately_RetriedUntilHealthy(t *testing.T) {
 	}
 }
 
-// TestReconcile_DindExitsImmediately_ExhaustsRetries_MarksError proves the
-// retry loop still gives up: a sidecar that keeps exiting immediately past
-// Options.DindWakeRetries is reported as a failure and the record is marked
-// error, exactly like a dind sidecar that is gone for good.
-func TestReconcile_DindExitsImmediately_ExhaustsRetries_MarksError(t *testing.T) {
+// TestReconcile_DindExitsImmediately_ExhaustsRetries_RecoversViaRecreate
+// proves the fallback recreateDind now takes over once the plain-start retry
+// budget is exhausted: flakyContainerStart only ever targets the ORIGINAL
+// container's ID, so recreateDind's brand new container (a different ID,
+// same name) starts cleanly, and the agent survives StatusRunning instead of
+// being marked error.
+func TestReconcile_DindExitsImmediately_ExhaustsRetries_RecoversViaRecreate(t *testing.T) {
 	f := dockerclienttest.New()
 	f.AutoHealthy = true
 	cfg := testConfig(5)
@@ -304,14 +307,61 @@ func TestReconcile_DindExitsImmediately_ExhaustsRetries_MarksError(t *testing.T)
 		t.Fatalf("simulating a stopped dind sidecar: %v", err)
 	}
 
-	// More failures than the retry budget allows (initial attempt +
-	// DindWakeRetries retries): it must never come up.
+	// More failures than the plain-start retry budget allows (initial
+	// attempt + DindWakeRetries retries): starting the EXISTING container
+	// must never succeed, forcing the fallback to recreateDind.
 	wrapped.target = a.DindContainerID
 	wrapped.failCount = opts.DindWakeRetries + 1
 
 	rep, err := m.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v (recreateDind should have recovered the sidecar)", err)
+	}
+	if len(rep.Woken) != 1 || rep.Woken[0] != a.ID {
+		t.Fatalf("Woken = %v, want [%q]", rep.Woken, a.ID)
+	}
+
+	got, err := m.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+	if got.DindContainerID == a.DindContainerID {
+		t.Error("DindContainerID did not change; want a genuinely NEW container from recreateDind, not the same one")
+	}
+}
+
+// TestReconcile_DindExitsImmediately_RecreateAlsoFails_MarksError proves the
+// truly-unrecoverable case still ends in StatusError: when even
+// recreateDind's ContainerCreate fails, Reconcile reports the failure and
+// nothing is left claiming falsely to be Woken.
+func TestReconcile_DindExitsImmediately_RecreateAlsoFails_MarksError(t *testing.T) {
+	f := dockerclienttest.New()
+	f.AutoHealthy = true
+	cfg := testConfig(5)
+	newDependaproxy(t, f, cfg.DependaproxyContainer)
+	f.AddImage(dindImage)
+	f.AddImage(cfg.AgentImage)
+	st := newTestStore(t, 5)
+	wrapped := &flakyContainerStart{Fake: f}
+	opts := testOptions()
+	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), opts)
+
+	a := createRunningAgent(t, m)
+	ctx := context.Background()
+	if err := f.ContainerStop(ctx, a.DindContainerID, 0); err != nil {
+		t.Fatalf("simulating a stopped dind sidecar: %v", err)
+	}
+
+	wrapped.target = a.DindContainerID
+	wrapped.failCount = opts.DindWakeRetries + 1
+	f.FailOnce(dockerclienttest.OpContainerCreate, errors.New("simulated: the runtime is genuinely broken"))
+
+	rep, err := m.Reconcile(ctx)
 	if err == nil {
-		t.Fatal("Reconcile: want a non-nil error, the sidecar never becomes healthy")
+		t.Fatal("Reconcile: want a non-nil error, recreateDind's own ContainerCreate failed")
 	}
 	if len(rep.Woken) != 0 {
 		t.Errorf("Woken = %v, want none", rep.Woken)
@@ -323,6 +373,49 @@ func TestReconcile_DindExitsImmediately_ExhaustsRetries_MarksError(t *testing.T)
 	}
 	if got.Status != store.StatusError {
 		t.Errorf("Status = %q, want %q", got.Status, store.StatusError)
+	}
+}
+
+// TestReconcile_RunningDindUnhealthy_RecreatedInPlace proves the other
+// recreateDind trigger: a sidecar Docker reports "running" but whose own
+// healthcheck has flipped "unhealthy" (the state a sysbox-backed sidecar is
+// left in when sysbox-mgr/sysbox-fs restart underneath it, e.g. after a host
+// reboot) is recreated, not left alone the way a plain running-and-healthy
+// sidecar is.
+func TestReconcile_RunningDindUnhealthy_RecreatedInPlace(t *testing.T) {
+	m, f, _ := newTestManager(t, 5)
+	ctx := context.Background()
+
+	a := createRunningAgent(t, m)
+	if err := f.SetHealth(a.DindContainerID, dockerclient.HealthUnhealthy); err != nil {
+		t.Fatalf("SetHealth: %v", err)
+	}
+
+	rep, err := m.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(rep.Woken) != 1 || rep.Woken[0] != a.ID {
+		t.Fatalf("Woken = %v, want [%q]", rep.Woken, a.ID)
+	}
+
+	got, err := m.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+	if got.DindContainerID == a.DindContainerID {
+		t.Error("DindContainerID did not change; want a genuinely NEW container from recreateDind, not the same one")
+	}
+
+	dind, err := f.ContainerInspect(ctx, got.DindContainerID)
+	if err != nil {
+		t.Fatalf("inspecting the recreated dind sidecar: %v", err)
+	}
+	if dind.State != dockerclient.StateRunning {
+		t.Errorf("recreated dind State = %q, want %q", dind.State, dockerclient.StateRunning)
 	}
 }
 
