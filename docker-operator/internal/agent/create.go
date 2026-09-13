@@ -786,13 +786,15 @@ func autoModeArgs(a store.Agent) []string {
 
 // startAgentContainer creates and starts the agent container itself.
 //
-// claudeArgs are appended to the tmux-boot.sh Cmd and forwarded to `claude`
-// inside the session (tmux-boot.sh ends `... new-session ... claude "$@"`).
-// Create passes autoModeArgs alone (nil when auto mode is off, byte-identical
-// to the historical Cmd); Update appends "--continue" so the recreated
-// container resumes the previous Claude session; the reconcile pass's wake-up
-// appends "--resume" instead, since the old container's tmux session did not
-// survive being stopped.
+// claudeArgs are appended to the tmux-boot.sh Cmd and forwarded to the first
+// `claude` invocation inside the session (tmux-boot.sh ends
+// `... new-session ... claude-supervisor.sh "$@"`, which itself runs
+// `claude "$@"` before taking over restarts on a non-zero exit). Create
+// passes autoModeArgs alone (nil when auto mode is off, byte-identical to
+// the historical Cmd); Update appends "--continue" so the recreated
+// container resumes the previous Claude session; the reconcile pass's
+// wake-up appends "--resume" instead, since the old container's tmux
+// session did not survive being stopped.
 func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend, claudeArgs ...string) error {
 	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a, rb, claudeArgs...))
 	if err != nil {
@@ -815,8 +817,9 @@ func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb re
 // overridden, to tmux-boot.sh -- which is why the image's own CMD can stay
 // ["bash"] and a plain `docker run` of it remains an ordinary shell.
 //
-// claudeArgs are appended after tmuxBootPath; tmux-boot.sh forwards them to
-// `claude` ("$@"). Empty (Create's call) leaves Cmd == [tmux-boot.sh], the
+// claudeArgs are appended after tmuxBootPath; tmux-boot.sh forwards them
+// ("$@") to claude-supervisor.sh, which forwards them to the first `claude`
+// invocation. Empty (Create's call) leaves Cmd == [tmux-boot.sh], the
 // historical value. Update passes "--continue".
 func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend, claudeArgs ...string) dockerclient.ContainerSpec {
 	spec := dockerclient.ContainerSpec{

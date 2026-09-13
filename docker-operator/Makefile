@@ -183,6 +183,9 @@ agent-image-smoke:
 	@echo "--- tmux-boot.sh is present and executable ---"
 	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/tmux-boot.sh'
 	@echo "OK: /usr/local/bin/tmux-boot.sh"
+	@echo "--- claude-supervisor.sh is present and executable ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/claude-supervisor.sh'
+	@echo "OK: /usr/local/bin/claude-supervisor.sh"
 	@echo "agent-image-smoke: PASS"
 
 # scripts/dind-init.sh is the SINGLE source of truth; internal/agent embeds a

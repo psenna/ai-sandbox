@@ -8,21 +8,31 @@
 # (/entrypoint.sh) runs first -- it writes the git-proxy and DependaProxy
 # configuration -- and ends in `exec "$@"`, which is how control reaches here.
 #
-# Positional args to this script are forwarded verbatim to `claude` in the
-# session (see the new-session line below). Create passes none, so "$@"
-# expands to nothing and the session runs a plain `claude` -- byte-identical
-# to before. The in-place update flow passes "--continue" so the recreated
-# container resumes the previous Claude Code session from the preserved
-# CLAUDE_CONFIG_DIR volume.
+# Positional args to this script are forwarded verbatim to `claude` (via
+# claude-supervisor.sh, see the new-session line below). Create passes none,
+# so "$@" expands to nothing and the session runs a plain `claude`. The
+# in-place update flow passes "--continue" so the recreated container resumes
+# the previous Claude Code session from the preserved CLAUDE_CONFIG_DIR
+# volume.
+#
+# The session's pane process is claude-supervisor.sh, not `claude` directly:
+# it forwards "$@" into the first `claude` invocation unchanged, then
+# auto-restarts `claude` with "--continue" whenever it exits non-zero (an
+# accidental Ctrl+C reaching the foreground process, a transient crash, ...)
+# so the web UI terminal recovers on its own instead of going dead. A
+# deliberate, clean exit (status 0) is left alone. See claude-supervisor.sh
+# for the restart budget that still lets remain-on-exit (below) take over if
+# `claude` is genuinely broken.
 #
 # Why a tmux session rather than exec'ing `claude` directly:
 #
 #  1. The web UI terminal is a `docker exec ... tmux attach -t main`, so the
 #     session has to outlive any single viewer (and the operator process).
 #  2. The container's lifetime is tied to the tmux SESSION, not to `claude`.
-#     A crashed or exited `claude` leaves a dead-but-readable pane the user can
-#     reattach to and inspect, instead of taking the container -- and every
-#     scrap of evidence about why it died -- down with it.
+#     A crashed or exited `claude` that claude-supervisor.sh gives up on
+#     leaves a dead-but-readable pane the user can reattach to and inspect,
+#     instead of taking the container -- and every scrap of evidence about
+#     why it died -- down with it.
 set -eu
 
 # tmux needs a terminal type even for a detached session. The operator sets
@@ -46,17 +56,18 @@ OUTPUT_LOG=/workspace/.agent-output.log
 #     `set -e` that would abort this script on line one.
 #   - `tmux start-server` does not help: a server with zero sessions exits
 #     immediately, so the following set-option fails identically.
-#   - Setting the option AFTER new-session loses a race whenever `claude` exits
-#     immediately -- which is precisely the case remain-on-exit exists to make
-#     visible. A missing or instantly-crashing binary would kill the session,
-#     and with it this script and the container. (Confirmed: without the option
-#     in place first, an exec failure destroys the session in milliseconds.)
+#   - Setting the option AFTER new-session loses a race whenever the pane's
+#     process (claude-supervisor.sh) exits immediately -- which is precisely
+#     the case remain-on-exit exists to make visible. A missing or
+#     instantly-crashing binary would kill the session, and with it this
+#     script and the container. (Confirmed: without the option in place
+#     first, an exec failure destroys the session in milliseconds.)
 #
 # Chaining both commands into one command list makes the client start the
 # server, apply the global option, and only then spawn the pane -- no window in
 # which the pane can die unprotected. Confirmed to survive both a normal exit
 # (pane_dead=1, status=3) and a missing binary (pane_dead=1, status=127).
-tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude "$@"
+tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude-supervisor.sh "$@"
 
 # Capture everything the pane writes to a durable, unbounded file, so the
 # operator can read an agent's output programmatically (internal/wsbridge's
