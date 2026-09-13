@@ -747,6 +747,11 @@ func TestEveryMethodHonoursACancelledContext(t *testing.T) {
 		{"ClearAnthropicAuth", func() error { return s.ClearAnthropicAuth(ctx) }},
 		{"GetAgentImageTags", func() error { _, _, err := s.GetAgentImageTags(ctx); return err }},
 		{"SetAgentImageTags", func() error { return s.SetAgentImageTags(ctx, AgentImageTags{}) }},
+		{"CreateTemplate", func() error { _, err := s.CreateTemplate(ctx, TemplateCreateSpec{ID: "tpl_00000002", Name: "t"}); return err }},
+		{"GetTemplate", func() error { _, err := s.GetTemplate(ctx, "tpl_missing"); return err }},
+		{"ListTemplates", func() error { _, err := s.ListTemplates(ctx); return err }},
+		{"UpdateTemplate", func() error { _, err := s.UpdateTemplate(ctx, "tpl_missing", func(*Template) error { return nil }); return err }},
+		{"DeleteTemplate", func() error { return s.DeleteTemplate(ctx, "tpl_missing") }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

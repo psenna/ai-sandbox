@@ -25,4 +25,9 @@
 // ID. MAX_AGENTS defaults to 5 and is never large, so a full scan is the
 // cheapest possible index, JSON keeps the file inspectable with bbolt's own
 // CLI, and a field added later decodes as its zero value in an older record.
+//
+// A second bucket, "templates" (template.go), holds saved, reusable bundles
+// of agent-creation parameters, keyed by template ID -- unrelated to any
+// live agent and uncounted by the MAX_AGENTS cap, but sharing this same
+// BoltDB file and its one-writer-at-a-time serialisation.
 package store

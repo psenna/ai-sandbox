@@ -94,6 +94,18 @@ type AgentManager interface {
 	StartAnthropicLogin(ctx context.Context) error
 	StopAnthropicLogin(ctx context.Context) error
 	AnthropicLoginActive(ctx context.Context) (bool, error)
+
+	// ListTemplates/CreateTemplate/UpdateTemplate/DeleteTemplate back the
+	// saved agent-creation templates a user can pick from the create-form's
+	// template dropdown. None of these touch Docker -- a template is pure
+	// store state -- so, unlike Create/Update, there is no agent.Xxx error
+	// family to switch on; only store.IsTemplateNotFound and
+	// store.IsTemplateNameExists matter (see templateError). No
+	// single-item Get: the UI only ever needs the already-fetched list.
+	ListTemplates(ctx context.Context) ([]store.Template, error)
+	CreateTemplate(ctx context.Context, spec store.TemplateCreateSpec) (store.Template, error)
+	UpdateTemplate(ctx context.Context, id string, spec store.TemplateCreateSpec) (store.Template, error)
+	DeleteTemplate(ctx context.Context, id string) error
 }
 
 // anthropicLoginWSPath is the WebSocket route cmd/docker-operator wires to
@@ -146,6 +158,11 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("GET /api/agent-image/tags", h.handleAgentImageTags)
 	mux.HandleFunc("POST /api/agent-image/refresh", h.handleAgentImageRefresh)
 
+	mux.HandleFunc("GET /api/templates", h.handleListTemplates)
+	mux.HandleFunc("POST /api/templates", h.handleCreateTemplate)
+	mux.HandleFunc("PUT /api/templates/{id}", h.handleUpdateTemplate)
+	mux.HandleFunc("DELETE /api/templates/{id}", h.handleDeleteTemplate)
+
 	mux.HandleFunc("GET /api/anthropic/auth", h.handleAnthropicAuthGet)
 	mux.HandleFunc("PUT /api/anthropic/auth", h.handleAnthropicAuthPut)
 	mux.HandleFunc("DELETE /api/anthropic/auth", h.handleAnthropicAuthDelete)
@@ -169,6 +186,8 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("/api/agents/{id}/info", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/tags", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/refresh", methodNotAllowed)
+	mux.HandleFunc("/api/templates", methodNotAllowed)
+	mux.HandleFunc("/api/templates/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/login", methodNotAllowed)
 	mux.HandleFunc("/api/files", methodNotAllowed)
