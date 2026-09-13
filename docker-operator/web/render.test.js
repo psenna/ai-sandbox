@@ -227,6 +227,33 @@ test('renderAgentInfo: renders both sections with the agent\'s resolved values',
 	assert.match(html, />On</);
 });
 
+test('renderAgentInfo: shows this agent\'s own resolved image, separate from the operator-wide default', () => {
+	const html = Render.renderAgentInfo({
+		agent: {
+			id: 'agt_a1b2c3d4',
+			image: 'ghcr.io/psenna/ai-sandbox-agent:20260913-025754',
+			image_id: 'sha256:0123456789abcdef0123',
+		},
+		operator: { agent_image: 'ghcr.io/psenna/ai-sandbox-agent:latest', docker_runtime: 'crun' },
+	});
+	assert.match(html, /20260913-025754/);
+	// Two agents can share the same operator-default tag while running
+	// different builds -- the per-agent row must show THIS agent's own tag
+	// and resolved id, not the operator's config-wide default.
+	assert.match(html, /ghcr\.io\/psenna\/ai-sandbox-agent:latest/); // still present, in the Operator section
+	assert.match(html, /0123456789ab/); // short id: algorithm prefix stripped, 12 hex chars
+	assert.doesNotMatch(html, /0123456789abcdef0123/); // never the untruncated digest
+});
+
+test('renderAgentInfo: an agent with no recorded image falls back to placeholders, not a blank cell', () => {
+	const html = Render.renderAgentInfo({
+		agent: { id: 'agt_a1b2c3d4' },
+		operator: { agent_image: 'ghcr.io/psenna/ai-sandbox-agent:latest', docker_runtime: 'crun' },
+	});
+	assert.match(html, /\(operator default\)/);
+	assert.match(html, />unknown</);
+});
+
 test('renderAgentInfo: blank parameters render their placeholder, not an empty cell', () => {
 	const html = Render.renderAgentInfo({
 		agent: { backend: 'anthropic' },

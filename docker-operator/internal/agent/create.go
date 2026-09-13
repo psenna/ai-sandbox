@@ -509,6 +509,7 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 	if err := m.ensureImages(ctx, *a); err != nil {
 		return err
 	}
+	m.stampImageID(ctx, a)
 	if err := m.createVolumes(ctx, *a); err != nil {
 		return err
 	}
@@ -582,6 +583,28 @@ func (m *Manager) ensureImage(ctx context.Context, ref string) error {
 			"(a locally built agent image is expected to come from `make agent-image`, not a registry): %w", ref, err)
 	}
 	return nil
+}
+
+// stampImageID records the daemon's current image ID for a's agent image
+// (not the dind sidecar image) onto the record, so "agent info" can show
+// what actually got resolved rather than just the ":latest"-style reference
+// that was asked for -- see store.Agent.ImageID. Called right after
+// ensureImages, so the inspect is expected to hit; best-effort regardless: a
+// failure here is logged and swallowed rather than failing the create/update,
+// since this is informational metadata, not something the agent needs to run.
+func (m *Manager) stampImageID(ctx context.Context, a *store.Agent) {
+	ref := firstNonEmpty(a.Image, m.cfg.AgentImage)
+	img, err := m.docker.ImageInspect(ctx, ref)
+	if err != nil {
+		m.log.WarnContext(ctx, "could not resolve the agent image's id after ensuring it exists; agent info will show it as unknown",
+			"agent_id", a.ID, "image", ref, "error", err)
+		return
+	}
+	if err := m.stamp(ctx, a, "the resolved agent image id", func(ag *store.Agent) {
+		ag.ImageID = img.ID
+	}); err != nil {
+		m.log.WarnContext(ctx, "could not record the resolved agent image id", "agent_id", a.ID, "error", err)
+	}
 }
 
 // createVolumes creates the agent's three isolated named volumes. Volume

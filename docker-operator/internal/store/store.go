@@ -172,12 +172,29 @@ type Agent struct {
 	// because the operator upgraded.
 	AutoMode string `json:"auto_mode,omitempty"`
 
-	// Image is the fully resolved agent container image reference this agent
-	// was created against (the operator's AgentImage, or its repository with a
-	// per-agent tag substituted in). Set once at create time. Empty on records
-	// created before this field; the image is then unknown and never reports
-	// an upgrade.
+	// Image is the agent container image reference this agent was created
+	// against (the operator's AgentImage, or its repository with a per-agent
+	// tag substituted in). Set once at create time. Empty on records created
+	// before this field; the image is then unknown and never reports an
+	// upgrade.
+	//
+	// This is a REFERENCE (repository + tag), not a resolved identity: a
+	// mutable tag like ":latest" can point at a different build over time as
+	// the daemon's local cache changes. See ImageID for the concrete image
+	// this agent's container actually last started from.
 	Image string `json:"image,omitempty"`
+
+	// ImageID is the Docker image ID (content digest, e.g. "sha256:...") that
+	// Image resolved to on the daemon the last time this agent's container
+	// was (re)created -- captured right after ensureImage/ensureImages ran,
+	// so it reflects what actually got pulled/inspected, not just the tag
+	// string that was asked for. Two agents can both show Image ==
+	// ":latest" while running genuinely different builds if the tag moved on
+	// the registry between their creations; ImageID disambiguates that.
+	// Empty on records created before this field, or if the inspect that
+	// would have populated it failed (best-effort, never blocks create or
+	// update).
+	ImageID string `json:"image_id,omitempty"`
 
 	// Status is the lifecycle state; see Status.
 	Status Status `json:"status"`

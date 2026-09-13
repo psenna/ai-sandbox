@@ -186,6 +186,37 @@ RUN mkdir -p /home/node/.claude-sandbox
 # removed inside a running agent must survive --continue/--resume, so nothing
 # here re-syncs it on later boots.
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude-sandbox
+# Seed the onboarding/trust state BEFORE running `claude plugin install`
+# below. claude-code/entrypoint.sh writes this same seed at container boot,
+# but ONLY when $CLAUDE_CONFIG_DIR/.claude.json does not already exist, so a
+# persistent config volume carrying real state is never clobbered. Since this
+# directory is copy-up-seeded into every fresh agent's claude-config volume
+# (see the comment above), a bare `claude plugin install` here would write
+# its OWN .claude.json first -- unauthenticated, since a `docker build` has
+# no CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY -- and that file, baked into
+# every new agent, made entrypoint.sh's guard see a file that "already
+# exists" and skip seeding onboarding/trust entirely: a fresh agent fell
+# through to Claude Code's interactive first-run flow (theme picker, trust
+# dialog, login) despite a perfectly valid env-var credential. Writing the
+# seed FIRST means `claude plugin install` runs against an already-onboarded
+# config and merges into it instead of creating a bare one.
+#
+# printf, not a Dockerfile heredoc (`RUN <<EOF`): a heredoc needs BuildKit's
+# Dockerfile frontend. `make agent-image` runs a plain `docker build` against
+# whatever daemon is configured, and a legacy (non-BuildKit) builder silently
+# turns a heredoc RUN into an EMPTY file instead of erroring -- confirmed the
+# hard way. printf + backslash line continuations parse identically on both.
+RUN mkdir -p "$CLAUDE_CONFIG_DIR" && \
+    printf '%s\n' \
+      '{' \
+      '  "hasCompletedOnboarding": true,' \
+      '  "projects": {' \
+      '    "/workspace": {' \
+      '      "hasTrustDialogAccepted": true' \
+      '    }' \
+      '  }' \
+      '}' \
+    > "$CLAUDE_CONFIG_DIR/.claude.json"
 # claude-plugins-official is Anthropic's official, curated marketplace
 # (normally auto-added on first interactive launch -- a `docker build` RUN
 # never "starts interactively", so it's added explicitly here).
