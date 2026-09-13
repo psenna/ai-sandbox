@@ -60,12 +60,17 @@ export PATH
 exec ` + tmuxBootPath + `
 `
 
-// deadShimBoot is shimBoot with a `claude` that exits immediately, which is
-// how a missing or instantly-crashing agent binary looks to tmux-boot.sh.
+// deadShimBoot shims claude-supervisor.sh itself (not `claude`) to exit
+// immediately, which is how a missing or instantly-crashing pane process
+// looks to tmux-boot.sh. Shimming `claude` instead would not do: since
+// claude-supervisor.sh retries a failing `claude` several times over a
+// couple of seconds before giving up, the pane would stay alive well past
+// this test's short window, defeating the "pipe-pane races an
+// already-dead pane" scenario this test exists to guard.
 const deadShimBoot = `set -e
 mkdir -p /tmp/shim
-printf '#!/bin/sh\nexit 3\n' > /tmp/shim/claude
-chmod +x /tmp/shim/claude
+printf '#!/bin/sh\nexit 3\n' > /tmp/shim/claude-supervisor.sh
+chmod +x /tmp/shim/claude-supervisor.sh
 PATH=/tmp/shim:$PATH
 export PATH
 exec ` + tmuxBootPath + `

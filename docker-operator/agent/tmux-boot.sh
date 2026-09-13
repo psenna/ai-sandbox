@@ -67,7 +67,7 @@ OUTPUT_LOG=/workspace/.agent-output.log
 # server, apply the global option, and only then spawn the pane -- no window in
 # which the pane can die unprotected. Confirmed to survive both a normal exit
 # (pane_dead=1, status=3) and a missing binary (pane_dead=1, status=127).
-tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" /usr/local/bin/claude-supervisor.sh "$@"
+tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude-supervisor.sh "$@"
 
 # Capture everything the pane writes to a durable, unbounded file, so the
 # operator can read an agent's output programmatically (internal/wsbridge's
