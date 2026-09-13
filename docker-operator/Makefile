@@ -186,6 +186,19 @@ agent-image-smoke:
 	@echo "--- claude-supervisor.sh is present and executable ---"
 	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/claude-supervisor.sh'
 	@echo "OK: /usr/local/bin/claude-supervisor.sh"
+	@echo "--- LSP binaries (gopls, typescript-language-server, pyright-langserver) are on PATH ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'command -v gopls && command -v typescript-language-server && command -v pyright-langserver'
+	@echo "OK: gopls, typescript-language-server, pyright-langserver"
+	@echo "--- default plugin bundle is baked into CLAUDE_CONFIG_DIR ---"
+	@actual=$$(docker run --rm -u node --entrypoint sh $(AGENT_IMAGE) -c 'claude plugin list --json' | \
+		grep -o '"id": *"[^"]*"' | sed 's/"id": *"//;s/"$$//' | sort); \
+	expected=$$(printf 'claude-md-management@claude-plugins-official\ncode-simplifier@claude-plugins-official\nfeature-dev@claude-plugins-official\nfrontend-design@claude-plugins-official\ngopls-lsp@claude-plugins-official\nmodern-web-guidance@claude-plugins-official\npyright-lsp@claude-plugins-official\nsecurity-guidance@claude-plugins-official\nsuperpowers@superpowers-marketplace\ntypescript-lsp@claude-plugins-official' | sort); \
+	if [ "$$actual" != "$$expected" ]; then \
+		echo "FAIL: default plugin bundle mismatch"; \
+		printf 'want:\n%s\ngot:\n%s\n' "$$expected" "$$actual"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$actual" | tr '\n' ' '; echo
 	@echo "agent-image-smoke: PASS"
 
 # scripts/dind-init.sh is the SINGLE source of truth; internal/agent embeds a

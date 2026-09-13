@@ -119,6 +119,33 @@ diff against upstream on the next re-vendor) while the fork trims the two
 sections (installing the skill elsewhere, operator-only config notes) that
 don't apply to an agent that already has it baked in.
 
+**A default Claude Code plugin bundle** is baked in too: `security-guidance`,
+`code-simplifier`, `feature-dev`, `claude-md-management`, `frontend-design`,
+`modern-web-guidance`, the `typescript-lsp`/`gopls-lsp`/`pyright-lsp` code
+intelligence plugins (official `claude-plugins-official` marketplace), and
+`superpowers` (third-party, `obra/superpowers-marketplace` — a structured
+brainstorm/plan/execute workflow with enforced TDD and self-review; this
+repo's own `docs/superpowers/{plans,specs}/` already follow its output
+convention). Deliberately left out: `github`/`gitlab` and `commit-commands`'s
+`/commit-push-pr`, since they need a `gh`-authenticated direct GitHub/GitLab
+API token this sandbox doesn't have (every git operation here goes through
+git-proxy instead — see `use-git-proxy`), and any plugin needing credentials
+for a service this repo doesn't use (Slack, Notion, Jira, …).
+
+Installed at build time into `CLAUDE_CONFIG_DIR` (`/home/node/.claude-sandbox`,
+**not** `claude`'s default `~/.claude`), because that's the path the
+claude-config volume mounts onto per agent (`internal/agent/create.go`'s
+`configMount`) — a fresh agent's empty volume inherits everything baked there
+via Docker's copy-up on its first mount, exactly once, so a plugin a user
+installs, disables, or removes inside a running agent stays theirs across
+`--continue`/`--resume` rather than being reset on every boot. `gopls-lsp`'s
+binary (`gopls`) is compiled in its own `golang:1.26-alpine` build stage and
+copied into the final image, so the runtime image never carries a Go
+toolchain; `typescript-language-server`/`typescript`/`pyright` install via
+npm. Both routes respect `--build-arg NPM_REGISTRY=...` / `GOPROXY=...` (default:
+the public registries, which is what CI's unrestricted runners use) for a
+sandboxed dev build whose only egress is a DependaProxy instance.
+
 **The terminal** is `tmux` inside the agent container, not a PTY the
 operator owns: the WebSocket bridge (`internal/wsbridge`) is just a
 `docker exec ... tmux attach-session -t main` wrapped in a two-way byte
