@@ -287,25 +287,35 @@ func (m *Manager) markWakeError(ctx context.Context, id string, cause error) {
 	}
 }
 
-// ensureDindRunning makes sure agent a's DinD sidecar is actually running,
-// starting it and waiting for it to report healthy when it is not. It
-// reports awoke=true only when it actually had to start the container; an
-// already-running sidecar is left completely untouched (awoke=false, nil).
+// ensureDindRunning makes sure agent a's DinD sidecar is actually running AND
+// actually working, starting or recreating it as needed. It reports
+// awoke=true only when it actually had to do one of those; a sidecar that
+// is already running and healthy is left completely untouched (awoke=false,
+// nil).
 //
 // It does not attempt to create a missing sidecar: a DinD container that
 // does not exist at all is not a "stopped" container recoverable by
 // starting it -- that is a lost resource with no automatic recovery story,
 // reported as an error rather than silently doing something more drastic.
 //
-// A sidecar that exits immediately (rather than timing out) is retried up to
-// Options.DindWakeRetries times, DindWakeRetryDelay apart, before this gives
-// up: right after a host reboot, the operator (and the sidecars it wakes
-// back up here) can start before the host's sysbox-runc systemd units have
-// finished initializing, so the very first start of a sysbox-runc container
-// fails even though the runtime is correctly installed and a retry moments
-// later succeeds. Any other waitHealthy failure (a timeout, or the sidecar
-// having vanished) is not this kind of transient startup race and is
-// returned on the first attempt.
+// A sidecar reported "running" by Docker but "unhealthy" by its own
+// healthcheck (see dindSpec's Healthcheck.Test / dindSmokeTestImage) is
+// recreated in place via recreateDind -- confirmed for real: a sysbox-backed
+// sidecar can survive a host reboot while sysbox-mgr/sysbox-fs restart
+// underneath it, keep answering ordinary API calls, yet be permanently
+// unable to create a container until it is recreated. Restarting an
+// already-running container would not fix this.
+//
+// A sidecar that exits immediately when (re)started (rather than timing out)
+// is retried up to Options.DindWakeRetries times, DindWakeRetryDelay apart,
+// before falling back to recreateDind: right after a host reboot, the
+// operator (and the sidecars it wakes back up here) can start before the
+// host's sysbox-runc systemd units have finished initializing, so the very
+// first start of a sysbox-runc container fails even though the runtime is
+// correctly installed and a retry moments later succeeds. Any other
+// waitHealthy failure (a timeout) also falls back to recreateDind once,
+// rather than being returned immediately -- the same last-resort recovery
+// the running-but-unhealthy case above uses.
 //
 // Shared by wakeAgent (the startup reconcile pass) and Update (an in-place
 // update's recreated agent container needs the sidecar answering on
@@ -319,6 +329,21 @@ func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, e
 		return false, fmt.Errorf("the dind sidecar %q no longer exists; recreate this agent", ref)
 	case err != nil:
 		return false, fmt.Errorf("inspecting the dind sidecar %q: %w", ref, err)
+	case c.State == dockerclient.StateRunning && c.Health == dockerclient.HealthUnhealthy:
+		// Running, but its own healthcheck (a real container-creation smoke
+		// test -- see dindSmokeTestImage) has already proven it can no
+		// longer create containers. This is exactly the failure mode a host
+		// reboot leaves behind when sysbox-mgr/sysbox-fs restart underneath
+		// an already-running sysbox container: Docker still shows it
+		// "running" (its init process never died), but it lost whatever
+		// runtime-level registration made it work. Restarting would not fix
+		// this -- only a genuine recreate does.
+		m.log.WarnContext(ctx, "the dind sidecar is running but unhealthy; recreating it in place",
+			"agent_id", a.ID, "dind_container", ref)
+		if err := m.recreateDind(ctx, &a); err != nil {
+			return false, fmt.Errorf("recreating the unhealthy dind sidecar %q: %w", ref, err)
+		}
+		return true, nil
 	case c.State == dockerclient.StateRunning:
 		return false, nil
 	}
@@ -335,14 +360,24 @@ func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, e
 			return true, nil
 		}
 		var exited *dindExitedError
-		if !errors.As(err, &exited) || attempt > m.opts.DindWakeRetries {
-			return false, err
+		if errors.As(err, &exited) && attempt <= m.opts.DindWakeRetries {
+			m.log.WarnContext(ctx, "the dind sidecar exited immediately; this looks like the sysbox-runc runtime not being fully initialized yet right after a host/daemon restart -- retrying",
+				"agent_id", a.ID, "dind_container", ref, "attempt", attempt, "max_attempts", m.opts.DindWakeRetries+1, "error", err)
+			if err := sleepCtx(ctx, m.opts.DindWakeRetryDelay); err != nil {
+				return false, err
+			}
+			continue
 		}
-		m.log.WarnContext(ctx, "the dind sidecar exited immediately; this looks like the sysbox-runc runtime not being fully initialized yet right after a host/daemon restart -- retrying",
-			"agent_id", a.ID, "dind_container", ref, "attempt", attempt, "max_attempts", m.opts.DindWakeRetries+1, "error", err)
-		if err := sleepCtx(ctx, m.opts.DindWakeRetryDelay); err != nil {
-			return false, err
+		// Starting the existing container did not work, even after
+		// retrying an immediate-exit up to the configured budget. One last
+		// resort before giving up: recreate it from scratch, the same
+		// recovery the running-but-unhealthy case above uses.
+		m.log.WarnContext(ctx, "starting the existing dind sidecar did not succeed; attempting to recreate it",
+			"agent_id", a.ID, "dind_container", ref, "error", err)
+		if recreateErr := m.recreateDind(ctx, &a); recreateErr != nil {
+			return false, fmt.Errorf("%w (recreate also failed: %s)", err, recreateErr)
 		}
+		return true, nil
 	}
 }
 

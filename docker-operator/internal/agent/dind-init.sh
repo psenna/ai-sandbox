@@ -54,6 +54,20 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+# Pre-pull the tiny image the sidecar's own healthcheck runs
+# (dindSmokeTestImage in internal/agent/create.go -- kept in sync with this
+# literal by hand, cross-referenced in both places since dockerd's own args
+# leave no clean way to pass one value into both a Go string and this shell
+# script). Without this, the FIRST healthcheck attempt(s) right after this
+# container starts would have to pull it under Docker's Healthcheck.Timeout,
+# and a cold pull can exceed that on a slow network -- tolerated by the
+# StartPeriod/Retries budget, but there is no reason to pay it every time
+# when a one-shot pull here avoids it entirely.
+SMOKE_TEST_IMAGE="busybox:1.36.1"
+if ! docker pull "$SMOKE_TEST_IMAGE" >/dev/null 2>&1; then
+  echo "dind-init: WARNING could not pre-pull $SMOKE_TEST_IMAGE; the healthcheck may be slow or fail while it retries the pull on its own" >&2
+fi
+
 # Public registries the sandbox must NOT reach directly. Extend these lists if
 # you add mirrors. Resolved at startup; restart the docker service to refresh.
 NPM_HOSTS="registry.npmjs.org registry.npmjs.com registry.yarnpkg.com registry.npmmirror.com"
