@@ -129,6 +129,16 @@ tab) restarting; it honestly does **not** survive the agent *container*
 itself stopping or restarting, unlike the Kubernetes operator's
 snapshot-based freeze/wake.
 
+The pane's actual process is `claude-supervisor.sh`
+(`docker-operator/agent/claude-supervisor.sh`), not `claude` directly: it
+auto-restarts `claude` with `--continue` whenever it exits non-zero — the
+common case being an accidental Ctrl+C landing on the foreground process
+while attached — so the terminal recovers on its own instead of sitting on
+a dead pane. A deliberate, clean exit (`/exit`) is left alone. If `claude`
+keeps failing (more than 5 times in a rolling 60s window), the supervisor
+gives up and `tmux-boot.sh`'s `remain-on-exit` takes over, leaving the pane
+dead-but-readable for inspection, same as before this wrapper existed.
+
 A mouse-wheel / two-finger scroll over that terminal scrolls the pane: the
 bridge execs `tmux set-option -g mouse on` before attaching, so tmux
 forwards the wheel to a mouse-aware full-screen app (claude scrolls its own

@@ -80,8 +80,15 @@ RUN chmod +x /entrypoint.sh
 # source is resolved by the DAEMON on the host, which a containerised operator
 # cannot know. It is still only a Cmd override, so CMD ["bash"] below is
 # untouched and a plain `docker run` of this image is unaffected.
-COPY docker-operator/agent/tmux-boot.sh /usr/local/bin/tmux-boot.sh
-RUN chmod +x /usr/local/bin/tmux-boot.sh
+#
+# claude-supervisor.sh: what tmux-boot.sh actually runs as the pane's
+# process. It auto-restarts `claude` on a non-zero exit (an accidental
+# Ctrl+C, a transient crash) instead of leaving the web UI terminal on a dead
+# pane -- see the script for the restart budget and tmux-boot.sh's
+# remain-on-exit as the fallback when `claude` is genuinely broken.
+COPY docker-operator/agent/tmux-boot.sh         /usr/local/bin/tmux-boot.sh
+COPY docker-operator/agent/claude-supervisor.sh /usr/local/bin/claude-supervisor.sh
+RUN chmod +x /usr/local/bin/tmux-boot.sh /usr/local/bin/claude-supervisor.sh
 
 # Pre-create /workspace as node BEFORE switching USER: WORKDIR creates a
 # missing directory as root regardless of the active USER (a known
