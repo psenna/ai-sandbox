@@ -230,6 +230,16 @@
 	// apply to every agent. A blank parameter renders its placeholder (— or
 	// "built-in default") instead of an empty cell, so a reader can tell
 	// "not set" from a rendering bug.
+	// shortImageID renders a Docker image ID ("sha256:abcdef0123...") the way
+	// `docker images`/`docker ps` do: the algorithm prefix stripped, first 12
+	// hex chars. Falsy/unrecognised input renders as '' so the caller's blank
+	// placeholder kicks in instead of a garbled partial string.
+	function shortImageID(id) {
+		var s = String(id || '');
+		var hex = s.indexOf(':') >= 0 ? s.slice(s.indexOf(':') + 1) : s;
+		return hex ? hex.slice(0, 12) : '';
+	}
+
 	function renderAgentInfo(info) {
 		info = info || {};
 		var agent = info.agent || {};
@@ -257,6 +267,14 @@
 						row('Auto-compact threshold', agent.auto_compact_threshold, 'built-in default') +
 						row('Max-context tokens', agent.max_context_tokens, 'built-in default') +
 						row('Auto mode', agent.auto_mode === 'on' ? 'On' : agent.auto_mode === 'off' ? 'Off' : '', '—') +
+						// This agent's OWN resolved image (which tag it was created/
+						// updated against, and the concrete image ID that tag pointed
+						// at on the daemon at the time) -- distinct from the
+						// "Operator" section's "Agent image" row below, which is
+						// always the operator-wide configured default and does not
+						// change per agent.
+						row('Image', agent.image, '(operator default)') +
+						row('Resolved image ID', shortImageID(agent.image_id), 'unknown') +
 					'</dl>' +
 				'</section>' +
 				'<section class="agent-info__section">' +
