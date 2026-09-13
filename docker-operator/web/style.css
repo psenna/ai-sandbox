@@ -420,6 +420,46 @@ html, body {
 
 .create-form__error { color: var(--status-error); font-size: 13px; margin: 0; }
 
+/* --- template bar (sits above the create form) --- */
+.template-bar {
+	max-width: 460px;
+	margin: 24px auto 0;
+	display: flex;
+	align-items: flex-end;
+	gap: 8px;
+}
+
+.template-bar__row { flex: 1 1 auto; }
+
+.template-bar__actions { display: flex; gap: 8px; }
+
+.template-bar__save {
+	background: transparent;
+	color: var(--fg-dim);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 8px 16px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.template-bar__delete {
+	background: var(--bg-item);
+	color: var(--status-error);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 8px 16px;
+	cursor: pointer;
+}
+.template-bar__delete:hover { background: var(--status-error); color: #fff; }
+
+.template-bar__error {
+	color: var(--status-error);
+	font-size: 13px;
+	margin: 4px auto 0;
+	max-width: 460px;
+}
+
 /* --- Anthropic login view --- */
 .login__hint { color: var(--fg-dim); font-size: 13px; padding: 8px 12px; margin: 0; }
 .login__hint code { color: var(--fg); background: var(--bg-item); padding: 1px 4px; border-radius: 3px; }

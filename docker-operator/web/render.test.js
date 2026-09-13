@@ -478,3 +478,93 @@ test('renderCreateForm: with no image_tag, opts.values.image seeds the selected 
 		{ values: { image: 'ghcr.io/x/agent:20260101-120000' } });
 	assert.match(html, /<option value="20260101-120000" selected>/);
 });
+
+// renderCreateForm(defaults, {values: <a Template-shaped object>}) is exactly
+// how app.js's applyTemplateToForm prefills the form -- this proves that
+// works with ZERO field-name mapping (Template's JSON tags were deliberately
+// copied from Agent's own), and that the template's own name/description
+// never leak into the agent's Name/Description fields: applyTemplateToForm
+// is responsible for passing the CURRENT form's name/description back
+// through itself, so a values object built from a template alone should
+// leave those two fields blank, not populate them.
+test('renderCreateForm: a Template-shaped opts.values pre-fills every infra field, not name/description', () => {
+	const template = {
+		id: 'tpl_00000001',
+		name: 'my template',
+		description: 'template description',
+		backend: 'ollama',
+		model: 'tpl-opus',
+		fast_model: 'tpl-fast',
+		ollama_url: 'http://gpu-box:11434',
+		repo: 'acme/widget.git',
+		auto_compact_threshold: '95',
+		max_context_tokens: '250000',
+		image_tag: '20260101-120000',
+		auto_mode: 'on',
+	};
+	// Mirrors applyTemplateToForm: pull the reusable fields off the template,
+	// but never its own name/description.
+	const values = {
+		backend: template.backend, model: template.model, fast_model: template.fast_model,
+		ollama_url: template.ollama_url, repo: template.repo,
+		auto_compact_threshold: template.auto_compact_threshold,
+		max_context_tokens: template.max_context_tokens,
+		image_tag: template.image_tag, auto_mode: template.auto_mode,
+	};
+	const html = Render.renderCreateForm(
+		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },
+		{ values: values });
+
+	assert.match(html, /class="create-form__model" type="text" value="tpl-opus"/);
+	assert.match(html, /class="create-form__fast-model" type="text" value="tpl-fast"/);
+	assert.match(html, /class="create-form__ollama-url" type="text" value="http:\/\/gpu-box:11434" placeholder=/);
+	assert.match(html, /class="create-form__repo" type="text" value="acme\/widget.git"/);
+	assert.match(html, /class="create-form__auto-compact" type="text" value="95"/);
+	assert.match(html, /class="create-form__max-context-tokens" type="text" value="250000"/);
+	assert.match(html, /<option value="20260101-120000" selected>/);
+	assert.match(html, /<option value="on" selected>On<\/option>/);
+	// The template's OWN name/description must never appear on the form.
+	assert.match(html, /class="create-form__name" type="text" value=""/);
+	assert.match(html, /class="create-form__description" type="text" value=""/);
+	assert.doesNotMatch(html, /my template/);
+	assert.doesNotMatch(html, /template description/);
+});
+
+// --- template bar ------------------------------------------------------
+
+test('renderTemplateBar: empty state shows only the blank option', () => {
+	const html = Render.renderTemplateBar([]);
+	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
+	assert.deepEqual(opts, ['<option value="">— Select a template —</option>']);
+	assert.match(html, /class="template-bar__save" type="button">Save as template<\/button>/);
+	assert.match(html, /class="template-bar__delete" type="button" hidden>Delete<\/button>/);
+});
+
+test('renderTemplateBar: null/undefined also renders the empty state', () => {
+	assert.match(Render.renderTemplateBar(null), /template-bar__select/);
+	assert.match(Render.renderTemplateBar(undefined), /template-bar__select/);
+});
+
+test('renderTemplateBar: renders one <option> per template, alphabetically sorted by name', () => {
+	const templates = [
+		{ id: 'tpl_c', name: 'Charlie' },
+		{ id: 'tpl_a', name: 'Alpha' },
+		{ id: 'tpl_b', name: 'Bravo' },
+	];
+	const html = Render.renderTemplateBar(templates);
+	const aIndex = html.indexOf('tpl_a');
+	const bIndex = html.indexOf('tpl_b');
+	const cIndex = html.indexOf('tpl_c');
+	assert.ok(aIndex >= 0 && bIndex > aIndex && cIndex > bIndex, 'expected Alpha, Bravo, Charlie in order, got: ' + html);
+});
+
+test('renderTemplateBar: a template name containing HTML is escaped', () => {
+	const html = Render.renderTemplateBar([{ id: 'tpl_x', name: '<script>alert(1)</script>' }]);
+	assert.doesNotMatch(html, /<script>/);
+	assert.match(html, /&lt;script&gt;/);
+});
+
+test('renderTemplateBar: an unnamed template shows a placeholder label', () => {
+	const html = Render.renderTemplateBar([{ id: 'tpl_x', name: '' }]);
+	assert.match(html, /\(unnamed template\)/);
+});

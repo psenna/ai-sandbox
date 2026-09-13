@@ -69,11 +69,24 @@ type fakeManager struct {
 	imageTagsErr error
 	refreshErr   error
 	refreshCalls int
+
+	templates map[string]store.Template
+
+	nextTemplateID int
+
+	listTemplatesErr error
+
+	createTemplateErr error
+
+	updateTemplateErr error
+
+	deleteTemplateErr error
 }
 
 func newFakeManager(maxAgents int) *fakeManager {
 	return &fakeManager{
 		agents:           map[string]store.Agent{},
+		templates:        map[string]store.Template{},
 		maxAgents:        maxAgents,
 		defaultBackend:   config.BackendOllama,
 		defaultModel:     "glm-5.3:cloud",
@@ -294,6 +307,94 @@ func (f *fakeManager) Rename(_ context.Context, id string, name, description *st
 	}
 	f.agents[id] = a
 	return a, nil
+}
+
+func (f *fakeManager) findTemplateByName(excludeID, name string) bool {
+	for id, t := range f.templates {
+		if id != excludeID && t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeManager) ListTemplates(_ context.Context) ([]store.Template, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listTemplatesErr != nil {
+		return nil, f.listTemplatesErr
+	}
+	out := make([]store.Template, 0, len(f.templates))
+	for _, t := range f.templates {
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+func (f *fakeManager) CreateTemplate(_ context.Context, spec store.TemplateCreateSpec) (store.Template, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createTemplateErr != nil {
+		return store.Template{}, f.createTemplateErr
+	}
+	if f.findTemplateByName("", spec.Name) {
+		return store.Template{}, fmt.Errorf("creating template: %w", store.ErrTemplateNameExists)
+	}
+	f.nextTemplateID++
+	t := store.Template{
+		ID:                   fmt.Sprintf("tpl_%08d", f.nextTemplateID),
+		Name:                 spec.Name,
+		Description:          spec.Description,
+		Backend:              spec.Backend,
+		Model:                spec.Model,
+		FastModel:            spec.FastModel,
+		OllamaURL:            spec.OllamaURL,
+		Repo:                 spec.Repo,
+		AutoCompactThreshold: spec.AutoCompactThreshold,
+		MaxContextTokens:     spec.MaxContextTokens,
+		ImageTag:             spec.ImageTag,
+		AutoMode:             spec.AutoMode,
+	}
+	f.templates[t.ID] = t
+	return t, nil
+}
+
+func (f *fakeManager) UpdateTemplate(_ context.Context, id string, spec store.TemplateCreateSpec) (store.Template, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updateTemplateErr != nil {
+		return store.Template{}, f.updateTemplateErr
+	}
+	t, ok := f.templates[id]
+	if !ok {
+		return store.Template{}, fmt.Errorf("updating template %q: %w", id, store.ErrTemplateNotFound)
+	}
+	if f.findTemplateByName(id, spec.Name) {
+		return store.Template{}, fmt.Errorf("updating template %q: %w", id, store.ErrTemplateNameExists)
+	}
+	t.Name = spec.Name
+	t.Description = spec.Description
+	t.Backend = spec.Backend
+	t.Model = spec.Model
+	t.FastModel = spec.FastModel
+	t.OllamaURL = spec.OllamaURL
+	t.Repo = spec.Repo
+	t.AutoCompactThreshold = spec.AutoCompactThreshold
+	t.MaxContextTokens = spec.MaxContextTokens
+	t.ImageTag = spec.ImageTag
+	t.AutoMode = spec.AutoMode
+	f.templates[id] = t
+	return t, nil
+}
+
+func (f *fakeManager) DeleteTemplate(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteTemplateErr != nil {
+		return f.deleteTemplateErr
+	}
+	delete(f.templates, id)
+	return nil
 }
 
 // --- test helpers -----------------------------------------------------------

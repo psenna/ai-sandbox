@@ -183,6 +183,45 @@
 		);
 	}
 
+	// renderTemplateBar renders the template picker sitting above the
+	// create-agent form: a <select> of saved templates (GET /api/templates),
+	// a context-aware save/update button, and a delete button. It is a
+	// separate root element from renderCreateForm's own markup -- inserted
+	// as a sibling by app.js, never spliced into the form string -- so the
+	// update-agent form (terminal.js's openUpdateForm, which also calls
+	// renderCreateForm) is untouched by construction.
+	//
+	// Options are sorted alphabetically by name for display; the store
+	// itself stays ID-ordered (the same division of labor renderImageTagSelect
+	// already has between server order and display order). An unnamed
+	// template (empty Name -- should not normally happen, the API rejects an
+	// empty name, but a defensively-rendered placeholder beats a blank
+	// <option> a user can't click) shows a placeholder label.
+	function renderTemplateBar(templates) {
+		var sorted = (templates || []).slice().sort(function (a, b) {
+			var an = (a && a.name) || '';
+			var bn = (b && b.name) || '';
+			return an < bn ? -1 : an > bn ? 1 : 0;
+		});
+		var options = '<option value="">— Select a template —</option>' +
+			sorted.map(function (t) {
+				var label = t.name ? escapeHTML(t.name) : '(unnamed template)';
+				return '<option value="' + escapeHTML(t.id) + '">' + label + '</option>';
+			}).join('');
+		return (
+			'<div class="template-bar">' +
+				'<label class="create-form__row template-bar__row">Template' +
+					'<select class="template-bar__select">' + options + '</select>' +
+				'</label>' +
+				'<div class="template-bar__actions">' +
+					'<button class="template-bar__save" type="button">Save as template</button>' +
+					'<button class="template-bar__delete" type="button" hidden>Delete</button>' +
+				'</div>' +
+				'<p class="template-bar__error" role="alert" hidden></p>' +
+			'</div>'
+		);
+	}
+
 	// renderAgentInfo renders the "Agent info" overlay's body from
 	// GET /api/agents/{id}/info's body ({agent, operator}): two sections —
 	// the agent's identity (its immutable ID) and resolved create-time
@@ -465,6 +504,7 @@
 		renderAgentList: renderAgentList,
 		renderCapacity: renderCapacity,
 		renderCreateForm: renderCreateForm,
+		renderTemplateBar: renderTemplateBar,
 		renderAgentInfo: renderAgentInfo,
 		renderAnthropicStatus: renderAnthropicStatus,
 		isDateTimeTag: isDateTimeTag,

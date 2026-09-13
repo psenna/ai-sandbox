@@ -48,6 +48,10 @@ const (
 	// CodePayloadTooLarge is returned (413) when an uploaded file exceeds
 	// FILESTORE_MAX_UPLOAD_BYTES.
 	CodePayloadTooLarge = "payload_too_large"
+
+	// CodeDuplicateName is returned (409) by POST /api/templates and
+	// PUT /api/templates/{id} when another template already has that name.
+	CodeDuplicateName = "duplicate_name"
 )
 
 // writeJSON writes body as status with a JSON content type. Encode errors

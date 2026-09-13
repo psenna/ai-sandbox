@@ -16,6 +16,10 @@
 		selectedID: null,
 		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '', autoMode: 'on' },
 		agentImage: { tags: [], newest: '', operatorDefault: '', checkedAt: null, lastError: '' },
+		// templates caches GET /api/templates's list for the create form's
+		// template picker. Only relevant while that form is open, so it is
+		// fetched lazily from showCreateForm rather than at load time.
+		templates: [],
 	};
 
 	var sidebarList = document.getElementById('agent-list');
@@ -84,24 +88,38 @@
 
 	// --- create form ---------------------------------------------------------
 
-	function showCreateForm() {
-		var formDefaults = Object.assign({}, state.defaults, {
+	// currentForm returns the live .create-form element. A function, not a
+	// cached variable: applyTemplateToForm below replaces the form's DOM node
+	// wholesale (via outerHTML) whenever a template is applied, and every
+	// template-bar handler that touches the form must see that replacement,
+	// not a stale detached reference to the node it replaced.
+	function currentForm() { return mainArea.querySelector('.create-form'); }
+
+	function buildFormDefaults() {
+		return Object.assign({}, state.defaults, {
 			imageTags: state.agentImage.tags,
 			imageDefaultTag: state.agentImage.operatorDefault,
 		});
-		mainArea.innerHTML = window.Render.renderCreateForm(formDefaults);
-		var form = mainArea.querySelector('.create-form');
+	}
+
+	function currentBackendOf(form) {
+		var checked = form.querySelector('input[name="backend"]:checked');
+		return checked ? checked.value : 'ollama';
+	}
+
+	// wireCreateForm attaches every listener the create/update form itself
+	// needs (backend toggle, cancel, submit). Called fresh against whatever
+	// .create-form element currently exists -- the initial one, or the
+	// replacement applyTemplateToForm builds -- so it never binds to a node
+	// that later gets swapped out from under it.
+	function wireCreateForm(form) {
 		var ollamaBlock = form.querySelector('.create-form__ollama');
 		var anthropicNote = form.querySelector('.create-form__anthropic-note');
 		var errorEl = form.querySelector('.create-form__error');
 		var submitBtn = form.querySelector('.create-form__submit');
 
-		function currentBackend() {
-			var checked = form.querySelector('input[name="backend"]:checked');
-			return checked ? checked.value : 'ollama';
-		}
 		function syncBackend() {
-			var anthropic = currentBackend() === 'anthropic';
+			var anthropic = currentBackendOf(form) === 'anthropic';
 			ollamaBlock.hidden = anthropic;
 			anthropicNote.hidden = !anthropic;
 		}
@@ -116,7 +134,7 @@
 
 		form.addEventListener('submit', function (ev) {
 			ev.preventDefault();
-			var backend = currentBackend();
+			var backend = currentBackendOf(form);
 			var body = {
 				name: form.querySelector('.create-form__name').value.trim(),
 				description: form.querySelector('.create-form__description').value.trim(),
@@ -165,6 +183,167 @@
 					errorEl.hidden = false;
 				});
 		});
+	}
+
+	// infraFieldsFromForm reads the 9 template-eligible fields off the
+	// current form, trimmed, following the exact same "send only when it
+	// differs from the operator default" rule wireCreateForm's own submit
+	// body already uses for image_tag -- so saving a template pins a tag
+	// only when the user genuinely picked a non-default one.
+	function infraFieldsFromForm(form) {
+		var backend = currentBackendOf(form);
+		var fields = {
+			backend: backend,
+			repo: form.querySelector('.create-form__repo').value.trim(),
+			auto_compact_threshold: form.querySelector('.create-form__auto-compact').value.trim(),
+			max_context_tokens: form.querySelector('.create-form__max-context-tokens').value.trim(),
+			auto_mode: form.querySelector('.create-form__auto-mode').value,
+			image_tag: '',
+			model: '',
+			fast_model: '',
+			ollama_url: '',
+		};
+		var sel = form.querySelector('.create-form__image-tag');
+		if (sel && sel.value && sel.value !== state.agentImage.operatorDefault) fields.image_tag = sel.value;
+		if (backend === 'ollama') {
+			fields.model = form.querySelector('.create-form__model').value.trim();
+			fields.fast_model = form.querySelector('.create-form__fast-model').value.trim();
+			fields.ollama_url = form.querySelector('.create-form__ollama-url').value.trim();
+		}
+		return fields;
+	}
+
+	// applyTemplateToForm rebuilds ONLY the .create-form element (via
+	// renderCreateForm's opts.values, the same mechanism the update-agent
+	// form already uses for an agent record) with the selected template's 9
+	// infra fields, while explicitly carrying the agent's own current Name/
+	// Description straight through untouched. This exclusion is load-bearing,
+	// not cosmetic: renderCreateForm reads values.name/values.description
+	// directly, so passing the Template record itself (which has its OWN
+	// name/description) would silently overwrite whatever the user already
+	// typed for the agent.
+	function applyTemplateToForm(t) {
+		var form = currentForm();
+		var values = {
+			name: form.querySelector('.create-form__name').value,
+			description: form.querySelector('.create-form__description').value,
+			backend: t.backend,
+			model: t.model,
+			fast_model: t.fast_model,
+			ollama_url: t.ollama_url,
+			repo: t.repo,
+			auto_compact_threshold: t.auto_compact_threshold,
+			max_context_tokens: t.max_context_tokens,
+			image_tag: t.image_tag,
+			auto_mode: t.auto_mode,
+		};
+		form.outerHTML = window.Render.renderCreateForm(buildFormDefaults(), { values: values });
+		wireCreateForm(currentForm());
+	}
+
+	// refreshTemplateBar re-renders ONLY the .template-bar element from the
+	// current state.templates and re-wires it -- the .create-form element
+	// (and whatever the user is mid-typing into it) is never touched here,
+	// unlike applyTemplateToForm above. selectedId (optional) is the
+	// template to leave selected in the dropdown afterwards.
+	function refreshTemplateBar(selectedId) {
+		var bar = mainArea.querySelector('.template-bar');
+		if (!bar) return; // the create form isn't open (or was navigated away from)
+		bar.outerHTML = window.Render.renderTemplateBar(state.templates);
+		wireTemplateBar(selectedId);
+	}
+
+	function wireTemplateBar(selectedId) {
+		var templateBar = mainArea.querySelector('.template-bar');
+		var templateSelect = templateBar.querySelector('.template-bar__select');
+		var saveBtn = templateBar.querySelector('.template-bar__save');
+		var deleteBtn = templateBar.querySelector('.template-bar__delete');
+		var errorEl = templateBar.querySelector('.template-bar__error');
+		if (selectedId) templateSelect.value = selectedId;
+
+		function currentTemplate() {
+			var matches = state.templates.filter(function (t) { return t.id === templateSelect.value; });
+			return matches.length ? matches[0] : null;
+		}
+		function syncButtons() {
+			var t = currentTemplate();
+			saveBtn.textContent = t ? 'Update template' : 'Save as template';
+			deleteBtn.hidden = !t;
+		}
+		syncButtons();
+
+		templateSelect.addEventListener('change', function () {
+			errorEl.hidden = true;
+			syncButtons();
+			// Blank selection ("— Select a template —") is a deliberate no-op
+			// on the form fields -- it must never silently discard manual edits.
+			var t = currentTemplate();
+			if (t) applyTemplateToForm(t);
+		});
+
+		saveBtn.addEventListener('click', function () {
+			var existing = currentTemplate();
+			var name = window.prompt('Template name:', existing ? existing.name : '');
+			if (name === null) return; // cancelled
+			name = name.trim();
+			if (!name) return;
+
+			var body = Object.assign(
+				{ name: name, description: existing ? existing.description : '' },
+				infraFieldsFromForm(currentForm())
+			);
+			errorEl.hidden = true;
+			saveBtn.disabled = true;
+
+			var save = existing
+				? fetchJSON('/api/templates/' + existing.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+				: fetchJSON('/api/templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+			save.then(function (saved) {
+				return fetchJSON('/api/templates').then(function (data) {
+					state.templates = (data && data.templates) || [];
+					refreshTemplateBar(saved.id);
+				});
+			}).catch(function (e) {
+				saveBtn.disabled = false;
+				errorEl.textContent = e.message;
+				errorEl.hidden = false;
+			});
+		});
+
+		deleteBtn.addEventListener('click', function () {
+			var t = currentTemplate();
+			if (!t) return;
+			if (!window.confirm('Delete the template "' + t.name + '"?')) return;
+			fetchJSON('/api/templates/' + t.id, { method: 'DELETE' })
+				.then(function () {
+					state.templates = state.templates.filter(function (x) { return x.id !== t.id; });
+					refreshTemplateBar('');
+				})
+				.catch(function (e) {
+					errorEl.textContent = e.message;
+					errorEl.hidden = false;
+				});
+		});
+	}
+
+	function showCreateForm() {
+		mainArea.innerHTML = window.Render.renderTemplateBar(state.templates) + window.Render.renderCreateForm(buildFormDefaults());
+		wireCreateForm(currentForm());
+		wireTemplateBar();
+
+		// The template list is fetched lazily here (not the load-time IIFE,
+		// not the 3s poll below) since it only matters while this form is
+		// open. state.templates keeps whatever it held from a previous open
+		// until this resolves, so reopening the form isn't blocked on it; a
+		// failure degrades to "no templates" rather than blocking the form.
+		fetchJSON('/api/templates')
+			.then(function (data) { state.templates = (data && data.templates) || []; })
+			.catch(function () { state.templates = []; })
+			.then(function () {
+				if (!currentForm()) return; // navigated away while the fetch was in flight
+				refreshTemplateBar();
+			});
 	}
 
 	function showPlaceholder() {
