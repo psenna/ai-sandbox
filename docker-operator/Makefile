@@ -189,6 +189,9 @@ agent-image-smoke:
 	@echo "--- LSP binaries (gopls, typescript-language-server, pyright-langserver) are on PATH ---"
 	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'command -v gopls && command -v typescript-language-server && command -v pyright-langserver'
 	@echo "OK: gopls, typescript-language-server, pyright-langserver"
+	@echo "--- python3 (required by the baked security-guidance plugin's every hook) is on PATH and SDK-compatible (>=3.10) ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'python3 -c "import sys; assert sys.version_info >= (3, 10), sys.version; print(sys.version)"'
+	@echo "OK: python3 present and >= 3.10"
 	@echo "--- default plugin bundle is baked into CLAUDE_CONFIG_DIR ---"
 	@actual=$$(docker run --rm -u node --entrypoint sh $(AGENT_IMAGE) -c 'claude plugin list --json' | \
 		grep -o '"id": *"[^"]*"' | sed 's/"id": *"//;s/"$$//' | sort); \
