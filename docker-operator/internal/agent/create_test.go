@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -166,33 +167,61 @@ func checkCreateCallOrder(t *testing.T, f *dockerclienttest.Fake, m *Manager, go
 		{Op: dockerclienttest.OpContainerStart, Target: got.DindContainerID},
 		{Op: dockerclienttest.OpContainerInspect, Target: got.DindContainerID},
 		{Op: dockerclienttest.OpNetworkConnect, Target: want.dinernet + "/" + m.cfg.DependaproxyContainer},
-		{Op: dockerclienttest.OpContainerCreate, Target: want.container},
-		{Op: dockerclienttest.OpContainerStart, Target: got.ContainerID},
 	}
 	calls := f.Calls()[before:]
-	if len(calls) < len(wantPrefix)+3 {
-		t.Fatalf("Calls() (since Create was invoked) = %v, want at least %d calls", calls, len(wantPrefix)+3)
+	if len(calls) < len(wantPrefix)+3+2+3 {
+		t.Fatalf("Calls() (since Create was invoked) = %v, want at least %d calls", calls, len(wantPrefix)+3+2+3)
 	}
 	for i, want := range wantPrefix {
 		if calls[i] != want {
 			t.Errorf("Calls()[%d] = %+v, want %+v", i, calls[i], want)
 		}
 	}
-	// The tmux-session check: ExecCreate, then ExecAttach/ExecInspect share
-	// whatever exec ID ExecCreate produced.
-	tail := calls[len(wantPrefix):]
-	if len(tail) != 3 {
-		t.Fatalf("trailing calls = %v, want exactly [ExecCreate, ExecAttach, ExecInspect]", tail)
+	rest := calls[len(wantPrefix):]
+
+	// verifyDependaproxyReachable's own check, right after NetworkConnect:
+	// ExecCreate against the DIND container, then ExecAttach/ExecInspect
+	// sharing whatever exec ID it produced.
+	rest = checkExecTriplet(t, rest, got.DindContainerID, "verifyDependaproxyReachable")
+
+	wantSuffix := []dockerclienttest.Call{
+		{Op: dockerclienttest.OpContainerCreate, Target: want.container},
+		{Op: dockerclienttest.OpContainerStart, Target: got.ContainerID},
 	}
-	if tail[0].Op != dockerclienttest.OpExecCreate || tail[0].Target != got.ContainerID {
-		t.Errorf("Calls()[%d] = %+v, want {ExecCreate, %q}", len(wantPrefix), tail[0], got.ContainerID)
+	for i, want := range wantSuffix {
+		if rest[i] != want {
+			t.Errorf("Calls()[%d] = %+v, want %+v", len(wantPrefix)+3+i, rest[i], want)
+		}
 	}
-	if tail[1].Op != dockerclienttest.OpExecAttach || tail[2].Op != dockerclienttest.OpExecInspect {
-		t.Errorf("trailing calls = %v, want [ExecCreate, ExecAttach, ExecInspect]", tail)
+	rest = rest[len(wantSuffix):]
+
+	// The tmux-session check: same ExecCreate/ExecAttach/ExecInspect shape,
+	// this time against the agent container.
+	rest = checkExecTriplet(t, rest, got.ContainerID, "the tmux-session check")
+	if len(rest) != 0 {
+		t.Errorf("trailing calls = %v, want none", rest)
 	}
-	if tail[1].Target == "" || tail[1].Target != tail[2].Target {
-		t.Errorf("ExecAttach/ExecInspect targets = %q/%q, want the same non-empty exec ID", tail[1].Target, tail[2].Target)
+}
+
+// checkExecTriplet asserts the next three calls are the ExecCreate/ExecAttach/
+// ExecInspect shape runExec always produces against wantContainerID, and
+// returns whatever calls remain after them.
+func checkExecTriplet(t *testing.T, calls []dockerclienttest.Call, wantContainerID, what string) []dockerclienttest.Call {
+	t.Helper()
+	if len(calls) < 3 {
+		t.Fatalf("%s: calls = %v, want at least [ExecCreate, ExecAttach, ExecInspect]", what, calls)
 	}
+	triplet, rest := calls[:3], calls[3:]
+	if triplet[0].Op != dockerclienttest.OpExecCreate || triplet[0].Target != wantContainerID {
+		t.Errorf("%s: Calls()[0] = %+v, want {ExecCreate, %q}", what, triplet[0], wantContainerID)
+	}
+	if triplet[1].Op != dockerclienttest.OpExecAttach || triplet[2].Op != dockerclienttest.OpExecInspect {
+		t.Errorf("%s: calls = %v, want [ExecCreate, ExecAttach, ExecInspect]", what, triplet)
+	}
+	if triplet[1].Target == "" || triplet[1].Target != triplet[2].Target {
+		t.Errorf("%s: ExecAttach/ExecInspect targets = %q/%q, want the same non-empty exec ID", what, triplet[1].Target, triplet[2].Target)
+	}
+	return rest
 }
 
 // TestCreate_AtCapacity proves a create over MAX_AGENTS is rejected before it
@@ -499,4 +528,71 @@ func TestCreate_AutoMode_ResolvesAndValidates(t *testing.T) {
 	if len(after) != len(before) {
 		t.Errorf("an invalid auto_mode consumed a slot: %d records before, %d after", len(before), len(after))
 	}
+}
+
+// newFakeDindContainer creates and starts a bare fake container standing in
+// for a dind sidecar, so ExecCreate has a real container ID to resolve --
+// unlike a made-up string, which ExecCreate correctly rejects as not-found
+// (and runExec then never reaches ExecAttach/ExecInspect at all).
+func newFakeDindContainer(t *testing.T, f *dockerclienttest.Fake) string {
+	t.Helper()
+	ctx := context.Background()
+	id, err := f.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "test-dind", Image: dindImage})
+	if err != nil {
+		t.Fatalf("seeding a fake dind container: %v", err)
+	}
+	if err := f.ContainerStart(ctx, id); err != nil {
+		t.Fatalf("starting the fake dind container: %v", err)
+	}
+	return id
+}
+
+// TestVerifyDependaproxyReachable exercises the standalone reachability check
+// directly (not through the full Create flow, which always succeeds it on
+// the first try since the fake's exec commands default to exit 0) -- see the
+// function's own doc comment in create.go for why it exists and why it never
+// fails its caller.
+func TestVerifyDependaproxyReachable(t *testing.T) {
+	t.Run("skips the check entirely when no dependaproxy address is recorded", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		a := store.Agent{ID: "agt_test", DindContainerID: "dind123"}
+		before := len(f.Calls())
+		m.verifyDependaproxyReachable(context.Background(), a)
+		if got := len(f.Calls()) - before; got != 0 {
+			t.Errorf("Calls() made = %d, want 0 for a record with no DependaproxyDinernetIP", got)
+		}
+	})
+
+	t.Run("returns immediately on a first-try success, against the dind container", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		dindID := newFakeDindContainer(t, f)
+		a := store.Agent{ID: "agt_test", DindContainerID: dindID, DependaproxyDinernetIP: netip.MustParseAddr("10.0.5.9")}
+		before := len(f.Calls())
+		start := time.Now()
+		m.verifyDependaproxyReachable(context.Background(), a)
+		if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+			t.Errorf("took %s, want it to return almost immediately on a first-try success", elapsed)
+		}
+		checkExecTriplet(t, f.Calls()[before:], a.DindContainerID, "verifyDependaproxyReachable (first-try success)")
+	})
+
+	t.Run("retries for the configured budget, then degrades without erroring when never reachable", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		dindID := newFakeDindContainer(t, f)
+		a := store.Agent{ID: "agt_test", DindContainerID: dindID, DependaproxyDinernetIP: netip.MustParseAddr("10.0.5.9")}
+		f.ExecExit["nc -z -w2 -n 10.0.5.9 8080"] = 1 // every attempt fails
+		before := len(f.Calls())
+		start := time.Now()
+		m.verifyDependaproxyReachable(context.Background(), a) // must not panic/error -- best-effort only
+		if elapsed := time.Since(start); elapsed < m.opts.DependaproxyReachableTimeout {
+			t.Errorf("returned after %s, want it to keep retrying for the full %s budget", elapsed, m.opts.DependaproxyReachableTimeout)
+		}
+		calls := f.Calls()[before:]
+		if len(calls) < 6 {
+			t.Errorf("Calls() = %v, want at least two retried attempts (3 calls each)", calls)
+		}
+		for len(calls) > 0 {
+			calls = checkExecTriplet(t, calls, a.DindContainerID, "verifyDependaproxyReachable (retry)")
+		}
+	})
 }

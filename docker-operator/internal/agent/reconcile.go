@@ -343,6 +343,7 @@ func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, e
 		if err := m.recreateDind(ctx, &a); err != nil {
 			return false, fmt.Errorf("recreating the unhealthy dind sidecar %q: %w", ref, err)
 		}
+		m.verifyDependaproxyReachable(ctx, a)
 		return true, nil
 	case c.State == dockerclient.StateRunning:
 		return false, nil
@@ -357,6 +358,7 @@ func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, e
 		}
 		err := m.waitHealthy(ctx, ref, a.DindContainerName)
 		if err == nil {
+			m.verifyDependaproxyReachable(ctx, a)
 			return true, nil
 		}
 		var exited *dindExitedError
@@ -377,6 +379,7 @@ func (m *Manager) ensureDindRunning(ctx context.Context, a store.Agent) (bool, e
 		if recreateErr := m.recreateDind(ctx, &a); recreateErr != nil {
 			return false, fmt.Errorf("%w (recreate also failed: %s)", err, recreateErr)
 		}
+		m.verifyDependaproxyReachable(ctx, a)
 		return true, nil
 	}
 }
