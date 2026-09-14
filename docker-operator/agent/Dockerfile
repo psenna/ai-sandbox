@@ -74,8 +74,14 @@ ARG NPM_REGISTRY
 # git for git-proxy clone/fetch/push, ca-certificates, bash for the entrypoint
 # + the Claude Code installer, curl for the broker leg + the installer,
 # libgcc/libstdc++/ripgrep for the native binary on musl, docker-cli as a
-# client-only talker to the per-agent rootless DinD sidecar, plus tmux.
-RUN apk add --no-cache git ca-certificates bash curl libgcc libstdc++ ripgrep docker-cli tmux && \
+# client-only talker to the per-agent rootless DinD sidecar, tmux, plus
+# python3 + py3-pip. The baked security-guidance plugin's every hook (below)
+# shells out through sg-python.sh, which requires a real Python >= 3.10
+# interpreter (claude_agent_sdk's minimum) and falls back to `pip install
+# --target` when it can't build a venv -- so both python3 and pip need to be
+# on PATH, not just python3 alone. Without this the plugin fails outright
+# ("no working Python 3 interpreter found") on every session start.
+RUN apk add --no-cache git ca-certificates bash curl libgcc libstdc++ ripgrep docker-cli tmux python3 py3-pip && \
     rm -rf /var/cache/apk/*
 
 # gopls: copied from the builder stage above, root-owned like the other
