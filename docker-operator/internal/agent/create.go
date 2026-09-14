@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -204,6 +205,12 @@ type Options struct {
 	DindWakeRetries int
 	// DindWakeRetryDelay is the pause between DindWakeRetries attempts.
 	DindWakeRetryDelay time.Duration
+	// DependaproxyReachableTimeout bounds how long ensureDindRunning waits,
+	// after a (re)started or recreated dind sidecar reports healthy, for it
+	// to actually be able to reach the dependaproxy container over the
+	// dinernet -- see verifyDependaproxyReachable's doc comment for why this
+	// is a separate check from the healthcheck itself.
+	DependaproxyReachableTimeout time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -230,6 +237,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.DindWakeRetryDelay <= 0 {
 		o.DindWakeRetryDelay = 5 * time.Second
+	}
+	if o.DependaproxyReachableTimeout <= 0 {
+		o.DependaproxyReachableTimeout = 20 * time.Second
 	}
 	return o
 }
@@ -525,6 +535,7 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 	if err := m.connectDependaproxy(ctx, a); err != nil {
 		return err
 	}
+	m.verifyDependaproxyReachable(ctx, *a)
 	if err := m.startAgentContainer(ctx, a, rb, autoModeArgs(*a)...); err != nil {
 		return err
 	}
@@ -1109,6 +1120,62 @@ func (m *Manager) waitTmuxSession(ctx context.Context, a store.Agent) error {
 		}
 		if err := sleepCtx(ctx, m.opts.PollInterval); err != nil {
 			return err
+		}
+	}
+}
+
+// verifyDependaproxyReachable proves the dind sidecar can actually reach the
+// shared dependaproxy container over the dinernet, after ensureDindRunning
+// has just (re)started or recreated it.
+//
+// waitHealthy's smoke test ("docker run --rm busybox true") only proves the
+// sidecar's OWN nested daemon can create containers on its own internal
+// bridge -- it never exercises the sidecar's egress out through its
+// dinernet-facing interface to a sibling container. A (re)created or
+// restarted dind container's veth/bridge attachment (torn down and replumbed
+// by Docker on every stop+start, not just a full recreate) can take a few
+// seconds to settle, which otherwise surfaces as a connection timeout the
+// first time something inside the sidecar tries to reach dependaproxy --
+// invisible to the operator, since nothing here ever checked for it. This
+// closes that gap by waiting here instead of leaving whoever is inside the
+// agent to discover it.
+//
+// Best-effort: only runs when a dependaproxy address is already recorded
+// (an old record, or one that raced connectDependaproxy, might not have one
+// yet), and a failure is logged, not returned to the caller -- the sidecar
+// is still usable for everything that does not need dependaproxy, and it may
+// simply be down for a reason retrying from here cannot fix.
+func (m *Manager) verifyDependaproxyReachable(ctx context.Context, a store.Agent) {
+	if !a.DependaproxyDinernetIP.IsValid() {
+		return
+	}
+	port := "8080"
+	if u, err := url.Parse(m.cfg.DependaproxyURL); err == nil && u.Port() != "" {
+		port = u.Port()
+	}
+	addr := a.DependaproxyDinernetIP.String()
+	ref := firstNonEmpty(a.DindContainerID, a.DindContainerName, dindContainerName(a.ID))
+	cmd := []string{"nc", "-z", "-w2", "-n", addr, port}
+	deadline := time.Now().Add(m.opts.DependaproxyReachableTimeout)
+	var last string
+	for {
+		code, out, err := m.runExec(ctx, ref, cmd)
+		switch {
+		case err != nil:
+			last = err.Error()
+		case code == 0:
+			return
+		default:
+			last = fmt.Sprintf("exit code %d: %s", code, strings.TrimSpace(out))
+		}
+		if time.Now().After(deadline) {
+			m.log.WarnContext(ctx, "the dind sidecar still cannot reach dependaproxy over the dinernet; "+
+				"npm/pip/go installs inside it will time out until this clears on its own or dependaproxy is checked",
+				"agent_id", a.ID, "dependaproxy_addr", addr+":"+port, "last_check", last)
+			return
+		}
+		if err := sleepCtx(ctx, m.opts.PollInterval); err != nil {
+			return
 		}
 	}
 }

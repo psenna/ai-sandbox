@@ -50,14 +50,15 @@ func testConfig(maxAgents int) config.Config {
 // polls.
 func testOptions() Options {
 	return Options{
-		DindHealthTimeout:  500 * time.Millisecond,
-		TmuxReadyTimeout:   500 * time.Millisecond,
-		ExecTimeout:        500 * time.Millisecond,
-		PollInterval:       10 * time.Millisecond,
-		StopTimeout:        200 * time.Millisecond,
-		TeardownTimeout:    5 * time.Second,
-		DindWakeRetries:    3,
-		DindWakeRetryDelay: 10 * time.Millisecond,
+		DindHealthTimeout:            500 * time.Millisecond,
+		TmuxReadyTimeout:             500 * time.Millisecond,
+		ExecTimeout:                  500 * time.Millisecond,
+		PollInterval:                 10 * time.Millisecond,
+		StopTimeout:                  200 * time.Millisecond,
+		TeardownTimeout:              5 * time.Second,
+		DindWakeRetries:              3,
+		DindWakeRetryDelay:           10 * time.Millisecond,
+		DependaproxyReachableTimeout: 50 * time.Millisecond,
 	}
 }
 
