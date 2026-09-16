@@ -14,9 +14,10 @@ V1 is a local-only tool: it binds `127.0.0.1`, and one shared GitHub repo +
 token serves every agent. The operator's own REST API and terminal
 WebSockets take an optional static Bearer (`OPERATOR_API_TOKEN` — see
 [Authenticating the API](#authenticating-the-api)); the operator sits on its
-own Docker network that no agent joins. See [V2: network-egress
-restriction](#v2-network-egress-restriction) for the one direction this
-design deliberately leaves open.
+own Docker network that no agent joins. See [Network-egress
+restriction](#network-egress-restriction) for how each agent's outbound
+container-registry access is controlled, and the one direction (per-image
+validation) that design deliberately leaves open for now.
 
 ## What it does
 
@@ -504,16 +505,28 @@ are the operator's own responsibility to clean up via `DELETE
 stack — `docker compose down` only ever touches what `docker-compose.yaml`
 itself declares.
 
-## V2: network-egress restriction
+## Network-egress restriction
 
-Each agent's `dinernet` is already private and per-agent (never shared, see
-[Resource naming](#resource-naming-reference)) — the seam a squid-like
-forward proxy would sit on to restrict an agent's DinD workload containers
-to an allow-listed set of external hosts, on top of what
-`scripts/dind-init.sh` already blocks (the public npm/PyPI/Go registries).
-Nothing here implements that yet; the per-agent
-network boundary exists specifically so it can be added later without
-rearchitecting anything above it.
+Each agent's `dinernet` is private and per-agent (never shared, see
+[Resource naming](#resource-naming-reference)). `scripts/dind-init.sh` uses
+that boundary to default-deny the DinD sidecar's outbound 80/443 traffic
+except to an operator-configured allowlist of container-registry hosts
+(`AGENT_ALLOWED_REGISTRY_HOSTS`, default: Docker Hub, GHCR, Quay, and the
+Microsoft/Google/Kubernetes registries) plus this agent's own dinernet subnet
+(so `dependaproxy` stays reachable) — on top of the pre-existing explicit
+denylist for the public npm/PyPI/Go registries, which forces those through
+DependaProxy instead. See the `use-docker` skill's *Container-registry
+allowlist* section for the agent-facing behavior, and `scripts/dind-init.sh`
+for the enforcement mechanism (iptables `DOCKER-USER`/`OUTPUT`, resolved to
+IPs once at sidecar startup).
+
+This is a host-level allowlist only — it cannot validate *which* image or tag
+is pulled from an allowed registry, since `docker pull` traffic is
+indistinguishable from any other HTTPS request to the same host. Real
+per-image control (digest verification, a supply-chain-validated pull-through
+cache) needs a dedicated OCI-aware proxy; tracked as a DependaProxy feature
+request rather than built into this repo, since DependaProxy already owns
+exactly this job for npm/PyPI/Go.
 
 ## Development
 

@@ -208,6 +208,37 @@ a reversible one-line rewrite of `files.pythonhosted.org` → the proxy's
 Go and pip hash-pinning need nothing. The **`use-dependaproxy`** skill has the
 recipe, the `.gitattributes` clean/smudge filter, and what each `403` class means.
 
+## Container-registry allowlist (`docker pull`/`docker run`)
+
+Separately from the package-registry block above, the DinD daemon **default-denies
+outbound 80/443 except to an approved list of container-registry hosts** — this
+covers `docker pull`, `docker run` of an image not already cached, and `docker
+build` base-image pulls, from this container and any nested workload container it
+launches. The default list covers Docker Hub, GHCR, Quay, and the Microsoft/Google/
+Kubernetes registries; an unlisted registry — including one at an arbitrary
+custom domain — is unreachable, not just for images: **any** outbound 80/443
+request to a host that is neither on this allowlist nor internal to this agent's
+own network (e.g. `dependaproxy`) is rejected the same way, so a plain `curl`/`wget`
+to an unlisted host fails too, not just a registry pull.
+
+If a pull to an allowed registry fails intermittently, it may be a stale
+resolution rather than a real outage: the allowlist is resolved to IPs once at
+DinD-sidecar startup, and a CDN-backed registry (Docker Hub and GHCR both are, for
+blob storage) can rotate IPs during a long-lived agent. That is an operator-side
+fix (restart the agent's `docker` sidecar), not something to work around from
+inside the sandbox.
+
+If you need a registry that is not on the list, say so rather than trying to route
+around the block — the operator configures the allowlist (`AGENT_ALLOWED_REGISTRY_HOSTS`).
+
+**Prefer Docker Hub's "Docker Official Images"** — the curated,
+`docker.io/library/<name>` images with no username prefix (`node`, `python`,
+`golang`, `postgres`, `alpine`, …) — over third-party or random-user images
+(`someuser/node`), even when both are technically reachable through the
+allowlist. The allowlist controls *which registry* is reachable, not *which
+image* on it — it does not vet image content, so an unofficial image from an
+allowed registry is still an unvetted supply-chain risk.
+
 ## File ownership (run as uid 1000, not root)
 
 Workload images (node, python, go) default to running as **root**. Files they
@@ -290,7 +321,8 @@ container). The Docker daemon is isolated from git-proxy on purpose.
   is not on `dinernet`. Do not attempt to obtain it.
 - The Docker daemon is **rootless from the host's perspective**: it has no host
   privileges and cannot see git-proxy's bind mounts. It can run containers and
-  pull images — that is its whole scope.
+  pull images from an approved registry — that is its whole scope (see
+  *Container-registry allowlist* above).
 - If `docker` commands fail with "Cannot connect to the Docker daemon", the
   `docker` service may still be starting; wait a few seconds and retry (the
   operator only starts you once the DinD sidecar reports healthy, so this

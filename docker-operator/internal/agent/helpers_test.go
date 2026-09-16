@@ -34,6 +34,7 @@ func testConfig(maxAgents int) config.Config {
 		DependaproxyPyPIURL:    "http://dependaproxy:8080/pypi",
 		DependaproxyGoproxyURL: "http://dependaproxy:8080/goproxy",
 		DockerRuntime:          "sysbox-runc",
+		AllowedRegistryHosts:   "test-registry.example.com",
 		DependaproxyContainer:  "test-dependaproxy",
 		// The default backend for a create request that names none. Every
 		// backend-specific test overrides the request's Backend explicitly.

@@ -752,7 +752,14 @@ func (m *Manager) dindSpec(a store.Agent) dockerclient.ContainerSpec {
 		// Empty disables it. Safe: the daemon is reachable only from this one
 		// agent's private dinernet, and sysbox user-namespacing -- not TLS --
 		// is the security boundary here.
-		Env:    map[string]string{"DOCKER_TLS_CERTDIR": ""},
+		//
+		// AGENT_ALLOWED_REGISTRY_HOSTS is dind-init.sh's container-registry
+		// allowlist (m.cfg.AllowedRegistryHosts, operator-wide -- there is no
+		// per-agent override).
+		Env: map[string]string{
+			"DOCKER_TLS_CERTDIR":           "",
+			"AGENT_ALLOWED_REGISTRY_HOSTS": m.cfg.AllowedRegistryHosts,
+		},
 		Labels: labelsFor(a.ID, RoleDind),
 
 		Mounts: []dockerclient.Mount{
