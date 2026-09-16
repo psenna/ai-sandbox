@@ -76,7 +76,9 @@ type Report struct {
 // the stuck-record sweep above, Reconcile also walks every StatusRunning
 // record and starts back up whichever of its DinD sidecar and agent
 // container is not actually running -- see wakeStoppedAgents. A container
-// that IS already running is left completely untouched.
+// that IS already running is never stopped, restarted or recreated; the one
+// thing wakeAgent still does to it is the best-effort dependaproxy address
+// re-sync described on syncDependaproxyDinernetIP.
 //
 // Reconcile reports the first listing failure as an error but does not abort on
 // a per-agent teardown or wake-up failure: one stuck or unrecoverable agent
@@ -186,8 +188,15 @@ func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) (
 // wakeAgent checks agent a's DinD sidecar and agent container against the
 // daemon's actual state and starts back up whichever of the two is not
 // running. It reports awoke=true only when it actually had to start
-// something; a fully already-running agent is left completely untouched and
+// something; a fully already-running agent keeps both of its containers and
 // reports awoke=false, nil.
+//
+// The one thing it does to an agent that needs no waking at all is the
+// best-effort dependaproxy address re-sync it runs first
+// (syncDependaproxyDinernetIP): that drift is invisible to every container
+// state check below, and when it corrects an already-running agent container
+// the corrected address is written into it in place
+// (refreshDependaproxyIPFile) rather than by recreating it.
 //
 // The agent container, when it needs restarting, is NOT simply `docker
 // start`ed: a stopped container's ENTRYPOINT/Cmd -- including whatever
@@ -208,6 +217,11 @@ func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) (
 // retry via Update once the underlying cause (a genuinely missing sidecar or
 // container, most likely) is fixed.
 func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
+	// Re-assert the dependaproxy dinernet attachment before anything else: if
+	// the shared dependaproxy container was recreated while this agent's
+	// containers were down, nothing else on this path would ever notice.
+	dependaproxyChanged := m.syncDependaproxyDinernetIP(ctx, &a)
+
 	dindAwoke, err := m.ensureDindRunning(ctx, a)
 	if err != nil {
 		m.markWakeError(ctx, a.ID, fmt.Errorf("the dind sidecar: %w", err))
@@ -227,7 +241,13 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 		return false, err
 	case c.State == dockerclient.StateRunning:
 		// Already running: don't touch it. The sidecar may still have needed
-		// waking above -- that alone counts as having woken the agent.
+		// waking above -- that alone counts as having woken the agent. If the
+		// dependaproxy address changed, this container is not about to be
+		// recreated (which would pick it up via a fresh entrypoint.sh run on
+		// its own), so refresh the file inside it directly.
+		if dependaproxyChanged {
+			m.refreshDependaproxyIPFile(ctx, a)
+		}
 		return dindAwoke, nil
 	}
 
@@ -431,4 +451,30 @@ func appendIfUnmanaged(out []Unmanaged, known map[string]struct{}, kind, name st
 		return out
 	}
 	return append(out, Unmanaged{Kind: kind, Name: name, AgentID: id})
+}
+
+// SyncDependaproxyAddresses re-checks every RUNNING agent's recorded
+// dependaproxy dinernet address against the daemon, reconnecting and
+// re-stamping whatever drifted, and refreshing the file the running agent
+// container's workload containers read the address from.
+//
+// Running-only on purpose: a stopped/error agent's container is not there to
+// exec into, and its dinernet attachment is re-asserted by the Update or
+// wake-up that brings it back. Cheap in the steady state -- one
+// ContainerInspect of the shared dependaproxy container per agent and nothing
+// else when nothing drifted.
+func (m *Manager) SyncDependaproxyAddresses(ctx context.Context) error {
+	agents, err := m.store.List(ctx)
+	if err != nil {
+		return fmt.Errorf("syncing dependaproxy addresses: %w", err)
+	}
+	for _, a := range agents {
+		if a.Status != store.StatusRunning {
+			continue
+		}
+		if m.syncDependaproxyDinernetIP(ctx, &a) {
+			m.refreshDependaproxyIPFile(ctx, a)
+		}
+	}
+	return nil
 }

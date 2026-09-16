@@ -232,6 +232,13 @@ type Agent struct {
 	// time and templated into the agent container as
 	// DEPENDAPROXY_DINERNET_IP. The zero Addr means "not connected yet"; it
 	// round-trips through JSON as an empty string.
+	//
+	// Not create-time-only: internal/agent's syncDependaproxyDinernetIP
+	// re-asserts this invariant (reconnecting and re-stamping as needed)
+	// whenever the shared dependaproxy container is recreated out from under
+	// an existing agent's dinernet -- on every startup Reconcile pass, on
+	// each in-place Update, and on the periodic
+	// Manager.SyncDependaproxyAddresses sweep of every running agent.
 	DependaproxyDinernetIP netip.Addr `json:"dependaproxy_dinernet_ip"`
 
 	// CreatedAt is when Create inserted the record, in UTC. Immutable.

@@ -392,3 +392,80 @@ func TestUpdate_TransientStatusMakesDieEventNoop(t *testing.T) {
 		t.Errorf("Status = %q, want updating (a die event during an update must be a no-op)", got.Status)
 	}
 }
+
+// TestUpdate_ResyncsDependaproxyBeforeRecreate proves Update re-asserts the
+// dependaproxy dinernet attachment (syncDependaproxyDinernetIP) before it
+// recreates the agent container, and that the recreated container's
+// environment carries the corrected address -- not the stale one recorded
+// before the shared dependaproxy container was recreated out from under this
+// agent's dinernet.
+func TestUpdate_ResyncsDependaproxyBeforeRecreate(t *testing.T) {
+	m, f, _ := newTestManager(t, 5)
+	ctx := context.Background()
+	a := createRunningAgent(t, m)
+	oldAddr := a.DependaproxyDinernetIP
+
+	// Simulate the shared dependaproxy container being recreated: gone, then
+	// replaced by a new one with the same name, attached to nothing.
+	if err := f.ContainerRemove(ctx, m.cfg.DependaproxyContainer); err != nil {
+		t.Fatalf("removing the shared dependaproxy container: %v", err)
+	}
+	newDependaproxy(t, f, m.cfg.DependaproxyContainer)
+	mark := len(f.Calls())
+
+	updated, err := m.Update(ctx, a.ID, UpdateRequest{})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Status != store.StatusRunning {
+		t.Fatalf("Status = %q, want running", updated.Status)
+	}
+	if !updated.DependaproxyDinernetIP.IsValid() || updated.DependaproxyDinernetIP == oldAddr {
+		t.Errorf("DependaproxyDinernetIP = %v, want a freshly assigned address (old was %v)", updated.DependaproxyDinernetIP, oldAddr)
+	}
+
+	// Ordering is the point of this test, not just the end state: the
+	// reconnect must land BEFORE ensureDindRunning (whose own
+	// verifyDependaproxyReachable probe would otherwise nc the STALE address
+	// and warn about an unreachability that is not real) and, of course,
+	// before the agent container is removed and recreated.
+	calls := callsAfter(f, mark)
+	connectAt, dindInspectAt, removeAt := -1, -1, -1
+	for i, c := range calls {
+		switch {
+		case connectAt < 0 && c.Op == dockerclienttest.OpNetworkConnect &&
+			c.Target == a.DinernetName+"/"+m.cfg.DependaproxyContainer:
+			connectAt = i
+		case dindInspectAt < 0 && c.Op == dockerclienttest.OpContainerInspect && c.Target == a.DindContainerID:
+			dindInspectAt = i
+		case removeAt < 0 && c.Op == dockerclienttest.OpContainerRemove && c.Target == a.ContainerID:
+			removeAt = i
+		}
+	}
+	if connectAt < 0 {
+		t.Fatalf("Calls() = %v, want a NetworkConnect of the dependaproxy container to %q", calls, a.DinernetName)
+	}
+	if dindInspectAt < 0 {
+		t.Fatalf("Calls() = %v, want ensureDindRunning to have inspected the dind sidecar %q", calls, a.DindContainerID)
+	}
+	if connectAt > dindInspectAt {
+		t.Errorf("NetworkConnect happened at call %d, after ensureDindRunning's inspect at %d; want the address re-synced first so the reachability probe uses the corrected one", connectAt, dindInspectAt)
+	}
+	if removeAt >= 0 && connectAt > removeAt {
+		t.Errorf("NetworkConnect happened at call %d, after the agent container was removed at %d; want it re-synced before the recreate", connectAt, removeAt)
+	}
+
+	// The recreated container's own environment (as agentEnv would build it
+	// for the stored record) must carry the CORRECTED address, matching
+	// TestUpdate_BackendOllamaToAnthropic's approach to checking env vars.
+	rb, err := m.resolveBackend(ctx, CreateRequest{
+		Backend: updated.Backend, Model: updated.Model, FastModel: updated.FastModel, OllamaURL: updated.OllamaURL,
+	})
+	if err != nil {
+		t.Fatalf("resolveBackend: %v", err)
+	}
+	env := m.agentEnv(updated, rb)
+	if env["DEPENDAPROXY_DINERNET_IP"] != updated.DependaproxyDinernetIP.String() {
+		t.Errorf("DEPENDAPROXY_DINERNET_IP = %q, want %q", env["DEPENDAPROXY_DINERNET_IP"], updated.DependaproxyDinernetIP.String())
+	}
+}

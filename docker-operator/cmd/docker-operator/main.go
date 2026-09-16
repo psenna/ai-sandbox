@@ -136,6 +136,9 @@ func run(log *slog.Logger) error {
 	stopStatusSync := startStatusSync(docker, mgr, log)
 	defer stopStatusSync()
 
+	stopDependaproxySync := startDependaproxySync(mgr, dependaproxySyncInterval, log)
+	defer stopDependaproxySync()
+
 	// A login helper container must never outlive the operator process that
 	// started it -- it is a transient `claude setup-token` shell. Clear any
 	// leftover from a previous run, then run a janitor that ages out one a
@@ -337,6 +340,52 @@ func startAgentImageRefresher(r agentImageRefresher, interval time.Duration, log
 			case <-t.C:
 				if err := r.RefreshAgentImageTags(ctx); err != nil && !errors.Is(err, context.Canceled) {
 					log.Warn("agent-image refresher: poll failed (last-known list kept)", "error", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// dependaproxySyncInterval is how often the operator re-checks that the
+// shared dependaproxy container is still attached to every running agent's
+// dinernet at the address that agent's record claims. Minutes, not seconds:
+// the only thing that invalidates it is the shared container being
+// RECREATED, which is a rare, operator-driven event, not something that
+// needs sub-minute detection.
+const dependaproxySyncInterval = 5 * time.Minute
+
+// dependaproxySyncer is the one Manager method startDependaproxySync needs,
+// as an interface seam so main_test.go can drive it with a counter.
+type dependaproxySyncer interface {
+	SyncDependaproxyAddresses(context.Context) error
+}
+
+// startDependaproxySync runs a periodic sweep of every running agent's
+// dependaproxy dinernet address, re-polling every interval. It is modeled on
+// startAgentImageRefresher, with one deliberate difference: there is no
+// immediate poll before the first tick, because the startup Reconcile pass
+// (agent.Manager.Reconcile, via wakeAgent's own syncDependaproxyDinernetIP
+// call) already covers every running record once at startup -- an immediate
+// second pass here would just repeat that work. A poll error is logged at
+// Warn; context cancellation is not logged.
+func startDependaproxySync(s dependaproxySyncer, interval time.Duration, log *slog.Logger) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := s.SyncDependaproxyAddresses(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Warn("dependaproxy sync: sweep failed", "error", err)
 				}
 			}
 		}

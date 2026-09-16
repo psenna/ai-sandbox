@@ -457,3 +457,61 @@ func TestUpdate_DindGone_FailsWithVolumesIntact(t *testing.T) {
 		t.Errorf("agent container State = %q, want %q (Update must not have removed it before the dind check failed)", agentContainer.State, dockerclient.StateRunning)
 	}
 }
+
+// TestReconcile_DependaproxyRecreated_ResyncsRunningAgent proves #169's core
+// scenario end to end: the shared dependaproxy container gets recreated
+// (losing every agent's dinernet attachment) while an agent's own containers
+// stay running throughout, and a routine Reconcile pass -- via wakeAgent's
+// "already running" branch -- notices the drift, reconnects, re-stamps the
+// record, and refreshes /workspace/dependaproxy-ip inside the still-running
+// agent container.
+func TestReconcile_DependaproxyRecreated_ResyncsRunningAgent(t *testing.T) {
+	m, f, _ := newTestManager(t, 5)
+	ctx := context.Background()
+
+	a := createRunningAgent(t, m)
+	oldAddr := a.DependaproxyDinernetIP
+
+	// Simulate the shared dependaproxy container being recreated: the OLD
+	// container (and its dinernet endpoint) is gone, a NEW one with the same
+	// name takes its place, attached to nothing.
+	if err := f.ContainerRemove(ctx, m.cfg.DependaproxyContainer); err != nil {
+		t.Fatalf("removing the shared dependaproxy container: %v", err)
+	}
+	newDependaproxy(t, f, m.cfg.DependaproxyContainer)
+
+	rep, err := m.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(rep.Woken) != 0 {
+		t.Errorf("Woken = %v, want none (both containers were already running throughout)", rep.Woken)
+	}
+
+	got, err := m.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+	if !got.DependaproxyDinernetIP.IsValid() || got.DependaproxyDinernetIP == oldAddr {
+		t.Errorf("DependaproxyDinernetIP = %v, want a freshly assigned address (old was %v)", got.DependaproxyDinernetIP, oldAddr)
+	}
+
+	// The running agent container's dependaproxy-ip file must have been
+	// refreshed via an exec against it (not a recreate: the container was
+	// never stopped or removed).
+	if hasCall(f.Calls(), dockerclienttest.OpContainerRemove, a.ContainerID) {
+		t.Error("the agent container was recreated; want it left running and refreshed via exec instead")
+	}
+	foundExec := false
+	for _, c := range f.Calls() {
+		if c.Op == dockerclienttest.OpExecCreate && c.Target == a.ContainerID {
+			foundExec = true
+		}
+	}
+	if !foundExec {
+		t.Errorf("Calls() = %v, want an ExecCreate against the agent container %q (refreshDependaproxyIPFile)", f.Calls(), a.ContainerID)
+	}
+}

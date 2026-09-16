@@ -235,3 +235,85 @@ func TestStartAgentImageRefresher_StopIsClean(t *testing.T) {
 		t.Errorf("refresher ran %d times, want >= 1 (the immediate poll)", r.count())
 	}
 }
+
+// --- dependaproxy dinernet-address sync ----------------------------------
+
+type countingDependaproxySyncer struct {
+	mu     sync.Mutex
+	calls  int
+	err    error
+	notify chan struct{}
+}
+
+func (c *countingDependaproxySyncer) SyncDependaproxyAddresses(ctx context.Context) error {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+	return c.err
+}
+
+func (c *countingDependaproxySyncer) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// TestStartDependaproxySync_TicksAndStops proves startDependaproxySync waits
+// for the first tick (unlike startAgentImageRefresher, it must NOT poll
+// immediately -- the startup Reconcile pass already covers every running
+// record once) and stops cleanly with no further ticks after stop() returns.
+func TestStartDependaproxySync_TicksAndStops(t *testing.T) {
+	log, _ := capturingLogger()
+	s := &countingDependaproxySyncer{notify: make(chan struct{}, 8)}
+
+	stop := startDependaproxySync(s, 50*time.Millisecond, log)
+
+	// No immediate poll: nothing should have run yet, well inside one interval.
+	select {
+	case <-s.notify:
+		stop()
+		t.Fatal("startDependaproxySync polled immediately; want it to wait for the first tick")
+	case <-time.After(15 * time.Millisecond):
+	}
+
+	// Wait for at least one tick.
+	select {
+	case <-s.notify:
+	case <-time.After(2 * time.Second):
+		stop()
+		t.Fatalf("timed out waiting for the first tick; count=%d", s.count())
+	}
+	stop()
+
+	stable := s.count()
+	if stable < 1 {
+		t.Fatalf("syncer ran %d times, want >= 1", stable)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := s.count(); got != stable {
+		t.Errorf("syncer ran %d more times after stop", got-stable)
+	}
+}
+
+func TestStartDependaproxySync_StopIsClean(t *testing.T) {
+	log, _ := capturingLogger()
+	s := &countingDependaproxySyncer{notify: make(chan struct{}, 1), err: errors.New("boom")}
+
+	stop := startDependaproxySync(s, time.Hour, log)
+	// Returns promptly even though the interval is an hour: nothing has ticked
+	// yet, and stop just cancels and waits for the goroutine to exit.
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop() did not return promptly")
+	}
+	if got := s.count(); got != 0 {
+		t.Errorf("syncer ran %d times before its first tick, want 0", got)
+	}
+}
