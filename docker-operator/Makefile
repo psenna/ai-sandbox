@@ -186,6 +186,13 @@ agent-image-smoke:
 	@echo "--- claude-supervisor.sh is present and executable ---"
 	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/claude-supervisor.sh'
 	@echo "OK: /usr/local/bin/claude-supervisor.sh"
+	@echo "--- agent-signal.sh is present and executable ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'test -x /usr/local/bin/agent-signal.sh'
+	@echo "OK: /usr/local/bin/agent-signal.sh"
+	@echo "--- settings.json's activity-signal hooks are baked into CLAUDE_CONFIG_DIR ---"
+	docker run --rm -u node --entrypoint sh $(AGENT_IMAGE) -c \
+		'grep -qF "agent-signal.sh working" "$$CLAUDE_CONFIG_DIR/settings.json" && grep -qF "agent-signal.sh waiting" "$$CLAUDE_CONFIG_DIR/settings.json"'
+	@echo "OK: \$$CLAUDE_CONFIG_DIR/settings.json wires UserPromptSubmit/Stop/Notification to agent-signal.sh"
 	@echo "--- LSP binaries (gopls, typescript-language-server, pyright-langserver) are on PATH ---"
 	docker run --rm --entrypoint sh $(AGENT_IMAGE) -c 'command -v gopls && command -v typescript-language-server && command -v pyright-langserver'
 	@echo "OK: gopls, typescript-language-server, pyright-langserver"

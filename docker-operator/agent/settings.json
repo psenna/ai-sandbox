@@ -1,0 +1,28 @@
+{
+	"hooks": {
+		"UserPromptSubmit": [
+			{
+				"matcher": "",
+				"hooks": [
+					{ "type": "command", "command": "/usr/local/bin/agent-signal.sh working" }
+				]
+			}
+		],
+		"Stop": [
+			{
+				"matcher": "",
+				"hooks": [
+					{ "type": "command", "command": "/usr/local/bin/agent-signal.sh waiting" }
+				]
+			}
+		],
+		"Notification": [
+			{
+				"matcher": "",
+				"hooks": [
+					{ "type": "command", "command": "/usr/local/bin/agent-signal.sh waiting" }
+				]
+			}
+		]
+	}
+}

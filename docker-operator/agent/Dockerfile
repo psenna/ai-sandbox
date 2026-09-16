@@ -137,9 +137,15 @@ RUN chmod +x /entrypoint.sh
 # Ctrl+C, a transient crash) instead of leaving the web UI terminal on a dead
 # pane -- see the script for the restart budget and tmux-boot.sh's
 # remain-on-exit as the fallback when `claude` is genuinely broken.
+#
+# agent-signal.sh: called by the Claude Code hooks baked into settings.json
+# below (see it and internal/wsbridge/activity.go) to report this agent's
+# turn-boundary "working"/"waiting" state, read back by the operator's
+# GET /api/agents "activity" field.
 COPY docker-operator/agent/tmux-boot.sh         /usr/local/bin/tmux-boot.sh
 COPY docker-operator/agent/claude-supervisor.sh /usr/local/bin/claude-supervisor.sh
-RUN chmod +x /usr/local/bin/tmux-boot.sh /usr/local/bin/claude-supervisor.sh
+COPY docker-operator/agent/agent-signal.sh      /usr/local/bin/agent-signal.sh
+RUN chmod +x /usr/local/bin/tmux-boot.sh /usr/local/bin/claude-supervisor.sh /usr/local/bin/agent-signal.sh
 
 # Pre-create /workspace as node BEFORE switching USER: WORKDIR creates a
 # missing directory as root regardless of the active USER (a known
@@ -223,6 +229,21 @@ RUN mkdir -p "$CLAUDE_CONFIG_DIR" && \
       '  }' \
       '}' \
     > "$CLAUDE_CONFIG_DIR/.claude.json"
+# settings.json: the UserPromptSubmit/Stop/Notification hooks that call
+# agent-signal.sh above, so an interactive `claude` session reports its own
+# turn-boundary activity without any per-agent setup -- see
+# internal/wsbridge/activity.go for the reader and its "harness-agnostic by
+# design" rationale. Baked here (not written by claude-code/entrypoint.sh,
+# which is shared with images that have no use for this) so it rides the
+# same first-mount copy-up as the plugins below into each agent's
+# claude-config volume.
+#
+# No --chown=node:node (BuildKit-only, like the heredoc this Dockerfile
+# avoids above for the same plain-`docker build`-compatibility reason): the
+# file lands root:root, world-readable (COPY's default mode), which is all
+# `claude` running as node ever needs -- it only reads this file, never
+# rewrites it.
+COPY docker-operator/agent/settings.json "$CLAUDE_CONFIG_DIR/settings.json"
 # claude-plugins-official is Anthropic's official, curated marketplace
 # (normally auto-added on first interactive launch -- a `docker build` RUN
 # never "starts interactively", so it's added explicitly here).

@@ -20,6 +20,17 @@
 		// template picker. Only relevant while that form is open, so it is
 		// fetched lazily from showCreateForm rather than at load time.
 		templates: [],
+		// unread[id] is true for an agent that finished a turn (its
+		// server-reported `activity` went working -> waiting) while it was
+		// not the open agent -- cleared the moment selectAgent opens it, so
+		// re-polling while it's open never re-flags it. agentActivity[id]
+		// remembers each agent's last-seen activity across polls so
+		// trackActivity below can detect that transition; a poll with no
+		// signal (a transient read failure, or a harness that hasn't wired
+		// activity reporting) keeps the previous value rather than losing
+		// the streak.
+		unread: {},
+		agentActivity: {},
 	};
 
 	var sidebarList = document.getElementById('agent-list');
@@ -59,13 +70,27 @@
 	}
 
 	function renderSidebar() {
-		sidebarList.innerHTML = window.Render.renderAgentList(state.agents, state.selectedID);
+		sidebarList.innerHTML = window.Render.renderAgentList(state.agents, state.selectedID, state.unread);
 		capacityEl.textContent = window.Render.renderCapacity(state.agents, state.maxAgents);
+	}
+
+	// trackActivity updates state.unread/state.agentActivity from one poll's
+	// agents. See state.unread's own comment for why a blank reading doesn't
+	// erase the last-known activity.
+	function trackActivity(agents) {
+		agents.forEach(function (a) {
+			var prev = state.agentActivity[a.id];
+			if (a.activity === 'waiting' && prev === 'working' && a.id !== state.selectedID) {
+				state.unread[a.id] = true;
+			}
+			if (a.activity) state.agentActivity[a.id] = a.activity;
+		});
 	}
 
 	async function refreshAgents() {
 		var data = await fetchJSON('/api/agents');
 		state.agents = data.agents || [];
+		trackActivity(state.agents);
 		state.maxAgents = data.max_agents || 0;
 		state.defaults = {
 			backend: data.default_backend || 'ollama',
@@ -82,6 +107,7 @@
 
 	function selectAgent(id) {
 		state.selectedID = id;
+		delete state.unread[id];
 		renderSidebar();
 		if (typeof window.renderAgentDetail === 'function') {
 			window.renderAgentDetail(mainArea, id);

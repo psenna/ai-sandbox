@@ -179,24 +179,82 @@ html, body {
 	flex: 1 1 auto;
 }
 
+/* Two rows per agent (name+badges, then its one status line) -- taller than
+   a single-line list so the status line has real room, not a squeezed-in
+   afterthought. */
 .agent-item {
 	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 8px 10px;
+	flex-direction: column;
+	gap: 3px;
+	padding: 10px 12px;
 	border-radius: 6px;
 	cursor: pointer;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
 }
 
 .agent-item:hover { background: var(--bg-item); }
 .agent-item--selected { background: var(--bg-item-selected); }
+/* An unread (finished-while-not-open) agent gets a resting tint even before
+   hover/selection, so it visually stands out in the list, not just in its
+   own status line. */
+.agent-item--unread { background: var(--bg-item); }
+.agent-item--unread.agent-item--selected,
+.agent-item--unread:hover { background: var(--bg-item-selected); }
+
+.agent-item__row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	overflow: hidden;
+}
 
 .agent-item__name {
 	overflow: hidden;
 	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Indented to sit under the name, past the status dot + its gap. */
+.agent-item__meta {
+	padding-left: 16px;
+	min-height: 1em;
+	font-size: var(--font-xs);
+	color: var(--fg-dim);
+}
+
+.agent-item__activity--working {
+	color: var(--status-running);
+	animation: agent-activity-breathe 1.8s ease-in-out infinite;
+}
+
+.agent-item__activity--unread {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.agent-item__activity-dot {
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--accent);
+	animation: agent-activity-bounce 1s ease-in-out infinite;
+}
+
+@keyframes agent-activity-breathe {
+	0%, 100% { opacity: 0.6; }
+	50% { opacity: 1; }
+}
+
+@keyframes agent-activity-bounce {
+	0%, 100% { transform: translateY(0); }
+	50% { transform: translateY(-2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.agent-item__activity--working,
+	.agent-item__activity-dot { animation: none; }
 }
 
 .agent-list__empty,
@@ -210,6 +268,7 @@ html, body {
 .agent-list__error { color: var(--status-error); font-style: normal; }
 
 .status-dot {
+	position: relative;
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
@@ -222,6 +281,27 @@ html, body {
 .status-dot.status-stopped { background: var(--status-stopped); }
 .status-dot.status-error { background: var(--status-error); }
 .status-dot.status-deleting { background: var(--status-deleting); }
+
+/* The harness reported it's actively working this turn: an expanding,
+   fading ring "pings" outward from the dot, in the dot's own color
+   (`inherit` picks up whichever status-* background applies above). */
+.status-dot--pulse::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	background: inherit;
+	animation: agent-status-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes agent-status-ping {
+	0% { transform: scale(1); opacity: 0.6; }
+	100% { transform: scale(2.6); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.status-dot--pulse::after { animation: none; }
+}
 
 /* The dot alone is a color-only signal; this label is the same status in
    words, so a row's state never depends on distinguishing a color. */

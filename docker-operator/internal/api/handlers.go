@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -323,26 +324,61 @@ type agentView struct {
 	// false for an agent on :latest, on any non-date-time tag, with no
 	// recorded image, or when the tag list is unavailable.
 	UpgradeAvailable bool `json:"upgrade_available"`
+	// Activity is the harness's last-reported turn-boundary state --
+	// "working" or "waiting" (wsbridge.Activity's two values) -- or "" when
+	// unknown: the agent isn't StatusRunning, its harness has never wired
+	// activity signaling, or the read failed. Computed live per request via
+	// wsbridge.ReadActivity, best-effort like UpgradeAvailable's tag lookup
+	// above -- an activity check that fails or times out must not fail (or
+	// even slow down) the rest of the list. Deliberately harness-agnostic in
+	// name and vocabulary; see wsbridge.ActivityLogPath's doc comment.
+	Activity string `json:"activity,omitempty"`
 }
 
+// activityReadTimeout bounds each agent's own ReadActivity call. Independent
+// per agent (see buildAgentViews) and much shorter than wsbridge's own
+// execTimeout: this runs on the GET /api/agents list path the sidebar polls
+// every few seconds, so one wedged container's exec must fail fast and read
+// back as "unknown" rather than hold up either its own goroutine for 30s or
+// (absent the per-agent timeout) the whole response.
+const activityReadTimeout = 4 * time.Second
+
 // buildAgentViews wraps each agent in an agentView, computing
-// UpgradeAvailable against the operator's last-known agent-image tag list.
-// The tag list is fetched once and best-effort: on any error, or before the
-// first refresh completes, it is treated as empty and nothing is flagged --
-// the list must not fail because tag discovery is unavailable. The result is
-// non-nil even for an empty input.
+// UpgradeAvailable against the operator's last-known agent-image tag list,
+// and Activity by reading each StatusRunning agent's container concurrently
+// (one exec per agent; sequential would multiply this endpoint's latency by
+// the agent count). The tag list is fetched once and best-effort: on any
+// error, or before the first refresh completes, it is treated as empty and
+// nothing is flagged -- the list must not fail because tag discovery is
+// unavailable. The result is non-nil even for an empty input.
 func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []agentView {
 	var tags []string
 	if snap, ok, err := h.mgr.AgentImageTags(ctx); err == nil && ok {
 		tags = snap.Tags
 	}
-	views := make([]agentView, 0, len(agents))
-	for _, a := range agents {
-		views = append(views, agentView{
+	views := make([]agentView, len(agents))
+	var wg sync.WaitGroup
+	for i, a := range agents {
+		views[i] = agentView{
 			Agent:            a,
 			UpgradeAvailable: agent.UpgradeAvailable(agent.ImageTagOf(a.Image), tags),
-		})
+		}
+		if a.Status != store.StatusRunning || a.ContainerID == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, containerID string) {
+			defer wg.Done()
+			actCtx, cancel := context.WithTimeout(ctx, activityReadTimeout)
+			defer cancel()
+			act, _, err := wsbridge.ReadActivity(actCtx, h.docker, containerID)
+			if err != nil {
+				return // best-effort; leave Activity "" like the tag lookup above
+			}
+			views[i].Activity = string(act)
+		}(i, a.ContainerID)
 	}
+	wg.Wait()
 	return views
 }
 

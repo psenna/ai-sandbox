@@ -43,35 +43,64 @@
 		return STATUS_LABELS[status] || { text: status || 'Unknown', cls: 'status-unknown' };
 	}
 
-	// renderAgentListItem renders one sidebar <li> for a single agent.
-	// selectedID may be null/undefined; it is compared with === so no agent
-	// matches unless one is actually selected.
-	function renderAgentListItem(agent, selectedID) {
+	// renderAgentListItem renders one sidebar <li> for a single agent, as two
+	// rows: the name/badges row, then its one status line. selectedID may be
+	// null/undefined; it is compared with === so no agent matches unless one
+	// is actually selected.
+	//
+	// isUnread (app.js's state.unread) means this agent finished a turn
+	// (agent.activity flipped working -> waiting) while it was not the open
+	// agent, and hasn't been opened since -- it wins over a live "working"
+	// signal so the row never shows two conflicting status lines: a
+	// just-finished agent reads as "come look", not "still going".
+	function renderAgentListItem(agent, selectedID, isUnread) {
 		var label = statusLabel(agent.status);
 		var selected = agent.id === selectedID ? ' agent-item--selected' : '';
 		var name = agent.name ? escapeHTML(agent.name) : '(unnamed)';
 		var upgrade = agent.upgrade_available
 			? '<span class="agent-item__upgrade" title="a newer agent image is available">⬆</span>'
 			: '';
+
+		var dotCls = label.cls;
+		var activityCls = '';
+		var activityText = escapeHTML(label.text);
+		var activityDot = '';
+		if (isUnread) {
+			activityCls = ' agent-item__activity--unread';
+			activityText = 'Waiting for you';
+			activityDot = '<span class="agent-item__activity-dot"></span>';
+		} else if (agent.activity === 'working') {
+			dotCls += ' status-dot--pulse';
+			activityCls = ' agent-item__activity--working';
+			activityText = 'Working…';
+		}
+
 		return (
-			'<li class="agent-item' + selected + '" data-agent-id="' + escapeHTML(agent.id) + '">' +
-				'<span class="status-dot ' + label.cls + '" title="' + label.text + '"></span>' +
-				'<span class="agent-item__name">' + name + '</span>' +
-				'<span class="agent-item__status">' + escapeHTML(label.text) + '</span>' +
-				upgrade +
-				'<span class="agent-item__backend" title="backend">' + escapeHTML(backendLabel(agent.backend)) + '</span>' +
+			'<li class="agent-item' + selected + (isUnread ? ' agent-item--unread' : '') + '" data-agent-id="' + escapeHTML(agent.id) + '">' +
+				'<div class="agent-item__row">' +
+					'<span class="status-dot ' + dotCls + '" title="' + label.text + '"></span>' +
+					'<span class="agent-item__name">' + name + '</span>' +
+					upgrade +
+					'<span class="agent-item__backend" title="backend">' + escapeHTML(backendLabel(agent.backend)) + '</span>' +
+				'</div>' +
+				'<div class="agent-item__meta">' +
+					'<span class="agent-item__activity' + activityCls + '">' + activityDot + activityText + '</span>' +
+				'</div>' +
 			'</li>'
 		);
 	}
 
 	// renderAgentList renders the sidebar's full <li> list, in the order the
 	// API returned it, or a one-line empty state when there are no agents.
-	function renderAgentList(agents, selectedID) {
+	// unreadIds (app.js's state.unread) is a plain {id: true} map; absent/
+	// missing entries mean "not unread", so passing nothing is the same as
+	// passing an empty list.
+	function renderAgentList(agents, selectedID, unreadIds) {
 		if (!agents || agents.length === 0) {
 			return '<li class="agent-list__empty">No agents yet — click “New Agent” to create one.</li>';
 		}
 		return agents
-			.map(function (a) { return renderAgentListItem(a, selectedID); })
+			.map(function (a) { return renderAgentListItem(a, selectedID, !!(unreadIds && unreadIds[a.id])); })
 			.join('');
 	}
 
