@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -171,6 +172,12 @@ const (
 	// tmuxSession is the session name tmux-boot.sh creates and that the
 	// terminal bridge later attaches to.
 	tmuxSession = "main"
+
+	// dependaproxyIPPath is the file claude-code/entrypoint.sh writes at boot
+	// from DEPENDAPROXY_DINERNET_IP, and that the use-docker / use-dependaproxy
+	// skills read at USE time ($(cat ...)) rather than caching -- which is what
+	// makes rewriting it inside an already-running container a complete fix.
+	dependaproxyIPPath = workspaceMount + "/dependaproxy-ip"
 )
 
 // Options tunes the lifecycle flows' timing. The zero value is valid: every
@@ -852,6 +859,117 @@ func (m *Manager) connectDependaproxy(ctx context.Context, a *store.Agent) error
 	return m.stamp(ctx, a, "the dependaproxy dinernet address", func(ag *store.Agent) {
 		ag.DependaproxyDinernetIP = addr
 	})
+}
+
+// syncDependaproxyDinernetIP re-asserts, for an agent that already exists,
+// the invariant connectDependaproxy establishes exactly once at create time:
+// the shared dependaproxy container is attached to this agent's dinernet, and
+// store.Agent.DependaproxyDinernetIP is the address it actually answers on
+// there. It reports whether the record changed.
+//
+// Exists because: if the SHARED dependaproxy container is ever recreated (not
+// just restarted), every pre-existing agent's dinernet loses its attachment
+// and no existing path re-adds it -- Update keeps the same dinernet and never
+// re-reads the address, and ensureDindRunning only ever touches the dind
+// container. Unlike the settle race verifyDependaproxyReachable closes, that
+// state never self-heals.
+//
+// Best-effort throughout, exactly like stampImageID/verifyDependaproxyReachable:
+// every failure is logged and swallowed. A dependaproxy that is down is not a
+// reason to fail a wake-up or an in-place update.
+func (m *Manager) syncDependaproxyDinernetIP(ctx context.Context, a *store.Agent) bool {
+	if a.DinernetName == "" {
+		return false
+	}
+	c, err := m.docker.ContainerInspect(ctx, m.cfg.DependaproxyContainer)
+	switch {
+	case dockerclient.IsNotFound(err):
+		m.log.WarnContext(ctx, "the shared dependaproxy container does not exist; leaving the recorded address alone",
+			"agent_id", a.ID, "dependaproxy_container", m.cfg.DependaproxyContainer)
+		return false
+	case err != nil:
+		m.log.WarnContext(ctx, "could not inspect the shared dependaproxy container; leaving the recorded address alone",
+			"agent_id", a.ID, "dependaproxy_container", m.cfg.DependaproxyContainer, "error", err)
+		return false
+	}
+	cur, attached := c.Networks[a.DinernetName]
+	switch {
+	case attached && cur.IsValid() && cur == a.DependaproxyDinernetIP:
+		return false
+	case attached && cur.IsValid():
+		m.log.WarnContext(ctx, "the recorded dependaproxy dinernet address disagrees with what the daemon reports; re-stamping the record with reality",
+			"agent_id", a.ID, "recorded", a.DependaproxyDinernetIP, "actual", cur)
+		return m.stampDependaproxyIP(ctx, a, cur)
+	case c.State != dockerclient.StateRunning:
+		// Covers a stopped container whether or not it is still attached: a
+		// stopped container's endpoints survive, but the daemon reports no
+		// address for them, and NetworkConnect cannot give it one either.
+		m.log.WarnContext(ctx, "the shared dependaproxy container is not running, so it cannot be given an address on this agent's dinernet",
+			"agent_id", a.ID, "dependaproxy_container", m.cfg.DependaproxyContainer)
+		return false
+	case attached:
+		// Running and attached, yet the daemon reports no address on this
+		// network. Nothing to re-stamp, and reconnecting is NOT the fix: a
+		// real daemon rejects a second NetworkConnect for an endpoint that
+		// already exists ("endpoint with name ... already exists in network
+		// ..."), so the only safe move is to leave the record alone and let
+		// the next pass look again.
+		m.log.WarnContext(ctx, "the shared dependaproxy container is attached to this agent's dinernet but the daemon reports no address for it there; leaving the recorded address alone",
+			"agent_id", a.ID, "dinernet", a.DinernetName, "dependaproxy_container", m.cfg.DependaproxyContainer)
+		return false
+	default:
+		m.log.InfoContext(ctx, "the shared dependaproxy container is no longer attached to this agent's dinernet -- it was most likely recreated; reconnecting it",
+			"agent_id", a.ID, "dinernet", a.DinernetName)
+		addr, err := m.docker.NetworkConnect(ctx, a.DinernetName, m.cfg.DependaproxyContainer)
+		if err != nil {
+			m.log.WarnContext(ctx, "could not reconnect the shared dependaproxy container to this agent's dinernet",
+				"agent_id", a.ID, "dinernet", a.DinernetName, "error", err)
+			return false
+		}
+		return m.stampDependaproxyIP(ctx, a, addr)
+	}
+}
+
+// stampDependaproxyIP re-stamps a's DependaproxyDinernetIP to addr if it
+// differs, reporting whether it changed. Best-effort: a store write failure
+// is logged, not returned.
+func (m *Manager) stampDependaproxyIP(ctx context.Context, a *store.Agent, addr netip.Addr) bool {
+	if addr == a.DependaproxyDinernetIP {
+		return false
+	}
+	if err := m.stamp(ctx, a, "the dependaproxy dinernet address", func(ag *store.Agent) {
+		ag.DependaproxyDinernetIP = addr
+	}); err != nil {
+		m.log.WarnContext(ctx, "could not record the resynced dependaproxy dinernet address", "agent_id", a.ID, "error", err)
+		return false
+	}
+	return true
+}
+
+// refreshDependaproxyIPFile rewrites /workspace/dependaproxy-ip inside a's
+// already-running agent container to a's current DependaproxyDinernetIP, so
+// workload containers launched inside its dind sidecar pick up a corrected
+// address without needing the agent container itself recreated. Write-then-
+// rename so a concurrent `$(cat ...)` can never observe a truncated file.
+//
+// Best-effort, one attempt: unlike verifyDependaproxyReachable there is
+// nothing transient to retry -- either the container is up and writable right
+// now, or it is not.
+func (m *Manager) refreshDependaproxyIPFile(ctx context.Context, a store.Agent) {
+	if !a.DependaproxyDinernetIP.IsValid() {
+		return
+	}
+	ref := firstNonEmpty(a.ContainerID, a.ContainerName, agentContainerName(a.ID))
+	script := "printf '%s\\n' \"$0\" > " + dependaproxyIPPath + ".tmp && mv " + dependaproxyIPPath + ".tmp " + dependaproxyIPPath
+	code, out, err := m.runExec(ctx, ref, []string{"sh", "-c", script, a.DependaproxyDinernetIP.String()})
+	switch {
+	case err != nil:
+		m.log.WarnContext(ctx, "could not refresh /workspace/dependaproxy-ip inside the running agent container; its workload containers will keep using the old address until this agent is updated in place (POST /api/agents/{id}/update)",
+			"agent_id", a.ID, "new_address", a.DependaproxyDinernetIP, "error", err)
+	case code != 0:
+		m.log.WarnContext(ctx, "could not refresh /workspace/dependaproxy-ip inside the running agent container; its workload containers will keep using the old address until this agent is updated in place (POST /api/agents/{id}/update)",
+			"agent_id", a.ID, "new_address", a.DependaproxyDinernetIP, "exit_code", code, "output", strings.TrimSpace(out))
+	}
 }
 
 // autoModeArgs returns the leading claude CLI args that put a's `claude`

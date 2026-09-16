@@ -596,3 +596,238 @@ func TestVerifyDependaproxyReachable(t *testing.T) {
 		}
 	})
 }
+
+// TestSyncDependaproxyDinernetIP exercises syncDependaproxyDinernetIP's
+// decision table directly against a real agent record produced by Create, so
+// each sub-test starts from a genuinely-attached dinernet rather than a
+// hand-built fixture.
+func TestSyncDependaproxyDinernetIP(t *testing.T) {
+	t.Run("already correct: no-op, exactly one ContainerInspect call", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		before := f.Calls()
+
+		got := m.syncDependaproxyDinernetIP(ctx, &a)
+		if got {
+			t.Error("syncDependaproxyDinernetIP = true, want false (nothing had drifted)")
+		}
+		newCalls := f.Calls()[len(before):]
+		if len(newCalls) != 1 || newCalls[0] != (dockerclienttest.Call{Op: dockerclienttest.OpContainerInspect, Target: m.cfg.DependaproxyContainer}) {
+			t.Errorf("Calls() made = %v, want exactly one ContainerInspect of the dependaproxy container", newCalls)
+		}
+	})
+
+	t.Run("not attached: reconnects and restamps", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		oldAddr := a.DependaproxyDinernetIP
+
+		if err := f.NetworkDisconnect(ctx, a.DinernetName, m.cfg.DependaproxyContainer); err != nil {
+			t.Fatalf("simulating the shared dependaproxy container losing its attachment: %v", err)
+		}
+		before := f.Calls()
+
+		got := m.syncDependaproxyDinernetIP(ctx, &a)
+		if !got {
+			t.Fatal("syncDependaproxyDinernetIP = false, want true (the attachment was gone)")
+		}
+		if !a.DependaproxyDinernetIP.IsValid() || a.DependaproxyDinernetIP == oldAddr {
+			t.Errorf("DependaproxyDinernetIP = %v, want a freshly assigned address (old was %v)", a.DependaproxyDinernetIP, oldAddr)
+		}
+		newCalls := f.Calls()[len(before):]
+		wantTarget := a.DinernetName + "/" + m.cfg.DependaproxyContainer
+		if !hasCall(newCalls, dockerclienttest.OpNetworkConnect, wantTarget) {
+			t.Errorf("Calls() = %v, want a NetworkConnect(%q)", newCalls, wantTarget)
+		}
+
+		// The store record itself must carry the new address too.
+		stored, err := m.Get(ctx, a.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if stored.DependaproxyDinernetIP != a.DependaproxyDinernetIP {
+			t.Errorf("stored DependaproxyDinernetIP = %v, want %v", stored.DependaproxyDinernetIP, a.DependaproxyDinernetIP)
+		}
+	})
+
+	t.Run("attached but stale: restamps without reconnecting", func(t *testing.T) {
+		m, f, st := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		realAddr := a.DependaproxyDinernetIP
+
+		corrupted, err := st.Update(ctx, a.ID, func(ag *store.Agent) error {
+			ag.DependaproxyDinernetIP = netip.MustParseAddr("10.9.9.9")
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("corrupting the recorded address: %v", err)
+		}
+		before := f.Calls()
+
+		got := m.syncDependaproxyDinernetIP(ctx, &corrupted)
+		if !got {
+			t.Fatal("syncDependaproxyDinernetIP = false, want true (the recorded address disagreed with reality)")
+		}
+		if corrupted.DependaproxyDinernetIP != realAddr {
+			t.Errorf("DependaproxyDinernetIP = %v, want it restored to the real address %v", corrupted.DependaproxyDinernetIP, realAddr)
+		}
+		newCalls := f.Calls()[len(before):]
+		if hasOp(newCalls, dockerclienttest.OpNetworkConnect) {
+			t.Errorf("Calls() = %v, want no NetworkConnect (already attached, just re-stamp)", newCalls)
+		}
+	})
+
+	t.Run("dependaproxy gone: left untouched", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		oldAddr := a.DependaproxyDinernetIP
+
+		if err := f.ContainerRemove(ctx, m.cfg.DependaproxyContainer); err != nil {
+			t.Fatalf("removing the shared dependaproxy container: %v", err)
+		}
+		before := f.Calls()
+
+		got := m.syncDependaproxyDinernetIP(ctx, &a)
+		if got {
+			t.Error("syncDependaproxyDinernetIP = true, want false (dependaproxy is gone, nothing to sync against)")
+		}
+		if a.DependaproxyDinernetIP != oldAddr {
+			t.Errorf("DependaproxyDinernetIP = %v, want it left at %v", a.DependaproxyDinernetIP, oldAddr)
+		}
+		newCalls := f.Calls()[len(before):]
+		if hasOp(newCalls, dockerclienttest.OpNetworkConnect) {
+			t.Errorf("Calls() = %v, want no NetworkConnect attempt", newCalls)
+		}
+	})
+
+	t.Run("dependaproxy present but stopped and detached: no connect attempt", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+
+		if err := f.NetworkDisconnect(ctx, a.DinernetName, m.cfg.DependaproxyContainer); err != nil {
+			t.Fatalf("disconnecting: %v", err)
+		}
+		if err := f.ContainerStop(ctx, m.cfg.DependaproxyContainer, 0); err != nil {
+			t.Fatalf("stopping the shared dependaproxy container: %v", err)
+		}
+		before := f.Calls()
+
+		got := m.syncDependaproxyDinernetIP(ctx, &a)
+		if got {
+			t.Error("syncDependaproxyDinernetIP = true, want false (dependaproxy is stopped, cannot be given an address)")
+		}
+		newCalls := f.Calls()[len(before):]
+		if hasOp(newCalls, dockerclienttest.OpNetworkConnect) {
+			t.Errorf("Calls() = %v, want no NetworkConnect attempt against a stopped container", newCalls)
+		}
+	})
+
+	t.Run("NetworkConnect fails: best-effort no-op", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		oldAddr := a.DependaproxyDinernetIP
+
+		if err := f.NetworkDisconnect(ctx, a.DinernetName, m.cfg.DependaproxyContainer); err != nil {
+			t.Fatalf("disconnecting: %v", err)
+		}
+		f.FailOnce(dockerclienttest.OpNetworkConnect, errors.New("boom: network connect"))
+
+		got := m.syncDependaproxyDinernetIP(ctx, &a)
+		if got {
+			t.Error("syncDependaproxyDinernetIP = true, want false (the reconnect attempt failed)")
+		}
+		if a.DependaproxyDinernetIP != oldAddr {
+			t.Errorf("DependaproxyDinernetIP = %v, want it left at %v after a failed reconnect", a.DependaproxyDinernetIP, oldAddr)
+		}
+	})
+
+	t.Run("no dinernet recorded: zero docker calls", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		a := store.Agent{ID: "agt_bare"}
+		before := len(f.Calls())
+
+		got := m.syncDependaproxyDinernetIP(context.Background(), &a)
+		if got {
+			t.Error("syncDependaproxyDinernetIP = true, want false")
+		}
+		if after := len(f.Calls()); after != before {
+			t.Errorf("Calls() made = %d, want 0 for a record with no DinernetName", after-before)
+		}
+	})
+}
+
+// TestRefreshDependaproxyIPFile exercises refreshDependaproxyIPFile directly.
+func TestRefreshDependaproxyIPFile(t *testing.T) {
+	t.Run("writes the address into the container as an exec argument, not interpolated into the script", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		before := len(f.Calls())
+
+		m.refreshDependaproxyIPFile(ctx, a)
+
+		newCalls := f.Calls()[before:]
+		checkExecTriplet(t, newCalls, a.ContainerID, "refreshDependaproxyIPFile")
+
+		specs := f.ExecSpecs()
+		if len(specs) == 0 {
+			t.Fatal("no ExecSpec recorded")
+		}
+		spec := specs[len(specs)-1]
+		if len(spec.Cmd) != 4 || spec.Cmd[0] != "sh" || spec.Cmd[1] != "-c" {
+			t.Fatalf("ExecSpec.Cmd = %v, want [sh -c <script> <addr>]", spec.Cmd)
+		}
+		addr := a.DependaproxyDinernetIP.String()
+		if spec.Cmd[3] != addr {
+			t.Errorf("ExecSpec.Cmd[3] = %q, want the address %q passed as its own argument", spec.Cmd[3], addr)
+		}
+		if strings.Contains(spec.Cmd[2], addr) {
+			t.Errorf("ExecSpec.Cmd[2] (the script) = %q, want the address kept OUT of the script text and passed as $0 instead", spec.Cmd[2])
+		}
+		if !strings.Contains(spec.Cmd[2], dependaproxyIPPath) {
+			t.Errorf("ExecSpec.Cmd[2] = %q, want it to mention %q", spec.Cmd[2], dependaproxyIPPath)
+		}
+	})
+
+	t.Run("skips entirely when no address is recorded", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		a := store.Agent{ID: "agt_test", ContainerID: "whatever"}
+		before := len(f.Calls())
+
+		m.refreshDependaproxyIPFile(context.Background(), a)
+
+		if after := len(f.Calls()); after != before {
+			t.Errorf("Calls() made = %d, want 0 when DependaproxyDinernetIP is not recorded", after-before)
+		}
+	})
+
+	t.Run("a non-zero exit degrades quietly with no retry", func(t *testing.T) {
+		m, f, _ := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+
+		script := "printf '%s\\n' \"$0\" > " + dependaproxyIPPath + ".tmp && mv " + dependaproxyIPPath + ".tmp " + dependaproxyIPPath
+		key := strings.Join([]string{"sh", "-c", script, a.DependaproxyDinernetIP.String()}, " ")
+		f.ExecExit[key] = 1
+		before := len(f.Calls())
+
+		m.refreshDependaproxyIPFile(ctx, a) // must not panic; best-effort only
+
+		newCalls := f.Calls()[before:]
+		execCreates := 0
+		for _, c := range newCalls {
+			if c.Op == dockerclienttest.OpExecCreate {
+				execCreates++
+			}
+		}
+		if execCreates != 1 {
+			t.Errorf("ExecCreate calls = %d, want exactly 1 (no retry on a non-zero exit)", execCreates)
+		}
+	})
+}

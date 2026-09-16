@@ -46,8 +46,12 @@ type UpdateRequest struct {
 // ID.
 //
 // What it recreates and what it keeps:
-//   - Only the agent container is recreated. The DinD sidecar, the private
-//     dinernet and the dependaproxy attachment are left running and untouched.
+//   - Only the agent container is recreated. The DinD sidecar and the private
+//     dinernet are left running and untouched. The dependaproxy attachment is
+//     RE-ASSERTED, not just left alone: syncDependaproxyDinernetIP reconnects
+//     and re-stamps it if the shared dependaproxy container was recreated
+//     since this agent last touched Docker, so the recreated agent container
+//     always boots with a working DEPENDAPROXY_DINERNET_IP.
 //   - The three named volumes (workspace, Claude config, DinD cache) are kept
 //     by name, so every byte of the agent's work -- and its Claude Code
 //     session history -- survives.
@@ -81,9 +85,12 @@ type UpdateRequest struct {
 //  4. ensureImage(newRef) -- inspect, and pull only if the daemon does not
 //     already have it, exactly as Create does. Failure here -> failUpdate
 //     (container intact, but the record is already StatusUpdating).
-//  5. removeAgentContainer -- stop+remove the agent container ONLY.
-//  6. store.Update -> new config fields + Image + ContainerID="" (still updating).
-//  7. ensureAgentFiles, then startAgentContainer("--continue") ->
+//  5. syncDependaproxyDinernetIP, then ensureDindRunning -- re-assert the
+//     dependaproxy dinernet attachment and make sure the sidecar the
+//     recreated container is about to depend on is actually up.
+//  6. removeAgentContainer -- stop+remove the agent container ONLY.
+//  7. store.Update -> new config fields + Image + ContainerID="" (still updating).
+//  8. ensureAgentFiles, then startAgentContainer("--continue") ->
 //     waitTmuxSession -> markRunning. Any failure from step 5 on -> failUpdate.
 func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (store.Agent, error) {
 	a, err := m.store.Get(ctx, id)
@@ -137,6 +144,15 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	if err := m.ensureImage(ctx, newRef); err != nil {
 		return m.failUpdate(ctx, &a, err)
 	}
+
+	// Re-assert the dependaproxy dinernet attachment before recreating the
+	// agent container: if the shared dependaproxy container was recreated
+	// since this agent last touched Docker, its dinernet lost the attachment
+	// and no other path here would notice. No refreshDependaproxyIPFile call
+	// is needed -- the agent container is about to be recreated below, and
+	// its fresh entrypoint.sh run will write the corrected address from the
+	// (now up to date) DEPENDAPROXY_DINERNET_IP env var baked in via agentEnv.
+	m.syncDependaproxyDinernetIP(ctx, &a)
 
 	// The recreated agent container needs its DinD sidecar answering on
 	// DOCKER_HOST from the moment it boots. Update normally leaves the
