@@ -10,7 +10,6 @@
 <body>
 <div class="layout">
 	<aside class="sidebar" id="sidebar">
-		<button id="sidebar-toggle" class="sidebar-toggle" type="button" title="Collapse sidebar" aria-expanded="true">‹</button>
 		<button id="new-agent-btn" class="new-agent-btn btn btn--primary" type="button">+ New Agent</button>
 		<button id="files-btn" class="files-btn btn btn--ghost" type="button">Files</button>
 		<ul id="agent-list" class="agent-list">
@@ -20,9 +19,12 @@
 		<div id="anthropic-panel" class="anthropic-panel"></div>
 		<div id="agent-image-panel" class="agent-image-panel"></div>
 	</aside>
-	<main id="main-area" class="main-area">
-		<p class="placeholder">Select an agent, or create a new one.</p>
-	</main>
+	<div class="main-panel">
+		<button id="sidebar-toggle" class="sidebar-toggle btn btn--ghost btn--sm btn--icon" type="button" title="Collapse sidebar" aria-expanded="true">‹</button>
+		<main id="main-area" class="main-area">
+			<p class="placeholder">Select an agent, or create a new one.</p>
+		</main>
+	</div>
 </div>
 <script src="vendor/xterm/xterm.js"></script>
 <script src="vendor/xterm/addon-fit.js"></script>

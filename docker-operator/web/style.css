@@ -137,35 +137,42 @@ html, body {
 	display: flex;
 	flex-direction: column;
 	padding: 12px;
+	overflow: hidden;
 	transition: width 180ms ease, padding 180ms ease;
 }
 
-/* --- sidebar collapse (default: expanded) ------------------------------- */
-.sidebar-toggle {
-	align-self: flex-end;
-	flex: 0 0 auto;
-	width: 24px;
-	height: 24px;
-	background: transparent;
-	color: var(--fg-dim);
-	border: none;
-	border-radius: var(--radius-sm);
-	font-size: var(--font-base);
-	line-height: 1;
-	cursor: pointer;
-	margin-bottom: var(--space-3);
-}
-.sidebar-toggle:hover { color: var(--fg); background: var(--bg-item); }
-.sidebar-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
+/* --- sidebar collapse (default: expanded) -------------------------------
+   The toggle itself lives in .main-panel (below), not in here, so it stays
+   reachable when the sidebar is fully hidden. */
 .sidebar--collapsed {
-	width: 40px;
-	padding: 12px 8px;
+	width: 0;
+	padding: 12px 0;
+	border-right: none;
 }
-/* Collapsed state hides everything but the toggle itself, so re-expanding
-   is always one click away -- never a detached floating control to hunt for. */
-.sidebar--collapsed > *:not(.sidebar-toggle) { display: none; }
-.sidebar--collapsed .sidebar-toggle { align-self: center; }
+.sidebar--collapsed > * { display: none; }
+
+/* --- main panel (everything right of the sidebar) -----------------------
+   Wraps #main-area so the sidebar-collapse toggle can sit in a fixed spot
+   at its top-left -- left of the agent name field in the detail view,
+   which shares .detail__header with the Anthropic-login view -- without
+   living inside #main-area itself, which every view wholesale-replaces via
+   innerHTML on every switch. */
+.main-panel {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	position: relative;
+}
+
+.sidebar-toggle {
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	z-index: 20;
+	font-size: 15px;
+	line-height: 1;
+}
 
 .new-agent-btn {
 	margin-bottom: var(--space-5);
@@ -342,7 +349,10 @@ html, body {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 10px 12px;
+	/* Left padding clears .sidebar-toggle, absolutely positioned over
+	   .main-panel's top-left corner -- this is the row that toggle sits to
+	   the left of. Shared by the Anthropic-login view too (same class). */
+	padding: 10px 12px 10px 48px;
 	border-bottom: 1px solid var(--border);
 	flex: 0 0 auto;
 }
@@ -633,6 +643,9 @@ html, body {
 	align-items: center;
 	gap: 4px;
 	font-size: 13px;
+	/* Clears .sidebar-toggle, absolutely positioned over .main-panel's
+	   top-left corner -- this is the file browser's own top row. */
+	margin-left: 24px;
 }
 .file-browser__breadcrumb .crumb {
 	background: none;
