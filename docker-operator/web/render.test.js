@@ -55,6 +55,17 @@ test('renderAgentList: an agent id containing HTML is escaped in the data attrib
 	assert.doesNotMatch(html, /<img src=x>/);
 });
 
+test('renderAgentList: threads the unreadIds map down to just the matching agent', () => {
+	const agents = [
+		{ id: 'agt_a', name: 'Alpha', status: 'running', activity: 'waiting' },
+		{ id: 'agt_b', name: 'Bravo', status: 'running', activity: 'waiting' },
+	];
+	const html = Render.renderAgentList(agents, null, { agt_b: true });
+	const items = html.split('</li>').filter((s) => s.trim() !== '');
+	assert.doesNotMatch(items[0], /agent-item--unread/);
+	assert.match(items[1], /agent-item--unread/);
+});
+
 test('renderAgentListItem: unnamed agent shows a placeholder label', () => {
 	const html = Render.renderAgentListItem({ id: 'agt_c', name: '', status: 'creating' });
 	assert.match(html, /\(unnamed\)/);
@@ -64,17 +75,38 @@ test('renderAgentListItem: unnamed agent shows a placeholder label', () => {
 
 test('renderAgentListItem: status is shown as visible text, not only the dot color', () => {
 	const html = Render.renderAgentListItem({ id: 'agt_d', name: 'Delta', status: 'error' });
-	assert.match(html, /<span class="agent-item__status">Error<\/span>/);
+	assert.match(html, /class="agent-item__activity">Error<\/span>/);
 });
 
 test('renderAgentListItem: an unrecognised status renders itself as visible text too', () => {
 	const html = Render.renderAgentListItem({ id: 'agt_e', name: 'Echo', status: 'bogus' });
-	assert.match(html, /<span class="agent-item__status">bogus<\/span>/);
+	assert.match(html, /class="agent-item__activity">bogus<\/span>/);
 });
 
 test('renderAgentListItem: a missing status renders "Unknown" as visible text too', () => {
 	const html = Render.renderAgentListItem({ id: 'agt_f', name: 'Foxtrot', status: '' });
-	assert.match(html, /<span class="agent-item__status">Unknown<\/span>/);
+	assert.match(html, /class="agent-item__activity">Unknown<\/span>/);
+});
+
+test('renderAgentListItem: activity "working" pulses the dot and marks the label', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_g', name: 'Golf', status: 'running', activity: 'working' });
+	assert.match(html, /class="status-dot status-running status-dot--pulse"/);
+	assert.match(html, /class="agent-item__activity agent-item__activity--working">Working…<\/span>/);
+});
+
+test('renderAgentListItem: no activity signal renders the plain status, no pulse', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_i', name: 'India', status: 'running' });
+	assert.doesNotMatch(html, /status-dot--pulse/);
+	assert.match(html, /class="agent-item__activity">Running<\/span>/);
+});
+
+test('renderAgentListItem: unread (finished-and-unviewed) shows "Waiting for you" and wins over a live "working" signal', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_h', name: 'Hotel', status: 'running', activity: 'working' }, null, true);
+	assert.match(html, /<li class="agent-item agent-item--unread"/);
+	assert.match(html, /class="agent-item__activity agent-item__activity--unread">/);
+	assert.match(html, /Waiting for you/);
+	assert.doesNotMatch(html, /Working…/);
+	assert.doesNotMatch(html, /status-dot--pulse/);
 });
 
 test('renderAgentListItem: selected agent gets the selected class, others do not', () => {
