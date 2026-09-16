@@ -91,7 +91,10 @@ network or a volume with any other agent, and none can reach the operator.
 DependaProxy is connected into each agent's private network at create time, so
 that agent's DinD workloads can reach it; the DinD daemon
 (`scripts/dind-init.sh`) blocks egress to the public npm / PyPI / Go hosts, so
-workloads physically cannot fetch a dependency outside DependaProxy.
+workloads physically cannot fetch a dependency outside DependaProxy. The same
+script also default-denies the DinD daemon's outbound 80/443 traffic except to
+an allow-listed set of container-registry hosts, so `docker pull`/`docker run`
+inside the sandbox can only reach approved registries.
 
 Full topology, resource naming, and the security boundary:
 [`docker-operator/README.md#architecture`](docker-operator/README.md#architecture).
@@ -211,6 +214,10 @@ in-place agent image upgrades, troubleshooting — is in
 - **Dependencies are proxy-only.** The public npm / PyPI / Go registries are
   network-blocked from every DinD daemon, and DependaProxy auth is disabled (the
   proxy is on isolated internal networks), so there is no proxy token to leak.
+- **Container-registry access is allow-listed.** Every DinD daemon default-denies
+  outbound 80/443 except to an operator-configured list of registry hosts
+  (`AGENT_ALLOWED_REGISTRY_HOSTS`), so `docker pull`/`docker run` inside a sandbox
+  can only reach approved registries — see `docker-operator/README.md#network-egress-restriction`.
 - **Repo self-check** before committing:
   ```sh
   bash scripts/check-no-secrets.sh
@@ -236,8 +243,9 @@ in-place agent image upgrades, troubleshooting — is in
   real PAT).
 - `dependaproxy.yaml` — DependaProxy config (registries, postgres DSN).
 - `scripts/dind-init.sh` — DinD entrypoint override that blocks egress to the
-  public npm / PyPI / Go registries (the single source of truth; the operator
-  embeds a copy).
+  public npm / PyPI / Go registries and default-denies outbound 80/443 except
+  to an allow-listed set of container-registry hosts (the single source of
+  truth; the operator embeds a copy).
 - `scripts/check-no-secrets.sh` — pre-commit secret-scan backstop.
 - `.env.example` — the stack's `.env` template (copy to `.env` at the repo root).
 - `setup-ubuntu-host.sh` — installs Docker + sysbox-ce on Ubuntu 24.04.

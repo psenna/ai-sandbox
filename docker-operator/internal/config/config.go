@@ -49,6 +49,12 @@ const (
 
 	defaultAgentBackend = BackendOllama
 
+	// defaultAllowedRegistryHosts is the container-registry allowlist
+	// dind-init.sh installs on each agent's DinD sidecar by default (see
+	// Config.AllowedRegistryHosts). Docker Hub and GHCR are both CDN-fronted
+	// for blob storage, hence more than one hostname each.
+	defaultAllowedRegistryHosts = "docker.io registry-1.docker.io auth.docker.io index.docker.io production.cloudflare.docker.com ghcr.io pkg-containers.githubusercontent.com quay.io mcr.microsoft.com registry.k8s.io gcr.io k8s.gcr.io"
+
 	// defaultAutoMode is the operator-wide default for whether a new agent's
 	// `claude` process starts in auto mode (--permission-mode auto), so it
 	// does not stop to ask for interactive tool-permission approval. On by
@@ -261,6 +267,21 @@ type Config struct {
 	// would require --privileged and is not a supported configuration.
 	DockerRuntime string
 
+	// AllowedRegistryHosts is the space-separated list of container-registry
+	// hostnames dind-init.sh allows outbound 80/443 to on each agent's DinD
+	// sidecar; every other host is default-denied on those ports, so
+	// `docker pull`/`docker run` inside the sandbox (and any nested workload
+	// container it launches) can only reach an approved set of registries.
+	// Templated into the sidecar as AGENT_ALLOWED_REGISTRY_HOSTS, which
+	// dind-init.sh reads directly -- this field only carries the operator's
+	// configured value through, it is not otherwise consumed by Go code.
+	// Must not be empty: dind-init.sh's own built-in default
+	// (defaultAllowedRegistryHosts) only applies when the variable is unset
+	// on the container, which never happens once this field always has a
+	// value -- an operator who wants that default back sets this to it
+	// explicitly rather than relying on an empty override.
+	AllowedRegistryHosts string
+
 	// DefaultBackend is the LLM backend a create request that does not name
 	// one falls back to: BackendOllama or BackendAnthropic. Every agent
 	// records its own backend, so this only affects the default on the
@@ -458,6 +479,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.DockerRuntime, "docker-runtime",
 		envOr(getenv, "DOCKER_RUNTIME", defaultDockerRuntime),
 		"container runtime for each agent's Docker-in-Docker sidecar (env DOCKER_RUNTIME)")
+	fs.StringVar(&c.AllowedRegistryHosts, "allowed-registry-hosts",
+		envOr(getenv, "AGENT_ALLOWED_REGISTRY_HOSTS", defaultAllowedRegistryHosts),
+		"space-separated container-registry hostnames each agent's DinD sidecar allows outbound 80/443 to; every other host is denied (env AGENT_ALLOWED_REGISTRY_HOSTS)")
 	fs.StringVar(&c.DefaultBackend, "default-backend",
 		envOr(getenv, "DEFAULT_AGENT_BACKEND", defaultAgentBackend),
 		"LLM backend for a create request that names none: \"ollama\" or \"anthropic\" (env DEFAULT_AGENT_BACKEND)")
@@ -590,6 +614,9 @@ func (c Config) validateLimitsAndPaths() error {
 	if c.DockerRuntime == "" {
 		return fmt.Errorf("docker-runtime: must not be empty")
 	}
+	if err := validateAllowedRegistryHosts(c.AllowedRegistryHosts); err != nil {
+		return err
+	}
 	if !ValidBackend(c.DefaultBackend) {
 		return fmt.Errorf("default-backend: %q is not a valid backend, want %q or %q", c.DefaultBackend, BackendOllama, BackendAnthropic)
 	}
@@ -696,6 +723,33 @@ var githubRepoRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 // reference. The empty string is not valid here; callers that treat an empty
 // repo as "no repo" check for that themselves.
 func ValidGithubRepo(s string) bool { return githubRepoRE.MatchString(s) }
+
+// registryHostRE matches a bare DNS hostname: labels of alphanumerics and
+// hyphens separated by dots, no scheme, no port, no path. dind-init.sh
+// resolves each entry with getent and installs an iptables ACCEPT rule per
+// resolved IP, so anything that is not a plain hostname would silently
+// resolve to nothing and leave a gap in the allowlist rather than error.
+var registryHostRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$`)
+
+// validateAllowedRegistryHosts checks AGENT_ALLOWED_REGISTRY_HOSTS's shape: a
+// non-empty, space-separated list of plain hostnames. Empty is rejected
+// outright (see the Config.AllowedRegistryHosts doc comment) rather than
+// treated as "use dind-init.sh's built-in default" -- Load always supplies
+// defaultAllowedRegistryHosts, so an empty value here can only come from an
+// operator explicitly overriding it to "", which would default-deny every
+// registry with no way for an agent to pull any image.
+func validateAllowedRegistryHosts(s string) error {
+	hosts := strings.Fields(s)
+	if len(hosts) == 0 {
+		return fmt.Errorf("allowed-registry-hosts: must not be empty; every agent's DinD sidecar would default-deny all container-registry access")
+	}
+	for _, h := range hosts {
+		if !registryHostRE.MatchString(h) {
+			return fmt.Errorf("allowed-registry-hosts: %q is not a valid hostname (must match %s)", h, registryHostRE)
+		}
+	}
+	return nil
+}
 
 // dockerNameRE matches the character set Docker accepts for a network name.
 var dockerNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)

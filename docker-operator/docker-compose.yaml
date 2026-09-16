@@ -160,6 +160,14 @@ services:
       AGENT_IMAGE_REGISTRY_URL: "${AGENT_IMAGE_REGISTRY_URL:-}"
       AGENT_IMAGE_REGISTRY_TOKEN: "${AGENT_IMAGE_REGISTRY_TOKEN:-}"
       DOCKER_RUNTIME: "${DOCKER_RUNTIME:-sysbox-runc}"
+      # Container-registry allowlist each agent's DinD sidecar enforces:
+      # dind-init.sh default-denies outbound 80/443 except to these hosts, so
+      # `docker pull`/`docker run` inside the sandbox can only reach an
+      # approved set of registries. Space-separated; REPLACES (does not
+      # extend) the operator's own built-in default when set -- see
+      # internal/config's defaultAllowedRegistryHosts for that default and
+      # scripts/dind-init.sh for the enforcement mechanism.
+      AGENT_ALLOWED_REGISTRY_HOSTS: "${AGENT_ALLOWED_REGISTRY_HOSTS:-}"
       # The backend a create request that names none falls back to. Each
       # agent records its own choice; this is only the create-form default.
       DEFAULT_AGENT_BACKEND: "${DEFAULT_AGENT_BACKEND:-ollama}"

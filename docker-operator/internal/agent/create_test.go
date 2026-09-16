@@ -146,6 +146,9 @@ func checkCmdWiring(t *testing.T, m *Manager, got store.Agent) {
 	if dspec.Healthcheck == nil {
 		t.Error("dind ContainerSpec.Healthcheck is nil, want one declared")
 	}
+	if got := dspec.Env["AGENT_ALLOWED_REGISTRY_HOSTS"]; got != m.cfg.AllowedRegistryHosts {
+		t.Errorf("dind ContainerSpec.Env[AGENT_ALLOWED_REGISTRY_HOSTS] = %q, want %q", got, m.cfg.AllowedRegistryHosts)
+	}
 }
 
 // checkCreateCallOrder proves the exact Docker call order, up through the

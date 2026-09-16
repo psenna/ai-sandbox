@@ -76,6 +76,7 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		DependaproxyPyPIURL:       "http://dependaproxy:8080/pypi",
 		DependaproxyGoproxyURL:    "http://dependaproxy:8080/goproxy",
 		DockerRuntime:             "sysbox-runc",
+		AllowedRegistryHosts:      defaultAllowedRegistryHosts,
 		DefaultBackend:            "ollama",
 		OllamaURL:                 "http://ollama:11434",
 		AnthropicAuthToken:        Secret("ollama"),
@@ -144,6 +145,8 @@ var fieldCases = []struct {
 		func(c Config) string { return c.DependaproxyGoproxyURL }},
 	{"DockerRuntime", "DOCKER_RUNTIME", "docker-runtime", "env-runc", "flag-runc",
 		func(c Config) string { return c.DockerRuntime }},
+	{"AllowedRegistryHosts", "AGENT_ALLOWED_REGISTRY_HOSTS", "allowed-registry-hosts", "env-registry.example.com", "flag-registry.example.com",
+		func(c Config) string { return c.AllowedRegistryHosts }},
 	{"DefaultBackend", "DEFAULT_AGENT_BACKEND", "default-backend", "anthropic", "ollama",
 		func(c Config) string { return c.DefaultBackend }},
 	{"OllamaURL", "OLLAMA_URL", "ollama-url", "http://env-ollama:11434", "http://flag-ollama:11434",
@@ -466,6 +469,13 @@ func TestValidate_Errors(t *testing.T) {
 
 		{name: "agent-image empty", args: []string{"--agent-image="}, want: "agent-image"},
 		{name: "docker-runtime empty", args: []string{"--docker-runtime="}, want: "docker-runtime"},
+
+		{name: "allowed-registry-hosts empty", args: []string{"--allowed-registry-hosts="}, want: "allowed-registry-hosts"},
+		{name: "allowed-registry-hosts blank", args: []string{"--allowed-registry-hosts=   "}, want: "allowed-registry-hosts"},
+		{name: "allowed-registry-hosts has a scheme", args: []string{"--allowed-registry-hosts=https://docker.io"}, want: "allowed-registry-hosts"},
+		{name: "allowed-registry-hosts has a path", args: []string{"--allowed-registry-hosts=docker.io/library"}, want: "allowed-registry-hosts"},
+		{name: "allowed-registry-hosts has a port", args: []string{"--allowed-registry-hosts=docker.io:443"}, want: "allowed-registry-hosts"},
+		{name: "allowed-registry-hosts one bad entry among good ones", args: []string{"--allowed-registry-hosts=docker.io not a host ghcr.io"}, want: "allowed-registry-hosts"},
 
 		{name: "default-backend empty", args: []string{"--default-backend="}, want: "default-backend"},
 		{name: "default-backend unknown", args: []string{"--default-backend=vertex"}, want: "default-backend"},
