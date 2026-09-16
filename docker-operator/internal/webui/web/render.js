@@ -57,6 +57,7 @@
 			'<li class="agent-item' + selected + '" data-agent-id="' + escapeHTML(agent.id) + '">' +
 				'<span class="status-dot ' + label.cls + '" title="' + label.text + '"></span>' +
 				'<span class="agent-item__name">' + name + '</span>' +
+				'<span class="agent-item__status">' + escapeHTML(label.text) + '</span>' +
 				upgrade +
 				'<span class="agent-item__backend" title="backend">' + escapeHTML(backendLabel(agent.backend)) + '</span>' +
 			'</li>'
@@ -175,8 +176,8 @@
 				'</div>' +
 				'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in the sidebar first).</p>' +
 				'<div class="create-form__actions">' +
-					'<button class="create-form__submit" type="submit">' + submitLabel + '</button>' +
-					'<button class="create-form__cancel" type="button">Cancel</button>' +
+					'<button class="create-form__submit btn btn--primary" type="submit">' + submitLabel + '</button>' +
+					'<button class="create-form__cancel btn btn--ghost" type="button">Cancel</button>' +
 				'</div>' +
 				'<p class="create-form__error" role="alert" hidden></p>' +
 			'</form>'
@@ -214,8 +215,8 @@
 					'<select class="template-bar__select">' + options + '</select>' +
 				'</label>' +
 				'<div class="template-bar__actions">' +
-					'<button class="template-bar__save" type="button">Save as template</button>' +
-					'<button class="template-bar__delete" type="button" hidden>Delete</button>' +
+					'<button class="template-bar__save btn btn--ghost" type="button">Save as template</button>' +
+					'<button class="template-bar__delete btn btn--danger" type="button" hidden>Delete</button>' +
 				'</div>' +
 				'<p class="template-bar__error" role="alert" hidden></p>' +
 			'</div>'
@@ -411,7 +412,7 @@
 			html += '<p class="agent-image-panel__error">' + escapeHTML(info.lastError) + '</p>';
 		}
 		html += '<div class="agent-image-panel__actions">' +
-			'<button class="agent-image-panel__refresh" type="button">Check now</button>' +
+			'<button class="agent-image-panel__refresh btn btn--ghost btn--sm" type="button">Check now</button>' +
 			'</div>';
 		return html;
 	}
@@ -475,8 +476,8 @@
 				? '<button class="file-table__open" data-path="' + p + '">' + name + '</button>'
 				: name;
 			var sizeCell = e.is_dir ? '—' : escapeHTML(formatBytes(e.size));
-			var actions = (e.is_dir ? '' : '<button class="file-table__download" data-path="' + p + '">Download</button>') +
-				'<button class="file-table__delete" data-path="' + p + '">Delete</button>';
+			var actions = (e.is_dir ? '' : '<button class="file-table__download btn btn--ghost btn--sm" data-path="' + p + '">Download</button>') +
+				'<button class="file-table__delete btn btn--danger btn--sm" data-path="' + p + '">Delete</button>';
 			return (
 				'<tr class="file-table__row" data-path="' + p + '" data-is-dir="' + (e.is_dir ? 'true' : 'false') + '">' +
 					'<td class="file-table__name">' + nameCell + '</td>' +
@@ -502,8 +503,8 @@
 			'<div class="file-browser">' +
 				renderBreadcrumb(path) +
 				'<div class="file-browser__toolbar">' +
-					'<button class="file-browser__new-folder" type="button">New folder</button>' +
-					'<button class="file-browser__upload" type="button">Upload</button>' +
+					'<button class="file-browser__new-folder btn btn--ghost btn--sm" type="button">New folder</button>' +
+					'<button class="file-browser__upload btn btn--ghost btn--sm" type="button">Upload</button>' +
 					'<input type="file" class="file-browser__file-input" multiple hidden>' +
 				'</div>' +
 				'<div class="file-browser__dropzone">' +

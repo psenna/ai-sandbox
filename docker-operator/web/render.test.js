@@ -62,6 +62,21 @@ test('renderAgentListItem: unnamed agent shows a placeholder label', () => {
 	assert.match(html, /data-agent-id="agt_c"/);
 });
 
+test('renderAgentListItem: status is shown as visible text, not only the dot color', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_d', name: 'Delta', status: 'error' });
+	assert.match(html, /<span class="agent-item__status">Error<\/span>/);
+});
+
+test('renderAgentListItem: an unrecognised status renders itself as visible text too', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_e', name: 'Echo', status: 'bogus' });
+	assert.match(html, /<span class="agent-item__status">bogus<\/span>/);
+});
+
+test('renderAgentListItem: a missing status renders "Unknown" as visible text too', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_f', name: 'Foxtrot', status: '' });
+	assert.match(html, /<span class="agent-item__status">Unknown<\/span>/);
+});
+
 test('renderAgentListItem: selected agent gets the selected class, others do not', () => {
 	const selected = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running' }, 'agt_a');
 	const notSelected = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running' }, 'agt_b');
@@ -563,8 +578,8 @@ test('renderTemplateBar: empty state shows only the blank option', () => {
 	const html = Render.renderTemplateBar([]);
 	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
 	assert.deepEqual(opts, ['<option value="">— Select a template —</option>']);
-	assert.match(html, /class="template-bar__save" type="button">Save as template<\/button>/);
-	assert.match(html, /class="template-bar__delete" type="button" hidden>Delete<\/button>/);
+	assert.match(html, /class="template-bar__save btn btn--ghost" type="button">Save as template<\/button>/);
+	assert.match(html, /class="template-bar__delete btn btn--danger" type="button" hidden>Delete<\/button>/);
 });
 
 test('renderTemplateBar: null/undefined also renders the empty state', () => {

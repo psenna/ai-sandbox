@@ -29,6 +29,8 @@
 	var mainArea = document.getElementById('main-area');
 	var anthropicPanel = document.getElementById('anthropic-panel');
 	var agentImagePanel = document.getElementById('agent-image-panel');
+	var sidebarEl = document.getElementById('sidebar');
+	var sidebarToggle = document.getElementById('sidebar-toggle');
 
 	// apiError extracts internal/api's {"error":{"message":...}} envelope
 	// when present, falling back to a generic message for a response that
@@ -314,16 +316,21 @@
 		deleteBtn.addEventListener('click', function () {
 			var t = currentTemplate();
 			if (!t) return;
-			if (!window.confirm('Delete the template "' + t.name + '"?')) return;
-			fetchJSON('/api/templates/' + t.id, { method: 'DELETE' })
-				.then(function () {
-					state.templates = state.templates.filter(function (x) { return x.id !== t.id; });
-					refreshTemplateBar('');
-				})
-				.catch(function (e) {
-					errorEl.textContent = e.message;
-					errorEl.hidden = false;
-				});
+			window.OperatorConfirm.show(
+				'This cannot be undone.',
+				{ title: 'Delete the template "' + t.name + '"?', confirmLabel: 'Delete', danger: true }
+			).then(function (confirmed) {
+				if (!confirmed) return;
+				fetchJSON('/api/templates/' + t.id, { method: 'DELETE' })
+					.then(function () {
+						state.templates = state.templates.filter(function (x) { return x.id !== t.id; });
+						refreshTemplateBar('');
+					})
+					.catch(function (e) {
+						errorEl.textContent = e.message;
+						errorEl.hidden = false;
+					});
+			});
 		});
 	}
 
@@ -371,9 +378,9 @@
 			'<div class="anthropic-panel__title">Anthropic account</div>' +
 			window.Render.renderAnthropicStatus(status) +
 			'<div class="anthropic-panel__actions">' +
-				'<button class="anthropic-panel__apikey" type="button">Set API key</button>' +
-				'<button class="anthropic-panel__login" type="button">Log in</button>' +
-				(status && status.configured ? '<button class="anthropic-panel__remove" type="button">Remove</button>' : '') +
+				'<button class="anthropic-panel__apikey btn btn--ghost btn--sm" type="button">Set API key</button>' +
+				'<button class="anthropic-panel__login btn btn--ghost btn--sm" type="button">Log in</button>' +
+				(status && status.configured ? '<button class="anthropic-panel__remove btn btn--danger btn--sm" type="button">Remove</button>' : '') +
 			'</div>';
 
 		anthropicPanel.querySelector('.anthropic-panel__apikey').addEventListener('click', function () {
@@ -385,8 +392,13 @@
 		var removeBtn = anthropicPanel.querySelector('.anthropic-panel__remove');
 		if (removeBtn) {
 			removeBtn.addEventListener('click', function () {
-				if (!window.confirm('Remove the stored Anthropic credential? Agents already created keep the copy they were given.')) return;
-				fetchJSON('/api/anthropic/auth', { method: 'DELETE' }).then(refreshAnthropicPanel).catch(alertErr('Could not remove the credential'));
+				window.OperatorConfirm.show(
+					'Agents already created keep the copy they were given.',
+					{ title: 'Remove the stored Anthropic credential?', confirmLabel: 'Remove', danger: true }
+				).then(function (confirmed) {
+					if (!confirmed) return;
+					fetchJSON('/api/anthropic/auth', { method: 'DELETE' }).then(refreshAnthropicPanel).catch(alertErr('Could not remove the credential'));
+				});
 			});
 		}
 	}
@@ -469,6 +481,38 @@
 
 	function alertErr(prefix) {
 		return function (e) { window.alert(prefix + ': ' + e.message); };
+	}
+
+	// --- sidebar collapse -----------------------------------------------------
+	// Collapses the sidebar to a slim rail (agent list, panels and the two
+	// top buttons hidden -- see .sidebar--collapsed in style.css) so the
+	// terminal/file browser can take the full window width when the agent
+	// list isn't needed. Defaults to expanded (visible) on first load;
+	// persisted the same defensively-wrapped way auth.js persists the
+	// operator token, so a blocked/unavailable localStorage just means the
+	// preference doesn't survive a reload, never a broken sidebar.
+	var SIDEBAR_COLLAPSED_KEY = 'docker-operator:sidebar-collapsed';
+
+	function readSidebarCollapsed() {
+		try { return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'; } catch (e) { return false; }
+	}
+	function writeSidebarCollapsed(collapsed) {
+		try { window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (e) { /* best effort */ }
+	}
+
+	function setSidebarCollapsed(collapsed) {
+		sidebarEl.classList.toggle('sidebar--collapsed', collapsed);
+		sidebarToggle.textContent = collapsed ? '›' : '‹';
+		sidebarToggle.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+		sidebarToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+		writeSidebarCollapsed(collapsed);
+	}
+
+	if (sidebarEl && sidebarToggle) {
+		setSidebarCollapsed(readSidebarCollapsed());
+		sidebarToggle.addEventListener('click', function () {
+			setSidebarCollapsed(!sidebarEl.classList.contains('sidebar--collapsed'));
+		});
 	}
 
 	// --- wiring -------------------------------------------------------------
