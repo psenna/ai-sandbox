@@ -162,6 +162,7 @@ html, body {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
+	min-height: 0;
 	position: relative;
 }
 
@@ -331,6 +332,7 @@ html, body {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
+	min-height: 0;
 }
 
 .placeholder {
