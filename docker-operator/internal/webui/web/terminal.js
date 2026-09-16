@@ -380,17 +380,17 @@
 					'<input class="detail__name" type="text" placeholder="(unnamed)" aria-label="Agent name">' +
 					'<input class="detail__description" type="text" placeholder="Add a description…" aria-label="Agent description">' +
 					'<span class="detail__id" title="agent id"></span>' +
-					'<button class="detail__upgrade" type="button" hidden>Upgrade available</button>' +
+					'<button class="detail__upgrade btn btn--sm" type="button" hidden>Upgrade available</button>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
 					'<span class="detail__menu">' +
-						'<button class="detail__menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Options">⋮</button>' +
+						'<button class="detail__menu-btn btn btn--ghost btn--sm btn--icon" type="button" aria-haspopup="menu" aria-expanded="false" title="Options">⋮</button>' +
 						'<div class="detail__menu-panel" role="menu" hidden>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="view-context">View context</button>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="agent-info">Agent info</button>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="update-agent">Update agent</button>' +
 						'</div>' +
 					'</span>' +
-					'<button class="detail__delete-btn" type="button">Delete</button>' +
+					'<button class="detail__delete-btn btn btn--danger btn--sm" type="button">Delete</button>' +
 				'</div>' +
 				'<div class="detail__terminal"></div>' +
 				'<p class="detail__hint">Scroll to move the pane. Hold <kbd>Shift</kbd> (<kbd>⌥</kbd> on macOS) and drag to select, then <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> (<kbd>⌘</kbd><kbd>C</kbd> on macOS) to copy.</p>' +
@@ -498,20 +498,22 @@
 
 		deleteBtn.addEventListener('click', function () {
 			var label = nameInput.value || agentID;
-			var confirmed = window.confirm(
-				'Delete agent "' + label + '"? This removes its container and all its data. This cannot be undone.'
-			);
-			if (!confirmed) return;
+			window.OperatorConfirm.show(
+				'This removes its container and all its data. This cannot be undone.',
+				{ title: 'Delete agent "' + label + '"?', confirmLabel: 'Delete', danger: true }
+			).then(function (confirmed) {
+				if (!confirmed) return;
 
-			deleteBtn.disabled = true;
-			fetchJSON('/api/agents/' + encodeURIComponent(agentID), { method: 'DELETE' })
-				.then(function () {
-					if (typeof window.onAgentDeleted === 'function') window.onAgentDeleted(agentID);
-				})
-				.catch(function (e) {
-					deleteBtn.disabled = false;
-					window.alert('Could not delete agent: ' + e.message);
-				});
+				deleteBtn.disabled = true;
+				fetchJSON('/api/agents/' + encodeURIComponent(agentID), { method: 'DELETE' })
+					.then(function () {
+						if (typeof window.onAgentDeleted === 'function') window.onAgentDeleted(agentID);
+					})
+					.catch(function (e) {
+						deleteBtn.disabled = false;
+						window.alert('Could not delete agent: ' + e.message);
+					});
+			});
 		});
 
 		// --- terminal ------------------------------------------------------
@@ -617,24 +619,29 @@
 					if (ollamaURL) body.ollama_url = ollamaURL;
 				}
 
-				if (!window.confirm('Update this agent? It recreates the container (ending the running session) but keeps the volumes and history.')) return;
+				window.OperatorConfirm.show(
+					'It recreates the container (ending the running session) but keeps the volumes and history.',
+					{ title: 'Update this agent?', confirmLabel: 'Update' }
+				).then(function (confirmed) {
+					if (!confirmed) return;
 
-				errorEl.hidden = true;
-				submitBtn.disabled = true;
-				fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/update', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(body),
-				})
-					.then(function () {
-						if (typeof window.onAgentUpdated === 'function') window.onAgentUpdated(agentID);
-						else renderAgentDetail(mainArea, agentID);
+					errorEl.hidden = true;
+					submitBtn.disabled = true;
+					fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/update', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(body),
 					})
-					.catch(function (e) {
-						submitBtn.disabled = false;
-						errorEl.textContent = e && e.message ? e.message : String(e);
-						errorEl.hidden = false;
-					});
+						.then(function () {
+							if (typeof window.onAgentUpdated === 'function') window.onAgentUpdated(agentID);
+							else renderAgentDetail(mainArea, agentID);
+						})
+						.catch(function (e) {
+							submitBtn.disabled = false;
+							errorEl.textContent = e && e.message ? e.message : String(e);
+							errorEl.hidden = false;
+						});
+				});
 			});
 		}).catch(function (e) {
 			if (current !== view) return; // superseded while fetching
@@ -664,10 +671,10 @@
 					'<strong class="context-overlay__title">Context</strong>' +
 					'<input class="context-overlay__search" type="search" placeholder="Search transcript…" aria-label="Search transcript">' +
 					'<span class="context-overlay__count" aria-live="polite"></span>' +
-					'<button class="context-overlay__prev" type="button" title="Previous match (Shift+Enter)" disabled>▲</button>' +
-					'<button class="context-overlay__next" type="button" title="Next match (Enter)" disabled>▼</button>' +
-					'<button class="context-overlay__refresh" type="button">Refresh</button>' +
-					'<button class="context-overlay__close" type="button">Close</button>' +
+					'<button class="context-overlay__prev btn btn--ghost btn--sm" type="button" title="Previous match (Shift+Enter)" disabled>▲</button>' +
+					'<button class="context-overlay__next btn btn--ghost btn--sm" type="button" title="Next match (Enter)" disabled>▼</button>' +
+					'<button class="context-overlay__refresh btn btn--ghost btn--sm" type="button">Refresh</button>' +
+					'<button class="context-overlay__close btn btn--ghost btn--sm" type="button">Close</button>' +
 				'</div>' +
 				'<pre class="context-overlay__body" tabindex="0">Loading…</pre>' +
 			'</div>';
@@ -809,7 +816,7 @@
 			'<div class="info-overlay__panel" role="dialog" aria-label="Agent info">' +
 				'<div class="info-overlay__bar">' +
 					'<strong class="info-overlay__title">Agent info</strong>' +
-					'<button class="info-overlay__close" type="button">Close</button>' +
+					'<button class="info-overlay__close btn btn--ghost btn--sm" type="button">Close</button>' +
 				'</div>' +
 				'<div class="info-overlay__body">Loading…</div>' +
 			'</div>';
@@ -865,13 +872,13 @@
 				'<div class="detail__header">' +
 					'<strong>Anthropic login</strong>' +
 					'<span class="detail__save-status" aria-live="polite"></span>' +
-					'<button class="login__close" type="button">Cancel</button>' +
+					'<button class="login__close btn btn--ghost" type="button">Cancel</button>' +
 				'</div>' +
 				'<p class="login__hint">Run <code>claude setup-token</code> in the terminal below, complete the sign-in in your browser, then paste the token it prints here. It is stored once and used by every agent set to the Anthropic backend.</p>' +
 				'<div class="detail__terminal login__terminal"></div>' +
 				'<form class="login__form">' +
 					'<input class="login__token" type="text" placeholder="Paste the token (starts with sk-ant-oat…)" aria-label="Anthropic OAuth token">' +
-					'<button class="login__save" type="submit">Save token</button>' +
+					'<button class="login__save btn btn--primary" type="submit">Save token</button>' +
 				'</form>' +
 			'</div>';
 
