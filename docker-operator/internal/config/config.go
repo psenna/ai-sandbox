@@ -82,6 +82,28 @@ const (
 // ValidBackend reports whether s is one of the two supported backend names.
 func ValidBackend(s string) bool { return s == BackendOllama || s == BackendAnthropic }
 
+// The two CLI harnesses an agent's container can run. HarnessClaudeCode is
+// the default and the only harness that supports every backend;
+// HarnessOpenCode runs opencode and is Ollama-only in v1 (it has no
+// Anthropic-API path -- see HarnessSupportsBackend). The choice is per agent
+// and orthogonal to the backend; there is no operator-wide default, a create
+// request that names no harness gets HarnessClaudeCode.
+const (
+	HarnessClaudeCode = "claude-code"
+	HarnessOpenCode   = "opencode"
+)
+
+// ValidHarness reports whether s is one of the two supported harness names.
+func ValidHarness(s string) bool { return s == HarnessClaudeCode || s == HarnessOpenCode }
+
+// HarnessSupportsBackend reports whether a harness can run against a backend.
+// v1 rule, in ONE place so the API's early request check and internal/agent's
+// resolved check cannot drift: opencode talks to Ollama's OpenAI-compatible
+// endpoint and has no Anthropic path, so opencode + anthropic is rejected.
+func HarnessSupportsBackend(harness, backend string) bool {
+	return !(harness == HarnessOpenCode && backend == BackendAnthropic)
+}
+
 // AutoModeOn / AutoModeOff are the two resolved values store.Agent.AutoMode
 // takes once a create/update request's optional override (which may also be
 // "", meaning "use the operator's DefaultAutoMode") has been resolved

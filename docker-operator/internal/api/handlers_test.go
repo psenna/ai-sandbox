@@ -116,6 +116,7 @@ func (f *fakeManager) Create(_ context.Context, req agent.CreateRequest) (store.
 		Name:                 req.Name,
 		Description:          req.Description,
 		Backend:              req.Backend,
+		Harness:              req.Harness,
 		Model:                req.Model,
 		FastModel:            req.FastModel,
 		OllamaURL:            req.OllamaURL,
@@ -615,6 +616,79 @@ func TestCreate_MaxContextTokens(t *testing.T) {
 	}
 }
 
+func TestCreate_Harness(t *testing.T) {
+	t.Run("harness=opencode with backend=ollama is created", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Harness: "opencode", Backend: "ollama"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+		}
+		if a := decodeAgent(t, rec); a.Harness != "opencode" {
+			t.Errorf("created agent Harness = %q, want %q", a.Harness, "opencode")
+		}
+	})
+
+	t.Run("harness=opencode with backend=anthropic is a 400 before the manager is called", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.createErr = errors.New("Create must not be reached")
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Harness: "opencode", Backend: "anthropic"})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+		}
+		env := decodeEnvelope(t, rec)
+		if env.Error.Code != CodeInvalidParam || env.Error.Field != "harness" {
+			t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "harness")
+		}
+	})
+
+	t.Run("an omitted harness is passed through unchanged", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+		}
+		if a := decodeAgent(t, rec); a.Harness != "" {
+			t.Errorf("created agent Harness = %q, want empty (unchanged)", a.Harness)
+		}
+	})
+
+	t.Run("harness=claude-code with backend=anthropic is allowed", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Harness: "claude-code", Backend: "anthropic"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body)
+		}
+		if a := decodeAgent(t, rec); a.Harness != "claude-code" {
+			t.Errorf("created agent Harness = %q, want %q", a.Harness, "claude-code")
+		}
+	})
+
+	for _, bad := range []string{"claude", "Claude-Code", "open-code", "opencode "} {
+		t.Run("an invalid harness "+bad+" is a 400 before the manager is called", func(t *testing.T) {
+			mgr := newFakeManager(5)
+			mgr.createErr = errors.New("Create must not be reached")
+			h := newTestHandler(mgr, dockerclienttest.New())
+
+			rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Harness: bad})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+			}
+			env := decodeEnvelope(t, rec)
+			if env.Error.Code != CodeInvalidParam || env.Error.Field != "harness" {
+				t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "harness")
+			}
+		})
+	}
+}
+
 func TestCreate_EmptyBodyIsValid(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
@@ -1077,6 +1151,42 @@ func TestHandleUpdate_InvalidBackend(t *testing.T) {
 	if env.Error.Code != CodeInvalidParam || env.Error.Field != "backend" {
 		t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "backend")
 	}
+}
+
+func TestHandleUpdate_InvalidHarness(t *testing.T) {
+	t.Run("harness=opencode with backend=anthropic is a 400 before the manager is called", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+		mgr.updateErr = errors.New("Update must not be reached")
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
+			createAgentRequest: createAgentRequest{Harness: "opencode", Backend: "anthropic"},
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+		}
+		env := decodeEnvelope(t, rec)
+		if env.Error.Code != CodeInvalidParam || env.Error.Field != "harness" {
+			t.Errorf("error = %+v, want code %q field %q", env.Error, CodeInvalidParam, "harness")
+		}
+	})
+
+	t.Run("a valid update with harness=opencode and backend=ollama reaches the manager", func(t *testing.T) {
+		mgr := newFakeManager(5)
+		mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+		h := newTestHandler(mgr, dockerclienttest.New())
+
+		rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
+			createAgentRequest: createAgentRequest{Harness: "opencode", Backend: "ollama"},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+		}
+		if len(mgr.updateReqs) != 1 || mgr.updateReqs[0].Harness != "opencode" {
+			t.Errorf("updateReqs = %+v, want one call carrying harness=opencode", mgr.updateReqs)
+		}
+	})
 }
 
 func TestHandleUpdate_BadJSON(t *testing.T) {
