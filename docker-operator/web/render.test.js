@@ -546,6 +546,61 @@ test('renderCreateForm: opts.values.backend=anthropic hides the ollama block eve
 	assert.match(html, /value="anthropic" checked/);
 });
 
+// --- renderCreateForm: harness selector (issue #182) ---------------------
+
+test('renderCreateForm: defaults to claude-code', () => {
+	const html = Render.renderCreateForm();
+	assert.match(html, /name="harness" value="claude-code" checked/);
+	assert.doesNotMatch(html, /name="harness" value="opencode" checked/);
+});
+
+test('renderCreateForm: opts.values.harness = "opencode" selects the opencode radio', () => {
+	const html = Render.renderCreateForm({}, { values: { harness: 'opencode' } });
+	assert.match(html, /name="harness" value="opencode" checked/);
+});
+
+test('renderCreateForm: harness=opencode hides and disables the Anthropic backend option', () => {
+	const html = Render.renderCreateForm({}, { values: { harness: 'opencode' } });
+	assert.match(html, /class="create-form__backend-anthropic"[^>]*hidden/);
+	assert.match(html, /name="backend" value="anthropic"[^>]*disabled/);
+});
+
+test('renderCreateForm: harness=opencode still leaves the Ollama fields visible', () => {
+	const html = Render.renderCreateForm({}, { values: { harness: 'opencode' } });
+	assert.match(html, /create-form__ollama"(?!\s*hidden)/);
+});
+
+test('renderCreateForm: harness=opencode forces backend=ollama even when values say anthropic', () => {
+	const html = Render.renderCreateForm({}, { values: { harness: 'opencode', backend: 'anthropic' } });
+	assert.match(html, /name="backend" value="ollama" checked/);
+	assert.doesNotMatch(html, /name="backend" value="anthropic" checked/);
+});
+
+test('renderCreateForm: claude-code keeps the Anthropic backend available', () => {
+	const html = Render.renderCreateForm();
+	assert.doesNotMatch(html, /class="create-form__backend-anthropic"[^>]*hidden/);
+	assert.doesNotMatch(html, /name="backend" value="anthropic"[^>]*disabled/);
+	assert.match(html, /class="create-form__opencode-note"[^>]*hidden/);
+});
+
+test('renderCreateForm: opts.harnessLocked disables both harness radios and labels the legend', () => {
+	const html = Render.renderCreateForm({}, { harnessLocked: true });
+	assert.match(html, /name="harness" value="claude-code"[^>]*disabled/);
+	assert.match(html, /name="harness" value="opencode"[^>]*disabled/);
+	assert.match(html, /Harness \(set at create time\)/);
+
+	const unlocked = Render.renderCreateForm();
+	assert.doesNotMatch(unlocked, /name="harness" value="claude-code"[^>]*disabled/);
+	assert.doesNotMatch(unlocked, /name="harness" value="opencode"[^>]*disabled/);
+});
+
+test('harnessSupportsBackend: opencode is Ollama-only, claude-code runs on either', () => {
+	assert.equal(Render.harnessSupportsBackend('opencode', 'anthropic'), false);
+	assert.equal(Render.harnessSupportsBackend('opencode', 'ollama'), true);
+	assert.equal(Render.harnessSupportsBackend('claude-code', 'anthropic'), true);
+	assert.equal(Render.harnessSupportsBackend('claude-code', 'ollama'), true);
+});
+
 test('renderCreateForm: with no image_tag, opts.values.image seeds the selected tag from the resolved ref', () => {
 	const html = Render.renderCreateForm(
 		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },

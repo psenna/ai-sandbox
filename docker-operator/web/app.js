@@ -135,6 +135,11 @@
 		return checked ? checked.value : 'ollama';
 	}
 
+	function currentHarnessOf(form) {
+		var checked = form.querySelector('input[name="harness"]:checked');
+		return checked ? checked.value : 'claude-code';
+	}
+
 	// wireCreateForm attaches every listener the create/update form itself
 	// needs (backend toggle, cancel, submit). Called fresh against whatever
 	// .create-form element currently exists -- the initial one, or the
@@ -143,18 +148,37 @@
 	function wireCreateForm(form) {
 		var ollamaBlock = form.querySelector('.create-form__ollama');
 		var anthropicNote = form.querySelector('.create-form__anthropic-note');
+		var opencodeNote = form.querySelector('.create-form__opencode-note');
+		var anthropicRadio = form.querySelector('input[name="backend"][value="anthropic"]');
+		var anthropicLabel = form.querySelector('.create-form__backend-anthropic');
+		var ollamaRadio = form.querySelector('input[name="backend"][value="ollama"]');
 		var errorEl = form.querySelector('.create-form__error');
 		var submitBtn = form.querySelector('.create-form__submit');
 
-		function syncBackend() {
+		// syncBackendAndHarness mirrors render.js's own harness/backend rule on
+		// every `change`: an opencode harness can never leave the Anthropic
+		// backend selected, so if it was checked, force it back to Ollama
+		// first; then hide+disable the Anthropic option and toggle the
+		// opencode note; THEN run the (possibly just-corrected) Ollama-fields
+		// visibility check.
+		function syncBackendAndHarness() {
+			var opencode = !window.Render.harnessSupportsBackend(currentHarnessOf(form), 'anthropic');
+			if (opencode && anthropicRadio && anthropicRadio.checked) {
+				anthropicRadio.checked = false;
+				if (ollamaRadio) ollamaRadio.checked = true;
+			}
+			if (anthropicRadio) anthropicRadio.disabled = opencode;
+			if (anthropicLabel) anthropicLabel.hidden = opencode;
+			if (opencodeNote) opencodeNote.hidden = !opencode;
+
 			var anthropic = currentBackendOf(form) === 'anthropic';
 			ollamaBlock.hidden = anthropic;
 			anthropicNote.hidden = !anthropic;
 		}
-		form.querySelectorAll('input[name="backend"]').forEach(function (el) {
-			el.addEventListener('change', syncBackend);
+		form.querySelectorAll('input[name="backend"], input[name="harness"]').forEach(function (el) {
+			el.addEventListener('change', syncBackendAndHarness);
 		});
-		syncBackend();
+		syncBackendAndHarness();
 
 		form.querySelector('.create-form__cancel').addEventListener('click', function () {
 			showPlaceholder();
@@ -167,6 +191,10 @@
 				name: form.querySelector('.create-form__name').value.trim(),
 				description: form.querySelector('.create-form__description').value.trim(),
 				backend: backend,
+				// harness is always sent explicitly, same as backend -- this
+				// form's convention is "always send radio-group values",
+				// reserving omit-when-default for tri-state fields.
+				harness: currentHarnessOf(form),
 			};
 			var repo = form.querySelector('.create-form__repo').value.trim();
 			if (repo) body.repo = repo;
@@ -218,6 +246,8 @@
 	// differs from the operator default" rule wireCreateForm's own submit
 	// body already uses for image_tag -- so saving a template pins a tag
 	// only when the user genuinely picked a non-default one.
+	// harness is deliberately excluded from these fields: store.Template has no
+	// Harness field yet, so a saved template can't carry it.
 	function infraFieldsFromForm(form) {
 		var backend = currentBackendOf(form);
 		var fields = {
@@ -255,6 +285,10 @@
 		var values = {
 			name: form.querySelector('.create-form__name').value,
 			description: form.querySelector('.create-form__description').value,
+			// store.Template has no Harness field, so the re-render carries the
+			// CURRENT form's harness selection through rather than letting it
+			// reset to the claude-code default, same as name/description above.
+			harness: currentHarnessOf(form),
 			backend: t.backend,
 			model: t.model,
 			fast_model: t.fast_model,

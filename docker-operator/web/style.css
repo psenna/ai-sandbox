@@ -554,21 +554,29 @@ html, body {
 .create-form__row input:focus,
 .create-form__row select:focus { outline: none; border-color: var(--accent); }
 
-.create-form__backend {
+.create-form__backend,
+.create-form__harness {
 	border: 1px solid var(--border);
 	border-radius: 6px;
 	padding: 8px 10px;
 }
 
-.create-form__backend legend { color: var(--fg-dim); padding: 0 4px; }
-.create-form__backend label { display: block; padding: 3px 0; color: var(--fg); font-size: 13px; }
+.create-form__backend legend,
+.create-form__harness legend { color: var(--fg-dim); padding: 0 4px; }
+.create-form__backend label,
+.create-form__harness label { display: block; padding: 3px 0; color: var(--fg); font-size: 13px; }
 
 .create-form__ollama { display: flex; flex-direction: column; gap: 12px; }
 /* `.create-form__ollama` and `[hidden]` have equal specificity, so the rule
    above would otherwise win and the Ollama block would stay visible for the
-   Anthropic backend. This compound selector outranks both. */
+   Anthropic backend. This compound selector outranks both. Same story for
+   `.create-form__backend-anthropic label { display: block; }` above versus
+   the bare `[hidden]` UA rule: without this override, hiding the Anthropic
+   option for an opencode harness would leave it visibly on the page. */
 .create-form__ollama[hidden] { display: none; }
-.create-form__anthropic-note { color: var(--fg-dim); font-size: 12px; margin: 0; }
+.create-form__backend-anthropic[hidden] { display: none; }
+.create-form__anthropic-note,
+.create-form__opencode-note { color: var(--fg-dim); font-size: 12px; margin: 0; }
 
 .create-form__actions { display: flex; gap: 8px; }
 
