@@ -101,7 +101,7 @@ func ValidHarness(s string) bool { return s == HarnessClaudeCode || s == Harness
 // resolved check cannot drift: opencode talks to Ollama's OpenAI-compatible
 // endpoint and has no Anthropic path, so opencode + anthropic is rejected.
 func HarnessSupportsBackend(harness, backend string) bool {
-	return !(harness == HarnessOpenCode && backend == BackendAnthropic)
+	return harness != HarnessOpenCode || backend != BackendAnthropic
 }
 
 // AutoModeOn / AutoModeOff are the two resolved values store.Agent.AutoMode
