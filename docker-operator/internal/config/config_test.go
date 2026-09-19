@@ -61,8 +61,8 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		MaxAgents:                 5,
 		ListenAddr:                ":8080",
 		StateDBPath:               "/var/lib/docker-operator/state.db",
-		AgentImage:                "ghcr.io/psenna/ai-sandbox-agent:latest",
-		AgentImageOpenCode:        "ghcr.io/psenna/ai-sandbox-agent-opencode:latest",
+		AgentImageClaudeCode:      "ghcr.io/psenna/ai-sandbox-agent",
+		AgentImageOpenCode:        "ghcr.io/psenna/ai-sandbox-agent-opencode",
 		AgentImageRefreshInterval: time.Hour,
 		AgentImageRegistryURL:     "",
 		AgentImageRegistryToken:   Secret(""),
@@ -115,9 +115,9 @@ var fieldCases = []struct {
 		func(c Config) string { return c.ListenAddr }},
 	{"StateDBPath", "STATE_DB_PATH", "state-db-path", "/env/state.db", "/flag/state.db",
 		func(c Config) string { return c.StateDBPath }},
-	{"AgentImage", "AGENT_IMAGE", "agent-image", "example.com/env:v1", "example.com/flag:v1",
-		func(c Config) string { return c.AgentImage }},
-	{"AgentImageOpenCode", "AGENT_IMAGE_OPENCODE", "agent-image-opencode", "example.com/env-oc:v1", "example.com/flag-oc:v1",
+	{"AgentImageClaudeCode", "AGENT_IMAGE_CLAUDECODE", "agent-image-claudecode", "example.com/env", "example.com/flag",
+		func(c Config) string { return c.AgentImageClaudeCode }},
+	{"AgentImageOpenCode", "AGENT_IMAGE_OPENCODE", "agent-image-opencode", "example.com/env-oc", "example.com/flag-oc",
 		func(c Config) string { return c.AgentImageOpenCode }},
 	{"AgentImageRefreshInterval", "AGENT_IMAGE_REFRESH_INTERVAL", "agent-image-refresh-interval", "2h0m0s", "3h0m0s",
 		func(c Config) string { return c.AgentImageRefreshInterval.String() }},
@@ -374,6 +374,101 @@ func TestValidate_AgentImageFields(t *testing.T) {
 	}
 }
 
+// TestValidate_AgentImageMustBeBareRepo covers both agent-image flags: empty
+// is rejected (already covered by TestValidate_Errors, repeated here for
+// completeness), a bare repository is accepted, a :tag or @digest suffix is
+// rejected with a message naming the flag, and a registry-port repository
+// (host:5000/team/img) is accepted -- it must not be misdetected as tagged.
+func TestValidate_AgentImageMustBeBareRepo(t *testing.T) {
+	cases := []struct {
+		name    string
+		flag    string
+		value   string
+		wantErr bool
+	}{
+		{"empty", "agent-image-claudecode", "", true},
+		{"bare repo", "agent-image-claudecode", "ghcr.io/psenna/ai-sandbox-agent", false},
+		{"latest tag", "agent-image-claudecode", "ghcr.io/psenna/ai-sandbox-agent:latest", true},
+		{"digest", "agent-image-claudecode", "ghcr.io/psenna/ai-sandbox-agent@sha256:" + hex64, true},
+		{"registry port", "agent-image-claudecode", "localhost:5000/team/img", false},
+
+		{"empty (opencode)", "agent-image-opencode", "", true},
+		{"bare repo (opencode)", "agent-image-opencode", "ghcr.io/psenna/ai-sandbox-agent-opencode", false},
+		{"latest tag (opencode)", "agent-image-opencode", "ghcr.io/psenna/ai-sandbox-agent-opencode:latest", true},
+		{"digest (opencode)", "agent-image-opencode", "ghcr.io/psenna/ai-sandbox-agent-opencode@sha256:" + hex64, true},
+		{"registry port (opencode)", "agent-image-opencode", "localhost:5000/team/img-oc", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Load([]string{"--" + tc.flag + "=" + tc.value}, envFrom(requiredEnv()))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			err = c.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() with %s=%q = nil, want an error", tc.flag, tc.value)
+				}
+				if !strings.Contains(err.Error(), tc.flag) {
+					t.Errorf("Validate() error = %v, want it to name %q", err, tc.flag)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Validate() with %s=%q = %v, want nil", tc.flag, tc.value, err)
+			}
+		})
+	}
+}
+
+const hex64 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+func TestNormalizeHarness(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", HarnessClaudeCode},
+		{"claude-code", HarnessClaudeCode},
+		{"bogus", HarnessClaudeCode},
+		{"opencode", HarnessOpenCode},
+	}
+	for _, tc := range cases {
+		if got := NormalizeHarness(tc.in); got != tc.want {
+			t.Errorf("NormalizeHarness(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestHarnesses(t *testing.T) {
+	got := Harnesses()
+	want := []string{HarnessClaudeCode, HarnessOpenCode}
+	if len(got) != len(want) {
+		t.Fatalf("Harnesses() = %v, want %v", got, want)
+	}
+	for i, h := range got {
+		if h != want[i] {
+			t.Errorf("Harnesses()[%d] = %q, want %q", i, h, want[i])
+		}
+		if !ValidHarness(h) {
+			t.Errorf("Harnesses()[%d] = %q, want it to pass ValidHarness", i, h)
+		}
+	}
+}
+
+func TestConfigAgentImageFor(t *testing.T) {
+	c := Config{AgentImageClaudeCode: "a", AgentImageOpenCode: "b"}
+	if got := c.AgentImageFor("opencode"); got != "b" {
+		t.Errorf(`AgentImageFor("opencode") = %q, want "b"`, got)
+	}
+	if got := c.AgentImageFor("claude-code"); got != "a" {
+		t.Errorf(`AgentImageFor("claude-code") = %q, want "a"`, got)
+	}
+	if got := c.AgentImageFor(""); got != "a" {
+		t.Errorf(`AgentImageFor("") = %q, want "a"`, got)
+	}
+}
+
 func TestLoad_FilestoreMaxUploadEnvParsing(t *testing.T) {
 	if _, err := Load(nil, envWith(map[string]string{"FILESTORE_MAX_UPLOAD_BYTES": "abc"})); err == nil {
 		t.Fatal("Load with FILESTORE_MAX_UPLOAD_BYTES=abc: expected error, got nil")
@@ -467,7 +562,7 @@ func TestValidate_Errors(t *testing.T) {
 		{name: "state-db-path empty", args: []string{"--state-db-path="}, want: "state-db-path"},
 		{name: "state-db-path is a directory", args: []string{"--state-db-path=/var/lib/docker-operator/"}, want: "state-db-path"},
 
-		{name: "agent-image empty", args: []string{"--agent-image="}, want: "agent-image"},
+		{name: "agent-image-claudecode empty", args: []string{"--agent-image-claudecode="}, want: "agent-image-claudecode"},
 		{name: "agent-image-opencode empty", args: []string{"--agent-image-opencode="}, want: "agent-image-opencode"},
 		{name: "docker-runtime empty", args: []string{"--docker-runtime="}, want: "docker-runtime"},
 
@@ -670,7 +765,7 @@ func TestLoadValidate_NeverPanics(t *testing.T) {
 		"http://[::1", ":", "::::", "abc", strings.Repeat("a", 4096),
 	}
 	names := []string{
-		"MAX_AGENTS", "LISTEN_ADDR", "STATE_DB_PATH", "AGENT_IMAGE", "AGENT_IMAGE_OPENCODE",
+		"MAX_AGENTS", "LISTEN_ADDR", "STATE_DB_PATH", "AGENT_IMAGE_CLAUDECODE", "AGENT_IMAGE_OPENCODE",
 		"PROXYNET_NAME", "DBNET_NAME", "GITHUB_REPO", "AGENT_TOKEN",
 		"OPERATOR_API_TOKEN",
 		"GIT_PROXY_URL", "GIT_PROXY_BROKER_URL", "DEPENDAPROXY_URL",

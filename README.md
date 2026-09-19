@@ -97,8 +97,9 @@ network or a volume with any other agent, and none can reach the operator.
 
 Which harness an agent runs is a per-agent choice on the create form — **Claude
 Code** (the default, on either backend) or **opencode** (Ollama-only in v1) —
-fixed for that agent's lifetime, and it selects the image (`AGENT_IMAGE` vs
-`AGENT_IMAGE_OPENCODE`), the CLI the tmux pane runs, and how the model
+fixed for that agent's lifetime, and it selects the image repository
+(`AGENT_IMAGE_CLAUDECODE` vs `AGENT_IMAGE_OPENCODE`), the CLI the tmux pane
+runs, and how the model
 configuration is injected. Details:
 [`docker-operator/README.md#choosing-a-harness`](docker-operator/README.md#choosing-a-harness).
 

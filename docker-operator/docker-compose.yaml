@@ -38,9 +38,10 @@
 # ever gets this socket, and no agent shares a network with it.
 #
 # Prerequisites: sysbox-ce installed (../setup-ubuntu-host.sh) for the
-# per-agent DinD sidecars' runtime. The agent
-# image (AGENT_IMAGE) defaults to ghcr.io/psenna/ai-sandbox-agent:latest,
-# published by .github/workflows/docker-operator-agent-image.yml on every
+# per-agent DinD sidecars' runtime. The agent image repository
+# (AGENT_IMAGE_CLAUDECODE) defaults to ghcr.io/psenna/ai-sandbox-agent, tag
+# resolved separately (per-agent, or from the host), published by
+# .github/workflows/docker-operator-agent-image.yml on every
 # docker-operator/agent/** change to main; the operator pulls it on first
 # use. `make agent-image` builds and tags that same reference locally.
 
@@ -150,16 +151,19 @@ services:
       LISTEN_ADDR: "0.0.0.0:8000"
       STATE_DB_PATH: "/var/lib/docker-operator/state.db"
       MAX_AGENTS: "${MAX_AGENTS:-5}"
-      AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-agent:20260913-050608}"
-      # The image for agent containers running the opencode harness --
-      # AGENT_IMAGE above stays the claude-code image regardless; the
-      # per-agent harness decides which of the two an agent actually runs.
-      AGENT_IMAGE_OPENCODE: "${AGENT_IMAGE_OPENCODE:-ghcr.io/psenna/ai-sandbox-agent-opencode:latest}"
+      AGENT_IMAGE_CLAUDECODE: "${AGENT_IMAGE_CLAUDECODE:-ghcr.io/psenna/ai-sandbox-agent}"
+      # The image repository for agent containers running the opencode
+      # harness -- AGENT_IMAGE_CLAUDECODE above stays the claude-code
+      # repository regardless; the per-agent harness decides which of the
+      # two an agent actually runs. Bare repository, no tag -- same as
+      # AGENT_IMAGE_CLAUDECODE.
+      AGENT_IMAGE_OPENCODE: "${AGENT_IMAGE_OPENCODE:-ghcr.io/psenna/ai-sandbox-agent-opencode}"
       # Agent-image tag discovery: the operator polls the registry for
-      # AGENT_IMAGE's :YYYYMMDD-HHMMSS tags and surfaces them in the web UI.
-      # REFRESH_INTERVAL is a Go duration (floored at 1m); REGISTRY_URL is
-      # empty to derive the root from AGENT_IMAGE's domain; REGISTRY_TOKEN is
-      # only needed for a private agent-image repository.
+      # AGENT_IMAGE_CLAUDECODE's :YYYYMMDD-HHMMSS tags and surfaces them in
+      # the web UI. REFRESH_INTERVAL is a Go duration (floored at 1m);
+      # REGISTRY_URL is empty to derive the root from AGENT_IMAGE_CLAUDECODE's
+      # domain; REGISTRY_TOKEN is only needed for a private agent-image
+      # repository.
       AGENT_IMAGE_REFRESH_INTERVAL: "${AGENT_IMAGE_REFRESH_INTERVAL:-1h}"
       AGENT_IMAGE_REGISTRY_URL: "${AGENT_IMAGE_REGISTRY_URL:-}"
       AGENT_IMAGE_REGISTRY_TOKEN: "${AGENT_IMAGE_REGISTRY_TOKEN:-}"

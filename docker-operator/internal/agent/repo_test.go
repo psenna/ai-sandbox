@@ -19,7 +19,7 @@ func managerWithRepo(t *testing.T, repo string) (*Manager, *dockerclienttest.Fak
 	cfg.GithubRepo = repo
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 	return NewManager(f, nil, st, cfg, testLogger(), testOptions()), f, st
 }

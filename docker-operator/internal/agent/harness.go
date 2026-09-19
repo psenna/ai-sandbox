@@ -21,7 +21,7 @@ func (m *Manager) agentImageFor(harness string) string {
 	if harness == config.HarnessOpenCode {
 		return m.cfg.AgentImageOpenCode
 	}
-	return m.cfg.AgentImage
+	return m.cfg.AgentImageClaudeCode
 }
 
 // agentImageRef returns the image reference a's container should run: a's

@@ -100,21 +100,22 @@ func run(log *slog.Logger) error {
 	defer func() { _ = st.Close() }()
 
 	// The registry client for agent-image tag discovery. A failure to build it
-	// is deliberately NOT fatal: the only way it fails is an AGENT_IMAGE that
-	// github.com/distribution/reference cannot parse (an uppercase local build
-	// tag, say), and taking the whole operator -- every running agent's
-	// lifecycle API -- down over a cosmetic sidebar panel is the wrong trade.
-	// agent.Manager tolerates a nil registry: RefreshAgentImageTags then
-	// records "registry client not configured" and keeps the last-known list.
+	// is deliberately NOT fatal: the only way it fails is an
+	// AGENT_IMAGE_CLAUDECODE that github.com/distribution/reference cannot
+	// parse (an uppercase local build tag, say), and taking the whole
+	// operator -- every running agent's lifecycle API -- down over a cosmetic
+	// sidebar panel is the wrong trade. agent.Manager tolerates a nil
+	// registry: RefreshAgentImageTags then records "registry client not
+	// configured" and keeps the last-known list.
 	var reg registry.Client
 	if hc, rerr := registry.New(registry.Options{
-		Image:     cfg.AgentImage,
+		Image:     cfg.AgentImageClaudeCode,
 		BaseURL:   cfg.AgentImageRegistryURL,
 		AuthToken: cfg.AgentImageRegistryToken.Reveal(),
 		UserAgent: "docker-operator/" + version,
 	}); rerr != nil {
 		log.Warn("agent-image tag discovery is disabled: the registry client could not be built",
-			"agent_image", cfg.AgentImage, "agent_image_registry_url", cfg.AgentImageRegistryURL, "error", rerr)
+			"agent_image", cfg.AgentImageClaudeCode, "agent_image_registry_url", cfg.AgentImageRegistryURL, "error", rerr)
 	} else {
 		reg = hc
 	}

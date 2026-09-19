@@ -39,7 +39,7 @@ func realDockerClient(t *testing.T) dockerclient.Client {
 
 // integrationConfig loads real defaults from the environment, the same way
 // cmd/docker-operator would -- without calling Validate, since these tests
-// need only a handful of fields (AgentImage, DockerRuntime,
+// need only a handful of fields (AgentImageClaudeCode, DockerRuntime,
 // DependaproxyContainer) and must not require GITHUB_REPO/AGENT_TOKEN to be
 // set in this shell.
 func integrationConfig(t *testing.T) config.Config {
@@ -105,16 +105,16 @@ func TestIntegrationTmuxBootRemainOnExit(t *testing.T) {
 	cfg := integrationConfig(t)
 	ctx := context.Background()
 
-	if _, err := c.ImageInspect(ctx, cfg.AgentImage); dockerclient.IsNotFound(err) {
-		t.Skipf("agent image %q is not present on this daemon; build it first (docker-operator/agent/Dockerfile, `make agent-image`): %v", cfg.AgentImage, err)
+	if _, err := c.ImageInspect(ctx, cfg.AgentImageClaudeCode); dockerclient.IsNotFound(err) {
+		t.Skipf("agent image %q is not present on this daemon; build it first (docker-operator/agent/Dockerfile, `make agent-image`): %v", cfg.AgentImageClaudeCode, err)
 	} else if err != nil {
-		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImage, err)
+		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImageClaudeCode, err)
 	}
 
 	name := uniqueContainerName("tmux")
 	id, err := c.ContainerCreate(ctx, dockerclient.ContainerSpec{
 		Name:  name,
-		Image: cfg.AgentImage,
+		Image: cfg.AgentImageClaudeCode,
 		Cmd:   []string{tmuxBootPath},
 		Env: map[string]string{
 			"AGENT_TOKEN": "itest-token",
@@ -189,7 +189,7 @@ func TestIntegrationTmuxBootRemainOnExit(t *testing.T) {
 	}
 
 	t.Logf("PASS: tmux-boot.sh remain-on-exit confirmed for real -- container %s (image %s) stayed %s after its pane's process (pid %s) was killed; has-session still exits 0; pane_dead=1",
-		id, cfg.AgentImage, dockerclient.StateRunning, pid)
+		id, cfg.AgentImageClaudeCode, dockerclient.StateRunning, pid)
 }
 
 // TestIntegrationAnthropicLogin is #108's acceptance criterion for real:
@@ -202,10 +202,10 @@ func TestIntegrationAnthropicLogin(t *testing.T) {
 	cfg := integrationConfig(t)
 	ctx := context.Background()
 
-	if _, err := c.ImageInspect(ctx, cfg.AgentImage); dockerclient.IsNotFound(err) {
-		t.Skipf("agent image %q is not present; build it with `make agent-image`: %v", cfg.AgentImage, err)
+	if _, err := c.ImageInspect(ctx, cfg.AgentImageClaudeCode); dockerclient.IsNotFound(err) {
+		t.Skipf("agent image %q is not present; build it with `make agent-image`: %v", cfg.AgentImageClaudeCode, err)
 	} else if err != nil {
-		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImage, err)
+		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImageClaudeCode, err)
 	}
 
 	// The login container attaches to proxynet for egress; create a
@@ -252,7 +252,7 @@ func TestIntegrationAnthropicLogin(t *testing.T) {
 	if active, err := m.AnthropicLoginActive(ctx); err != nil || active {
 		t.Fatalf("AnthropicLoginActive after Stop = (%v, %v), want (false, nil)", active, err)
 	}
-	t.Logf("PASS: Anthropic-login helper lifecycle confirmed for real (image %s)", cfg.AgentImage)
+	t.Logf("PASS: Anthropic-login helper lifecycle confirmed for real (image %s)", cfg.AgentImageClaudeCode)
 }
 
 // TestIntegrationCreateDelete proves #65 + #66 for real against a live

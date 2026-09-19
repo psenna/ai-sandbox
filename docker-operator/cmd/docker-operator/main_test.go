@@ -172,7 +172,7 @@ func TestHandleContainerEvent_PassesActorID(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	mgr := agent.NewManager(dockerclienttest.New(), nil, st, config.Config{AgentImage: "x:dev"}, log, agent.Options{})
+	mgr := agent.NewManager(dockerclienttest.New(), nil, st, config.Config{AgentImageClaudeCode: "x:dev"}, log, agent.Options{})
 
 	a, err := st.Create(ctx, store.CreateSpec{ID: "agt_evt"})
 	if err != nil {

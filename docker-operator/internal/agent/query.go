@@ -68,7 +68,7 @@ func (m *Manager) DefaultAutoMode() string { return config.AutoModeString(m.cfg.
 // container image and the Docker-in-Docker sidecar's container runtime.
 // internal/api's GET /api/agents/{id}/info serves them next to the agent
 // record so the UI's "Agent info" overlay can show what the operator set.
-func (m *Manager) AgentImage() string    { return m.cfg.AgentImage }
+func (m *Manager) AgentImage() string    { return m.cfg.AgentImageClaudeCode }
 func (m *Manager) DockerRuntime() string { return m.cfg.DockerRuntime }
 
 // AnthropicAuthStatus reports whether the shared Anthropic credential is
