@@ -118,6 +118,12 @@
 		return backend;
 	}
 
+	// harnessSupportsBackend mirrors config.HarnessSupportsBackend: opencode is
+	// Ollama-only in v1; claude-code runs on either backend.
+	function harnessSupportsBackend(harness, backend) {
+		return harness !== 'opencode' || backend !== 'anthropic';
+	}
+
 	// renderCreateForm renders the "New Agent" form -- also the "Update agent"
 	// form when opts.{title,submitLabel} say so. defaults pre-fills the backend
 	// choice, the Ollama server + two model fields and the repo from the
@@ -136,6 +142,19 @@
 	// agent record) is always already resolved to "on"/"off", never "", so
 	// the update form opens on the agent's actual current setting rather than
 	// re-showing "operator default" for an agent that explicitly chose one.
+	//
+	// A new Harness fieldset (values.harness, defaulting to "claude-code" --
+	// there is no operator-wide default) sits just above the Backend fieldset.
+	// Selecting/opening on harness=opencode forces backend to "ollama" and
+	// renders the Anthropic radio hidden+disabled (mirrors
+	// config.HarnessSupportsBackend -- opencode is Ollama-only in v1), with an
+	// explanatory note shown in its place; the caller mirrors this rule on
+	// `change` events for live toggling, but the initial render already gets
+	// it right, which is what makes this unit-testable here. opts.harnessLocked
+	// renders the harness radios disabled (used by the update form, since
+	// internal/agent's Update never changes a persisted agent's harness) and
+	// appends "(set at create time)" to the legend, without hiding or omitting
+	// the fieldset.
 	function renderCreateForm(defaults, opts) {
 		defaults = defaults || {};
 		opts = opts || {};
@@ -145,7 +164,17 @@
 		// values.* (the agent record, snake_case) wins over defaults.* (the
 		// operator config) so an update form opens on the agent's own settings.
 		var pick = function (v, d) { return (v === undefined || v === null || v === '') ? (d || '') : v; };
+		// Harness has no operator-wide default (GET /api/agents has no
+		// default_harness, and internal/agent resolves an empty harness to
+		// claude-code), so unlike backend this reads opts.values only -- the
+		// update form's agent record -- and otherwise falls back to claude-code.
+		var harness = values.harness === 'opencode' ? 'opencode' : 'claude-code';
+		var opencode = harness === 'opencode';
 		var backend = (values.backend || defaults.backend) === 'anthropic' ? 'anthropic' : 'ollama';
+		// Mirrors config.HarnessSupportsBackend: opencode is Ollama-only in v1,
+		// so an opencode form can never open on the anthropic backend even if a
+		// stale record or template said so.
+		if (opencode) backend = 'ollama';
 		var model = escapeHTML(pick(values.model, defaults.model));
 		var fastModel = escapeHTML(pick(values.fast_model, defaults.fastModel));
 		var ollamaURL = escapeHTML(defaults.ollamaUrl || '');
@@ -191,10 +220,20 @@
 						'<option value="off"' + (autoModeValue === 'off' ? ' selected' : '') + '>Off</option>' +
 					'</select>' +
 				'</label>' +
+				'<fieldset class="create-form__row create-form__harness">' +
+					'<legend>Harness' + (opts.harnessLocked ? ' (set at create time)' : '') + '</legend>' +
+					'<label><input type="radio" name="harness" value="claude-code"' +
+						(harness === 'claude-code' ? ' checked' : '') + (opts.harnessLocked ? ' disabled' : '') + '> Claude Code</label>' +
+					'<label><input type="radio" name="harness" value="opencode"' +
+						(opencode ? ' checked' : '') + (opts.harnessLocked ? ' disabled' : '') + '> opencode</label>' +
+				'</fieldset>' +
 				'<fieldset class="create-form__row create-form__backend">' +
 					'<legend>Backend</legend>' +
 					'<label><input type="radio" name="backend" value="ollama"' + (backend === 'ollama' ? ' checked' : '') + '> Ollama</label>' +
-					'<label><input type="radio" name="backend" value="anthropic"' + (backend === 'anthropic' ? ' checked' : '') + '> Anthropic account</label>' +
+					'<label class="create-form__backend-anthropic"' + (opencode ? ' hidden' : '') + '>' +
+						'<input type="radio" name="backend" value="anthropic"' +
+						(backend === 'anthropic' ? ' checked' : '') + (opencode ? ' disabled' : '') +
+						'> Anthropic account</label>' +
 				'</fieldset>' +
 				'<div class="create-form__ollama"' + ollamaHidden + '>' +
 					'<label class="create-form__row">Ollama server' +
@@ -204,6 +243,7 @@
 					'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +
 				'</div>' +
 				'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in the sidebar first).</p>' +
+				'<p class="create-form__opencode-note"' + (opencode ? '' : ' hidden') + '>opencode runs against Ollama only — the Anthropic backend is not available for it.</p>' +
 				'<div class="create-form__actions">' +
 					'<button class="create-form__submit btn btn--primary" type="submit">' + submitLabel + '</button>' +
 					'<button class="create-form__cancel btn btn--ghost" type="button">Cancel</button>' +
@@ -548,6 +588,7 @@
 		escapeHTML: escapeHTML,
 		statusLabel: statusLabel,
 		backendLabel: backendLabel,
+		harnessSupportsBackend: harnessSupportsBackend,
 		renderAgentListItem: renderAgentListItem,
 		renderAgentList: renderAgentList,
 		renderCapacity: renderCapacity,

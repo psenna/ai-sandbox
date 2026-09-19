@@ -531,16 +531,30 @@
 	// --- Update agent form ----------------------------------------------------
 
 	// syncBackend shows/hides the create form's Ollama block for the currently
-	// selected backend radio. A local ~8-line copy of app.js's identically
-	// named helper -- it is not exported there, and this matches the existing
-	// "untested DOM wiring lives with its view" split.
+	// selected backend radio, and hides/disables the Anthropic option (plus
+	// toggling the opencode note) when the harness radio -- locked here via
+	// opts.harnessLocked, but still readable via :checked -- is opencode. A
+	// local copy of app.js's identically named helper -- it is not exported
+	// there, and this matches the existing "untested DOM wiring lives with its
+	// view" split. Unlike app.js's version, this omits the "switch back to
+	// ollama if anthropic was checked" correction step: it isn't needed here,
+	// since render.js already forced backend=ollama server-side when it
+	// rendered an opencode record's initial form.
 	function syncBackend(form) {
 		var checked = form.querySelector('input[name="backend"]:checked');
+		var harnessChecked = form.querySelector('input[name="harness"]:checked');
+		var opencode = harnessChecked ? harnessChecked.value === 'opencode' : false;
 		var anthropic = (checked ? checked.value : 'ollama') === 'anthropic';
 		var ollamaBlock = form.querySelector('.create-form__ollama');
 		var note = form.querySelector('.create-form__anthropic-note');
+		var opencodeNote = form.querySelector('.create-form__opencode-note');
+		var anthropicRadio = form.querySelector('input[name="backend"][value="anthropic"]');
+		var anthropicLabel = form.querySelector('.create-form__backend-anthropic');
 		if (ollamaBlock) ollamaBlock.hidden = anthropic;
 		if (note) note.hidden = !anthropic;
+		if (anthropicRadio) anthropicRadio.disabled = opencode;
+		if (anthropicLabel) anthropicLabel.hidden = opencode;
+		if (opencodeNote) opencodeNote.hidden = !opencode;
 	}
 
 	// openUpdateForm renders a full-page "Update agent" form into the main
@@ -579,6 +593,12 @@
 
 			mainArea.innerHTML = window.Render.renderCreateForm(defaults, {
 				title: 'Update agent', submitLabel: 'Update', values: agent,
+				// internal/agent's Update never changes a persisted agent's
+				// harness, so the update form's harness selector is shown but
+				// locked, not editable and not omitted (omitting it would hide
+				// why the Anthropic backend option disappears for an opencode
+				// agent).
+				harnessLocked: true,
 			});
 			var form = mainArea.querySelector('.create-form');
 			var errorEl = form.querySelector('.create-form__error');
