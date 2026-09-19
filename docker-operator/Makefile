@@ -39,6 +39,7 @@ GIT_PROXY_SKILL_FORK ?= agent/skills/use-git-proxy/SKILL.md
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOVULNCHECK_VERSION   ?= v1.6.0
 AGENT_IMAGE           ?= ghcr.io/psenna/ai-sandbox-agent:latest
+AGENT_IMAGE_OPENCODE  ?= ghcr.io/psenna/ai-sandbox-agent-opencode:latest
 
 REPO_SUBDIR := $(patsubst $(SHARED_DIR)/%,%,$(CURDIR))
 CACHE_DIR   := /work/$(CACHE_SUBDIR)
@@ -68,7 +69,7 @@ NODE_RUN := $(DOCKER) run --rm -u $(shell id -u):$(shell id -g) \
 	$(NODE_IMAGE)
 endif
 
-.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke web-test sync-web-embed web-embed-check
+.PHONY: all build test vet fmt fmt-check lint vuln tidy skill-check dind-init-check agent-image agent-image-smoke agent-image-opencode agent-image-opencode-smoke web-test sync-web-embed web-embed-check opencode-e2e
 
 all: vet fmt-check lint test skill-check dind-init-check web-test web-embed-check
 
@@ -210,6 +211,72 @@ agent-image-smoke:
 	fi; \
 	echo "OK: $$actual" | tr '\n' ' '; echo
 	@echo "agent-image-smoke: PASS"
+
+# Repo-root context, same reasoning as agent-image above: agent-opencode/Dockerfile
+# COPYs claude-code/*/SKILL.md and docker-operator/agent/{tmux-boot.sh,skills/use-git-proxy}
+# alike, so CURDIR is wrong.
+agent-image-opencode:
+	$(DOCKER) build -f agent-opencode/Dockerfile -t $(AGENT_IMAGE_OPENCODE) ..
+
+# Verifies the built image's CONTENTS, not entrypoint.sh's runtime behaviour --
+# same --entrypoint-bypass rationale as agent-image-smoke. Deliberately does
+# NOT port every agent-image-smoke assertion: this image bakes no Claude Code
+# plugins, no settings.json, and never sets CLAUDE_CONFIG_DIR (see
+# agent-opencode/Dockerfile's own "No CLAUDE_CONFIG_DIR..." comment), so there
+# is nothing to check for any of those.
+agent-image-opencode-smoke:
+	@echo "--- opencode is on PATH and runs ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'command -v opencode && opencode --version'
+	@echo "--- image pins the build-time version (no runtime self-update) ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'test "$$OPENCODE_DISABLE_AUTOUPDATE" = 1'
+	@echo "OK: OPENCODE_DISABLE_AUTOUPDATE=1"
+	@echo "--- tmux is installed ---"
+	docker run --rm --entrypoint tmux $(AGENT_IMAGE_OPENCODE) -V
+	@echo "--- /opt/skills holds exactly the 5 expected skills ---"
+	@actual=$$(docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'ls -1 /opt/skills' | sort); \
+	expected=$$(printf 'implement-issue\nstore-file\nuse-dependaproxy\nuse-docker\nuse-git-proxy'); \
+	if [ "$$actual" != "$$expected" ]; then \
+		echo "FAIL: /opt/skills mismatch"; \
+		printf 'want:\n%s\ngot:\n%s\n' "$$expected" "$$actual"; \
+		exit 1; \
+	fi; \
+	echo "OK: $$actual" | tr '\n' ' '; echo
+	@echo "--- use-docker and use-dependaproxy don't hardcode the retired compose stack's static IP ---"
+	@if docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'grep -qF 172.23.0.10 /opt/skills/use-docker/SKILL.md'; then \
+		echo "FAIL: use-docker skill hardcodes the static dependaproxy IP"; exit 1; \
+	fi
+	@if docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'grep -qF 172.23.0.10 /opt/skills/use-dependaproxy/SKILL.md'; then \
+		echo "FAIL: use-dependaproxy skill hardcodes the static dependaproxy IP"; exit 1; \
+	fi
+	@echo "OK: no hardcoded dependaproxy IP baked in"
+	@echo "--- use-git-proxy is the trimmed fork, not the untrimmed vendored copy ---"
+	@if docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'grep -qE "^#+ .*Installing / obtaining this skill" /opt/skills/use-git-proxy/SKILL.md'; then \
+		echo "FAIL: untrimmed use-git-proxy skill baked in, not the fork"; exit 1; \
+	fi
+	@echo "OK: use-git-proxy is the trimmed fork"
+	@echo "--- tmux-boot.sh is present and executable ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'test -x /usr/local/bin/tmux-boot.sh'
+	@echo "OK: /usr/local/bin/tmux-boot.sh"
+	@echo "--- opencode-supervisor.sh is present and executable ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'test -x /usr/local/bin/opencode-supervisor.sh'
+	@echo "OK: /usr/local/bin/opencode-supervisor.sh"
+	@echo "--- tmux-boot.sh's default supervisor is overridden to opencode-supervisor.sh ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'test "$$AGENT_SUPERVISOR" = opencode-supervisor.sh'
+	@echo "OK: AGENT_SUPERVISOR=opencode-supervisor.sh"
+	@echo "--- LSP binaries (gopls, typescript-language-server, pyright-langserver) are on PATH ---"
+	docker run --rm --entrypoint sh $(AGENT_IMAGE_OPENCODE) -c 'command -v gopls && command -v typescript-language-server && command -v pyright-langserver'
+	@echo "OK: gopls, typescript-language-server, pyright-langserver"
+	@echo "--- entrypoint.sh runs cleanly with no args (idle bash, Claude-only onboarding block stays inert) ---"
+	docker run --rm -e AGENT_TOKEN=smoke-test-token $(AGENT_IMAGE_OPENCODE) sh -c 'test -f /workspace/CLAUDE.md && ls /workspace/.claude/skills'
+	@echo "OK: entrypoint.sh completed, CLAUDE.md + skills dropped into /workspace"
+	@echo "agent-image-opencode-smoke: PASS"
+
+# See docker-operator/hack/opencode-e2e.sh's header for what this exercises
+# and which checks gracefully SKIP on an under-provisioned host (no
+# sysbox-runc, no dependaproxy container on the daemon, a too-slow/small
+# local LLM, a container network that can't resolve git-proxy by hostname).
+opencode-e2e:
+	./hack/opencode-e2e.sh
 
 # scripts/dind-init.sh is the SINGLE source of truth; internal/agent embeds a
 # copy because go:embed cannot reach outside its own package directory (and
