@@ -25,9 +25,10 @@ import (
 const (
 	defaultMaxAgents = 5
 
-	defaultListenAddr  = ":8080"
-	defaultStateDBPath = "/var/lib/docker-operator/state.db"
-	defaultAgentImage  = "ghcr.io/psenna/ai-sandbox-agent:latest"
+	defaultListenAddr         = ":8080"
+	defaultStateDBPath        = "/var/lib/docker-operator/state.db"
+	defaultAgentImage         = "ghcr.io/psenna/ai-sandbox-agent:latest"
+	defaultAgentImageOpenCode = "ghcr.io/psenna/ai-sandbox-agent-opencode:latest"
 
 	defaultProxynetName = "docker-operator-proxynet"
 	defaultDbnetName    = "docker-operator-dbnet"
@@ -211,6 +212,17 @@ type Config struct {
 	// immutable :<UTC date-time> tag); override with that pinned tag for
 	// reproducibility, or shadow :latest with a local `make agent-image`.
 	AgentImage string
+
+	// AgentImageOpenCode is the image reference for agent containers running
+	// the HarnessOpenCode harness -- the variant built by
+	// docker-operator/agent-opencode/Dockerfile (issue #186). AgentImage
+	// stays the claude-code image regardless of this field: which of the two
+	// a given agent uses is decided per agent by its resolved harness (see
+	// internal/agent's agentImageFor), never by this config alone. A
+	// per-agent ImageTag override still substitutes into whichever repo the
+	// agent's harness selects. Defaults to
+	// ghcr.io/psenna/ai-sandbox-agent-opencode:latest.
+	AgentImageOpenCode string
 
 	// AgentImageRefreshInterval is how often the operator polls the registry
 	// for the agent image's published date-time tags (the sidebar "Agent
@@ -438,6 +450,9 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.AgentImage, "agent-image",
 		envOr(getenv, "AGENT_IMAGE", defaultAgentImage),
 		"container image for agent containers (env AGENT_IMAGE)")
+	fs.StringVar(&c.AgentImageOpenCode, "agent-image-opencode",
+		envOr(getenv, "AGENT_IMAGE_OPENCODE", defaultAgentImageOpenCode),
+		"container image for agent containers running the opencode harness (env AGENT_IMAGE_OPENCODE)")
 	fs.DurationVar(&c.AgentImageRefreshInterval, "agent-image-refresh-interval",
 		imageRefreshInterval,
 		"how often to poll the registry for the agent image's published tags; clamped up to 1m by the operator (env AGENT_IMAGE_REFRESH_INTERVAL)")
@@ -608,6 +623,9 @@ func (c Config) validateLimitsAndPaths() error {
 	}
 	if c.AgentImage == "" {
 		return fmt.Errorf("agent-image: must not be empty")
+	}
+	if c.AgentImageOpenCode == "" {
+		return fmt.Errorf("agent-image-opencode: must not be empty")
 	}
 	if c.DockerRuntime == "" {
 		return fmt.Errorf("docker-runtime: must not be empty")

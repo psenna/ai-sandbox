@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
@@ -63,6 +64,17 @@ func TestReconcile_RunningAgentBothStopped_WokenBackUp(t *testing.T) {
 	if agentContainer.State != dockerclient.StateRunning {
 		t.Errorf("agent container State = %q, want %q", agentContainer.State, dockerclient.StateRunning)
 	}
+
+	// The Cmd wakeAgent ACTUALLY handed the daemon, read back off the fake --
+	// not re-derived here. A claude-code agent must still be woken with
+	// "--resume", exactly as before #180 made the flag harness-dependent.
+	spec, ok := f.ContainerSpecOf(got.ContainerID)
+	if !ok {
+		t.Fatalf("no recorded spec for the recreated agent container %q", got.ContainerID)
+	}
+	if len(spec.Cmd) != 2 || spec.Cmd[0] != tmuxBootPath || spec.Cmd[1] != "--resume" {
+		t.Errorf("recreated Cmd = %v, want [%q --resume] for a claude-code agent", spec.Cmd, tmuxBootPath)
+	}
 }
 
 // TestWakeAgent_UsesResumeFlag proves the recreated container is told to
@@ -72,9 +84,74 @@ func TestReconcile_RunningAgentBothStopped_WokenBackUp(t *testing.T) {
 func TestWakeAgent_UsesResumeFlag(t *testing.T) {
 	m, _, _ := newTestManager(t, 5)
 	a := createRunningAgent(t, m)
-	spec := m.agentSpec(a, resolvedBackend{kind: a.Backend}, append(autoModeArgs(a), "--resume")...)
+	spec, err := m.agentSpec(a, resolvedBackend{kind: a.Backend}, firstInvocationArgs(a, sessionResume)...)
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
 	if len(spec.Cmd) != 2 || spec.Cmd[0] != tmuxBootPath || spec.Cmd[1] != "--resume" {
 		t.Fatalf("recreated Cmd = %v, want [%q --resume]", spec.Cmd, tmuxBootPath)
+	}
+}
+
+// TestWakeAgent_OpencodeUsesContinueNotResume is the safety-critical
+// counterpart to TestWakeAgent_UsesResumeFlag: opencode's "--resume" exits 1
+// immediately (verified live in issue #181's review), so a woken opencode
+// agent must be told "--continue" instead, never "--resume". It both drives
+// the real Reconcile -> wakeAgent path (proving the wake-up itself succeeds
+// for an opencode agent) and pins the exact Cmd firstInvocationArgs produces
+// for sessionResume, the same way TestWakeAgent_UsesResumeFlag pins it for
+// claude-code.
+func TestWakeAgent_OpencodeUsesContinueNotResume(t *testing.T) {
+	m, f, st := newTestManager(t, 5)
+	ctx := context.Background()
+
+	a, err := m.Create(ctx, CreateRequest{Harness: config.HarnessOpenCode, Backend: config.BackendOllama})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if a.Status != store.StatusRunning {
+		t.Fatalf("seeded agent status = %q, want running", a.Status)
+	}
+
+	if err := f.ContainerStop(ctx, a.DindContainerID, 0); err != nil {
+		t.Fatalf("simulating a stopped dind sidecar: %v", err)
+	}
+	if err := f.ContainerStop(ctx, a.ContainerID, 0); err != nil {
+		t.Fatalf("simulating a stopped agent container: %v", err)
+	}
+
+	rep, err := m.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(rep.Woken) != 1 || rep.Woken[0] != a.ID {
+		t.Fatalf("Woken = %v, want [%q]", rep.Woken, a.ID)
+	}
+
+	got, err := st.Get(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusRunning {
+		t.Errorf("Status = %q, want %q", got.Status, store.StatusRunning)
+	}
+
+	// The Cmd wakeAgent ACTUALLY handed the daemon for the recreated
+	// container, read back off the fake. Deliberately NOT re-derived from
+	// firstInvocationArgs here: an assertion against this test's own copy of
+	// the args would keep passing even if wakeAgent went back to appending a
+	// hardcoded "--resume".
+	spec, ok := f.ContainerSpecOf(got.ContainerID)
+	if !ok {
+		t.Fatalf("no recorded spec for the recreated agent container %q", got.ContainerID)
+	}
+	if len(spec.Cmd) != 2 || spec.Cmd[0] != tmuxBootPath || spec.Cmd[1] != "--continue" {
+		t.Fatalf("recreated Cmd = %v, want [%q --continue]", spec.Cmd, tmuxBootPath)
+	}
+	for _, arg := range spec.Cmd {
+		if arg == "--resume" {
+			t.Fatalf("recreated Cmd = %v, want no --resume for opencode (opencode --resume exits 1 immediately)", spec.Cmd)
+		}
 	}
 }
 

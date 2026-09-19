@@ -138,7 +138,10 @@ func TestResolveBackend(t *testing.T) {
 func TestAgentEnv_StaticBase(t *testing.T) {
 	m, _, _ := newTestManager(t, 5)
 	base := store.Agent{ID: "agt_env", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
-	env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f", ollamaURL: "http://ollama:11434"})
+	env, err := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f", ollamaURL: "http://ollama:11434"})
+	if err != nil {
+		t.Fatalf("agentEnv: %v", err)
+	}
 
 	// tmux picks its charset from LANG; without a UTF-8 value the detached
 	// new-session client (tmux-boot.sh) and the web-UI attach both fall back
@@ -154,7 +157,10 @@ func TestAgentEnv_Backend(t *testing.T) {
 	base := store.Agent{ID: "agt_env", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
 
 	t.Run("ollama routes every tier and blanks the api key", func(t *testing.T) {
-		env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m", ollamaURL: "http://ollama:11434"})
+		env, err := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m", ollamaURL: "http://ollama:11434"})
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "ANTHROPIC_BASE_URL", "http://ollama:11434")
 		wantEq(t, env, "ANTHROPIC_AUTH_TOKEN", "test-anthropic-auth")
 		wantEq(t, env, "ANTHROPIC_MODEL", "opus-m")
@@ -168,13 +174,19 @@ func TestAgentEnv_Backend(t *testing.T) {
 	})
 
 	t.Run("ollama: a per-agent ollama_url becomes ANTHROPIC_BASE_URL", func(t *testing.T) {
-		env := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m", ollamaURL: "http://gpu-box:11434"})
+		env, err := m.agentEnv(base, resolvedBackend{kind: config.BackendOllama, model: "opus-m", fastModel: "fast-m", ollamaURL: "http://gpu-box:11434"})
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "ANTHROPIC_BASE_URL", "http://gpu-box:11434")
 		wantEq(t, env, "ANTHROPIC_API_KEY", "")
 	})
 
 	t.Run("anthropic api-key: only the api key, no oauth token, no model overrides", func(t *testing.T) {
-		env := m.agentEnv(base, resolvedBackend{kind: config.BackendAnthropic, apiKey: "apikey-live"})
+		env, err := m.agentEnv(base, resolvedBackend{kind: config.BackendAnthropic, apiKey: "apikey-live"})
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "ANTHROPIC_API_KEY", "apikey-live")
 		for _, k := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_AUTH_TOKEN"} {
 			if _, ok := env[k]; ok {
@@ -184,7 +196,10 @@ func TestAgentEnv_Backend(t *testing.T) {
 	})
 
 	t.Run("anthropic oauth: only the oauth token, no blank api key", func(t *testing.T) {
-		env := m.agentEnv(base, resolvedBackend{kind: config.BackendAnthropic, oauthToken: "oat-live"})
+		env, err := m.agentEnv(base, resolvedBackend{kind: config.BackendAnthropic, oauthToken: "oat-live"})
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "CLAUDE_CODE_OAUTH_TOKEN", "oat-live")
 		if _, ok := env["ANTHROPIC_API_KEY"]; ok {
 			t.Errorf("ANTHROPIC_API_KEY is set for an anthropic oauth agent, want it absent (an empty value makes Claude Code skip the token)")

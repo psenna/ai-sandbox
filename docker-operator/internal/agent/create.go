@@ -166,6 +166,15 @@ const (
 	configMount    = "/home/node/.claude-sandbox"
 	dindCacheMount = "/var/lib/docker"
 
+	// opencodeDataMount is where the SAME per-agent config volume
+	// (store.Agent.ClaudeConfigVolume) is mounted for an opencode agent:
+	// XDG_DATA_HOME, under which opencode keeps opencode/opencode.db -- the
+	// session store --continue reads back. Deliberately the XDG default
+	// ($HOME/.local/share) so the DB lands on the volume even if something
+	// inside the container ignores XDG_DATA_HOME. Container-local without
+	// this, which would make every Update/wake silently resume nothing.
+	opencodeDataMount = "/home/node/.local/share"
+
 	// agentStoreMount is where the centralized file store's per-agent
 	// subpath (agents/<id>/ inside the shared filestore volume) is mounted
 	// in the agent container. Handed to the agent as AGENT_STORE_DIR. Only
@@ -402,7 +411,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
 
-	imageRef, err := m.resolveAgentImageRef(req.ImageTag)
+	imageRef, err := m.resolveAgentImageRef(req.ImageTag, rs.harness)
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
@@ -574,7 +583,7 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 		return err
 	}
 	m.verifyDependaproxyReachable(ctx, *a)
-	if err := m.startAgentContainer(ctx, a, rb, autoModeArgs(*a)...); err != nil {
+	if err := m.startAgentContainer(ctx, a, rb, firstInvocationArgs(*a, sessionFresh)...); err != nil {
 		return err
 	}
 	if err := m.waitTmuxSession(ctx, *a); err != nil {
@@ -606,7 +615,7 @@ func (m *Manager) stampNames(ctx context.Context, a *store.Agent) error {
 // created, so a missing image fails as one legible error rather than as a
 // half-built agent.
 func (m *Manager) ensureImages(ctx context.Context, a store.Agent) error {
-	for _, ref := range []string{dindImage, firstNonEmpty(a.Image, m.cfg.AgentImage)} {
+	for _, ref := range []string{dindImage, m.agentImageRef(a)} {
 		if err := m.ensureImage(ctx, ref); err != nil {
 			return err
 		}
@@ -642,7 +651,7 @@ func (m *Manager) ensureImage(ctx context.Context, ref string) error {
 // failure here is logged and swallowed rather than failing the create/update,
 // since this is informational metadata, not something the agent needs to run.
 func (m *Manager) stampImageID(ctx context.Context, a *store.Agent) {
-	ref := firstNonEmpty(a.Image, m.cfg.AgentImage)
+	ref := m.agentImageRef(*a)
 	img, err := m.docker.ImageInspect(ctx, ref)
 	if err != nil {
 		m.log.WarnContext(ctx, "could not resolve the agent image's id after ensuring it exists; agent info will show it as unknown",
@@ -1003,35 +1012,25 @@ func (m *Manager) refreshDependaproxyIPFile(ctx context.Context, a store.Agent) 
 	}
 }
 
-// autoModeArgs returns the leading claude CLI args that put a's `claude`
-// process into auto mode (`--permission-mode auto`, which reviews tool calls
-// with a classifier instead of stopping for interactive approval), or nil
-// when a.AutoMode is not config.AutoModeOn. Every startAgentContainer call
-// site prepends this ahead of whatever session-resumption flag it passes
-// (none for a fresh create, "--continue" for Update, "--resume" for the
-// reconcile pass waking an agent whose container did not survive a host/
-// daemon restart), so auto mode applies the same way regardless of how the
-// session starts.
-func autoModeArgs(a store.Agent) []string {
-	if a.AutoMode != config.AutoModeOn {
-		return nil
-	}
-	return []string{"--permission-mode", "auto"}
-}
-
 // startAgentContainer creates and starts the agent container itself.
 //
-// claudeArgs are appended to the tmux-boot.sh Cmd and forwarded to the first
-// `claude` invocation inside the session (tmux-boot.sh ends
-// `... new-session ... claude-supervisor.sh "$@"`, which itself runs
-// `claude "$@"` before taking over restarts on a non-zero exit). Create
-// passes autoModeArgs alone (nil when auto mode is off, byte-identical to
-// the historical Cmd); Update appends "--continue" so the recreated
-// container resumes the previous Claude session; the reconcile pass's
-// wake-up appends "--resume" instead, since the old container's tmux
-// session did not survive being stopped.
-func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend, claudeArgs ...string) error {
-	id, err := m.docker.ContainerCreate(ctx, m.agentSpec(*a, rb, claudeArgs...))
+// harnessArgs are appended to the tmux-boot.sh Cmd and forwarded to the
+// harness's first invocation inside the session (tmux-boot.sh ends
+// `... new-session ... <supervisor> "$@"`, which itself runs the harness
+// `"$@"` before taking over restarts on a non-zero exit) -- see
+// firstInvocationArgs, which every call site builds this from: Create passes
+// sessionFresh (nil when auto mode is off, byte-identical to the historical
+// Cmd); Update passes sessionContinue so the recreated container resumes the
+// previous session ("--continue" for both harnesses); the reconcile pass's
+// wake-up passes sessionResume, which is "--resume" for claude-code (the old
+// container's tmux session did not survive being stopped) but "--continue"
+// for opencode, since opencode's "--resume" exits 1 immediately.
+func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend, harnessArgs ...string) error {
+	spec, err := m.agentSpec(*a, rb, harnessArgs...)
+	if err != nil {
+		return fmt.Errorf("building the agent container spec for %q: %w", a.ContainerName, err)
+	}
+	id, err := m.docker.ContainerCreate(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("creating the agent container %q: %w", a.ContainerName, err)
 	}
@@ -1044,28 +1043,41 @@ func (m *Manager) startAgentContainer(ctx context.Context, a *store.Agent, rb re
 	return nil
 }
 
-// agentSpec templates docker-compose.yaml's `claude` service for one agent.
+// agentSpec templates docker-compose.yaml's `claude` service for one agent,
+// branching on a's harness for the image, the config-volume mount point and
+// the environment (see agentImageRef, configVolumeMount and agentEnv).
 //
 // Entrypoint is NOT overridden: the image's /entrypoint.sh has to run (it
 // writes the git config, the skills, .npmrc, pip.env, go.env and
 // /workspace/dependaproxy-ip) and ends in `exec "$@"`. Cmd is what is
 // overridden, to tmux-boot.sh -- which is why the image's own CMD can stay
 // ["bash"] and a plain `docker run` of it remains an ordinary shell.
+// tmux-boot.sh itself is harness-agnostic (issue #181): its AGENT_SUPERVISOR
+// env var, baked into the image, decides which harness's supervisor script
+// it execs.
 //
-// claudeArgs are appended after tmuxBootPath; tmux-boot.sh forwards them
-// ("$@") to claude-supervisor.sh, which forwards them to the first `claude`
-// invocation. Empty (Create's call) leaves Cmd == [tmux-boot.sh], the
-// historical value. Update passes "--continue".
-func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend, claudeArgs ...string) dockerclient.ContainerSpec {
+// harnessArgs are appended after tmuxBootPath; tmux-boot.sh forwards them
+// ("$@") to the harness's supervisor script, which forwards them to the
+// harness's first invocation -- see firstInvocationArgs. Empty (Create's
+// call, auto mode off) leaves Cmd == [tmux-boot.sh], the historical value.
+//
+// agentEnv can fail for an opencode agent (a malformed/empty Ollama backend
+// producing no valid opencode.json), so agentSpec returns an error too rather
+// than silently building a container with no model routing at all.
+func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend, harnessArgs ...string) (dockerclient.ContainerSpec, error) {
+	env, err := m.agentEnv(a, rb)
+	if err != nil {
+		return dockerclient.ContainerSpec{}, err
+	}
 	spec := dockerclient.ContainerSpec{
 		Name:   a.ContainerName,
-		Image:  firstNonEmpty(a.Image, m.cfg.AgentImage),
-		Cmd:    append([]string{tmuxBootPath}, claudeArgs...),
-		Env:    m.agentEnv(a, rb),
+		Image:  m.agentImageRef(a),
+		Cmd:    append([]string{tmuxBootPath}, harnessArgs...),
+		Env:    env,
 		Labels: labelsFor(a.ID, RoleAgent),
 		Mounts: []dockerclient.Mount{
 			{Type: dockerclient.MountTypeVolume, Source: a.WorkspaceVolume, Target: workspaceMount},
-			{Type: dockerclient.MountTypeVolume, Source: a.ClaudeConfigVolume, Target: configMount},
+			{Type: dockerclient.MountTypeVolume, Source: a.ClaudeConfigVolume, Target: configVolumeMount(a)},
 		},
 		Networks: []dockerclient.NetworkAttachment{
 			// proxynet: the shared ollama, git-proxy and dependaproxy.
@@ -1103,15 +1115,18 @@ func (m *Manager) agentSpec(a store.Agent, rb resolvedBackend, claudeArgs ...str
 			},
 		)
 	}
-	return spec
+	return spec, nil
 }
 
-// agentEnv assembles the agent container's environment.
+// agentEnv assembles the agent container's environment: the harness-agnostic
+// base every agent gets, then either the opencode-specific vars
+// (applyOpencodeEnv) or the claude-code-specific vars (applyClaudeEnv +
+// applyBackendEnv), never both -- see harnessOf.
 //
 // This is the one sanctioned place config.Secret.Reveal is called: the values
 // have to reach the container as plain strings, and every other path a Secret
 // can take -- fmt, encoding/json, log/slog -- stays redacted.
-func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string {
+func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) (map[string]string, error) {
 	token := m.cfg.AgentToken.Reveal()
 
 	env := map[string]string{
@@ -1142,11 +1157,6 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 		"DOCKER_HOST":       "tcp://" + dindAlias + ":" + dindTCPPort,
 		"DOCKER_TLS_VERIFY": "",
 
-		// Claude Code. CLAUDE_CONFIG_DIR is the claude-config volume, so
-		// sessions and plugins survive a container recreate.
-		"CLAUDE_CONFIG_DIR":              configMount,
-		"CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-
 		// tmux needs a terminal type even for a detached session.
 		"TERM": "xterm-256color",
 
@@ -1160,19 +1170,6 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 		"LANG": "C.UTF-8",
 	}
 
-	// Claude Code auto-compact threshold, only when a value was actually
-	// resolved. Empty (per-agent unset AND no operator default) is OMITTED --
-	// not set to "" -- so Claude Code falls back to its own built-in default.
-	if a.AutoCompactThreshold != "" {
-		env["CLAUDE_AUTO_COMPACT_THRESHOLD"] = a.AutoCompactThreshold
-	}
-
-	// Claude Code max-context token budget, resolved the same way and subject
-	// to the same omit-when-empty rule.
-	if a.MaxContextTokens != "" {
-		env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = a.MaxContextTokens
-	}
-
 	if a.DependaproxyDinernetIP.IsValid() {
 		env["DEPENDAPROXY_DINERNET_IP"] = a.DependaproxyDinernetIP.String()
 	}
@@ -1184,8 +1181,61 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) map[string]string 
 		env["AGENT_SHARED_DIR"] = agentSharedMount
 	}
 
+	if harnessOf(a) == config.HarnessOpenCode {
+		if err := applyOpencodeEnv(env, rb); err != nil {
+			return nil, err
+		}
+		return env, nil
+	}
+	applyClaudeEnv(env, a)
 	m.applyBackendEnv(env, rb)
-	return env
+	return env, nil
+}
+
+// applyClaudeEnv sets the Claude-Code-specific environment: CLAUDE_CONFIG_DIR
+// (the claude-config volume, so sessions and plugins survive a container
+// recreate), CLAUDE_CODE_ATTRIBUTION_HEADER, and the two omit-when-empty
+// tuning knobs CLAUDE_AUTO_COMPACT_THRESHOLD / CLAUDE_CODE_MAX_CONTEXT_TOKENS.
+// Extracted out of agentEnv so an opencode agent -- which has no use for any
+// of these -- can skip it entirely.
+func applyClaudeEnv(env map[string]string, a store.Agent) {
+	env["CLAUDE_CONFIG_DIR"] = configMount
+	env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
+
+	// Auto-compact threshold, only when a value was actually resolved. Empty
+	// (per-agent unset AND no operator default) is OMITTED -- not set to "" --
+	// so Claude Code falls back to its own built-in default.
+	if a.AutoCompactThreshold != "" {
+		env["CLAUDE_AUTO_COMPACT_THRESHOLD"] = a.AutoCompactThreshold
+	}
+
+	// Max-context token budget, resolved the same way and subject to the same
+	// omit-when-empty rule.
+	if a.MaxContextTokens != "" {
+		env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = a.MaxContextTokens
+	}
+}
+
+// applyOpencodeEnv writes the opencode-specific environment: the generated
+// opencode.json content (OPENCODE_CONFIG_CONTENT) and XDG_DATA_HOME, pointed
+// at the same per-agent config volume mount opencodeDataMount uses, so
+// opencode's session database persists there.
+//
+// rb.kind is guaranteed config.BackendOllama by resolveSpec +
+// config.HarnessSupportsBackend (#179); the check here is defensive, not
+// decorative -- an anthropic rb reaching here would silently produce an
+// agent with no model routing at all.
+func applyOpencodeEnv(env map[string]string, rb resolvedBackend) error {
+	if rb.kind != config.BackendOllama {
+		return fmt.Errorf("the opencode harness supports only the %q backend, got %q", config.BackendOllama, rb.kind)
+	}
+	cfgJSON, err := opencodeConfigJSON(rb.ollamaURL, rb.model, rb.fastModel)
+	if err != nil {
+		return err
+	}
+	env["OPENCODE_CONFIG_CONTENT"] = cfgJSON
+	env["XDG_DATA_HOME"] = opencodeDataMount
+	return nil
 }
 
 // applyBackendEnv writes the model-routing / credential half of the agent's

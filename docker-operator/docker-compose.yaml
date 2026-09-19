@@ -151,6 +151,10 @@ services:
       STATE_DB_PATH: "/var/lib/docker-operator/state.db"
       MAX_AGENTS: "${MAX_AGENTS:-5}"
       AGENT_IMAGE: "${AGENT_IMAGE:-ghcr.io/psenna/ai-sandbox-agent:20260913-050608}"
+      # The image for agent containers running the opencode harness --
+      # AGENT_IMAGE above stays the claude-code image regardless; the
+      # per-agent harness decides which of the two an agent actually runs.
+      AGENT_IMAGE_OPENCODE: "${AGENT_IMAGE_OPENCODE:-ghcr.io/psenna/ai-sandbox-agent-opencode:latest}"
       # Agent-image tag discovery: the operator polls the registry for
       # AGENT_IMAGE's :YYYYMMDD-HHMMSS tags and surfaces them in the web UI.
       # REFRESH_INTERVAL is a Go duration (floored at 1m); REGISTRY_URL is

@@ -470,6 +470,10 @@ published to GHCR by
 on every `docker-operator/agent/**` change to `main`, tagged with a UTC
 date-time plus `:latest`. Pin a date-time tag in `.env` for a reproducible
 default, or run `make agent-image` to build and shadow `:latest` locally.
+An agent whose harness is `opencode` instead runs `AGENT_IMAGE_OPENCODE`
+(default `ghcr.io/psenna/ai-sandbox-agent-opencode:latest`); a per-agent
+`image_tag` override still applies to whichever of the two repositories the
+agent's harness selects.
 
 The operator polls the registry for those date-time tags
 (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`; `AGENT_IMAGE_REGISTRY_URL` /

@@ -99,6 +99,14 @@ ENV AGENT_SUPERVISOR=opencode-supervisor.sh
 RUN mkdir -p /workspace && chown node:node /workspace
 
 USER node
+# The operator mounts this agent's per-agent config volume here as
+# XDG_DATA_HOME (internal/agent's opencodeDataMount), so opencode's session
+# DB (opencode/opencode.db) survives the container recreate that Update and
+# the wake/reconcile path both perform -- without it, --continue silently
+# resumes nothing. Pre-created as node so Docker's copy-up gives the fresh
+# volume node ownership instead of a root-owned, unwritable mount point.
+RUN mkdir -p /home/node/.local/share
+
 # opencode: install via the official curl install script (the only supported
 # route -- there is no npm package to pin the way the Claude image pins its
 # native installer). Run as `node` so it lands under /home/node and is usable

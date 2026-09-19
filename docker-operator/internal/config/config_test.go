@@ -62,6 +62,7 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		ListenAddr:                ":8080",
 		StateDBPath:               "/var/lib/docker-operator/state.db",
 		AgentImage:                "ghcr.io/psenna/ai-sandbox-agent:latest",
+		AgentImageOpenCode:        "ghcr.io/psenna/ai-sandbox-agent-opencode:latest",
 		AgentImageRefreshInterval: time.Hour,
 		AgentImageRegistryURL:     "",
 		AgentImageRegistryToken:   Secret(""),
@@ -116,6 +117,8 @@ var fieldCases = []struct {
 		func(c Config) string { return c.StateDBPath }},
 	{"AgentImage", "AGENT_IMAGE", "agent-image", "example.com/env:v1", "example.com/flag:v1",
 		func(c Config) string { return c.AgentImage }},
+	{"AgentImageOpenCode", "AGENT_IMAGE_OPENCODE", "agent-image-opencode", "example.com/env-oc:v1", "example.com/flag-oc:v1",
+		func(c Config) string { return c.AgentImageOpenCode }},
 	{"AgentImageRefreshInterval", "AGENT_IMAGE_REFRESH_INTERVAL", "agent-image-refresh-interval", "2h0m0s", "3h0m0s",
 		func(c Config) string { return c.AgentImageRefreshInterval.String() }},
 	{"AgentImageRegistryURL", "AGENT_IMAGE_REGISTRY_URL", "agent-image-registry-url", "http://env-registry:1", "http://flag-registry:1",
@@ -465,6 +468,7 @@ func TestValidate_Errors(t *testing.T) {
 		{name: "state-db-path is a directory", args: []string{"--state-db-path=/var/lib/docker-operator/"}, want: "state-db-path"},
 
 		{name: "agent-image empty", args: []string{"--agent-image="}, want: "agent-image"},
+		{name: "agent-image-opencode empty", args: []string{"--agent-image-opencode="}, want: "agent-image-opencode"},
 		{name: "docker-runtime empty", args: []string{"--docker-runtime="}, want: "docker-runtime"},
 
 		{name: "default-backend empty", args: []string{"--default-backend="}, want: "default-backend"},
@@ -666,7 +670,7 @@ func TestLoadValidate_NeverPanics(t *testing.T) {
 		"http://[::1", ":", "::::", "abc", strings.Repeat("a", 4096),
 	}
 	names := []string{
-		"MAX_AGENTS", "LISTEN_ADDR", "STATE_DB_PATH", "AGENT_IMAGE",
+		"MAX_AGENTS", "LISTEN_ADDR", "STATE_DB_PATH", "AGENT_IMAGE", "AGENT_IMAGE_OPENCODE",
 		"PROXYNET_NAME", "DBNET_NAME", "GITHUB_REPO", "AGENT_TOKEN",
 		"OPERATOR_API_TOKEN",
 		"GIT_PROXY_URL", "GIT_PROXY_BROKER_URL", "DEPENDAPROXY_URL",

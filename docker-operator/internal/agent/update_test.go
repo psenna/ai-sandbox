@@ -208,7 +208,10 @@ func TestUpdate_KeepsResourceNamesForARecordMissingThem(t *testing.T) {
 func TestUpdate_RecreatedCmdHasContinue(t *testing.T) {
 	m, _, _ := newTestManager(t, 5)
 	a := createRunningAgent(t, m)
-	spec := m.agentSpec(a, resolvedBackend{kind: config.BackendOllama}, "--continue")
+	spec, err := m.agentSpec(a, resolvedBackend{kind: config.BackendOllama}, "--continue")
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
 	if len(spec.Cmd) != 2 || spec.Cmd[0] != tmuxBootPath || spec.Cmd[1] != "--continue" {
 		t.Fatalf("recreated Cmd = %v, want [%q --continue]", spec.Cmd, tmuxBootPath)
 	}
@@ -261,7 +264,10 @@ func TestUpdate_BackendOllamaToAnthropic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveBackend: %v", err)
 	}
-	env := m.agentEnv(updated, rb)
+	env, err := m.agentEnv(updated, rb)
+	if err != nil {
+		t.Fatalf("agentEnv: %v", err)
+	}
 	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "oat-live" {
 		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN = %q, want the seeded credential", env["CLAUDE_CODE_OAUTH_TOKEN"])
 	}
@@ -464,7 +470,10 @@ func TestUpdate_ResyncsDependaproxyBeforeRecreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveBackend: %v", err)
 	}
-	env := m.agentEnv(updated, rb)
+	env, err := m.agentEnv(updated, rb)
+	if err != nil {
+		t.Fatalf("agentEnv: %v", err)
+	}
 	if env["DEPENDAPROXY_DINERNET_IP"] != updated.DependaproxyDinernetIP.String() {
 		t.Errorf("DEPENDAPROXY_DINERNET_IP = %q, want %q", env["DEPENDAPROXY_DINERNET_IP"], updated.DependaproxyDinernetIP.String())
 	}

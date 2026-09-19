@@ -26,11 +26,18 @@ func TestFilestore_DisabledByDefault(t *testing.T) {
 	m, _, _ := newTestManager(t, 5)
 	a := store.Agent{ID: "agt_disabled"}
 
-	total, storeMounts := storeMountCount(m.agentSpec(a, resolvedBackend{kind: "ollama"}))
+	spec, err := m.agentSpec(a, resolvedBackend{kind: "ollama"})
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
+	total, storeMounts := storeMountCount(spec)
 	if total != 2 || storeMounts != 0 {
 		t.Errorf("mounts = %d (store %d), want exactly 2 and none targeting %q", total, storeMounts, agentStoreMount)
 	}
-	env := m.agentEnv(a, resolvedBackend{kind: "ollama"})
+	env, err := m.agentEnv(a, resolvedBackend{kind: "ollama"})
+	if err != nil {
+		t.Fatalf("agentEnv: %v", err)
+	}
 	if _, ok := env["AGENT_STORE_DIR"]; ok {
 		t.Error("AGENT_STORE_DIR set with the file store disabled")
 	}
@@ -47,7 +54,10 @@ func TestFilestore_EnabledSpecAndEnv(t *testing.T) {
 	m, _, _ := newTestManagerCfg(t, cfg)
 	a := store.Agent{ID: "agt_enabled"}
 
-	spec := m.agentSpec(a, resolvedBackend{kind: "ollama"})
+	spec, err := m.agentSpec(a, resolvedBackend{kind: "ollama"})
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
 	total, storeMounts := storeMountCount(spec)
 	if total != 4 || storeMounts != 1 {
 		t.Fatalf("mounts = %d (store %d), want 4 (workspace, config, store, shared)", total, storeMounts)
@@ -63,7 +73,10 @@ func TestFilestore_EnabledSpecAndEnv(t *testing.T) {
 		t.Errorf("shared mount = %+v, want read-only shared -> /workspace/shared", shared)
 	}
 
-	env := m.agentEnv(a, resolvedBackend{kind: "ollama"})
+	env, err := m.agentEnv(a, resolvedBackend{kind: "ollama"})
+	if err != nil {
+		t.Fatalf("agentEnv: %v", err)
+	}
 	if got := env["AGENT_STORE_DIR"]; got != "/workspace/store" {
 		t.Errorf("AGENT_STORE_DIR = %q, want /workspace/store", got)
 	}
@@ -170,7 +183,11 @@ func TestFilestore_UnusableConfigDegrades(t *testing.T) {
 	if m.files != nil {
 		t.Fatal("m.files is non-nil despite an unusable FilestoreDir")
 	}
-	total, storeMounts := storeMountCount(m.agentSpec(store.Agent{ID: "agt_x"}, resolvedBackend{kind: "ollama"}))
+	spec, err := m.agentSpec(store.Agent{ID: "agt_x"}, resolvedBackend{kind: "ollama"})
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
+	total, storeMounts := storeMountCount(spec)
 	if total != 2 || storeMounts != 0 {
 		t.Errorf("mounts = %d (store %d), want graceful degradation to 2", total, storeMounts)
 	}
