@@ -1,9 +1,9 @@
 # ai-sandbox
 
-Run **Claude Code** agents on a real GitHub repo **without ever handing them the
-GitHub PAT**, each agent in its own container with a **rootless Docker-in-Docker**
-daemon for dev work, and every dependency **supply-chain-gated** through a
-validating proxy.
+Run **Claude Code** (or **opencode**) agents on a real GitHub repo **without ever
+handing them the GitHub PAT**, each agent in its own container with a **rootless
+Docker-in-Docker** daemon for dev work, and every dependency
+**supply-chain-gated** through a validating proxy.
 
 - **git-proxy** holds the GitHub PAT and attaches it only on the proxy→GitHub
   leg. Agents authenticate to the proxy with a low-value bearer, never see the
@@ -14,6 +14,11 @@ validating proxy.
   cannot fetch a dependency any other way.
 - **Ollama** serves an Anthropic-compatible API (local models, or `:cloud`
   models proxied to ollama.com) — or point an agent at a real Anthropic account.
+- **Two CLI harnesses.** Each agent runs either **Claude Code** (the default,
+  on either backend) or **opencode** (<https://opencode.ai>), chosen per agent
+  at create time. opencode is **Ollama-only in v1** — see [Choosing a
+  harness](docker-operator/README.md#choosing-a-harness) and the epic,
+  [#176](https://github.com/psenna/ai-sandbox/issues/176).
 
 ```
  proxynet:  ollama · git-proxy ──https──> github.com   (holds the PAT)
@@ -36,7 +41,8 @@ further.
 |---|---|---|
 | What it is | A single Go binary that creates agent containers through the Docker API, with a REST API + web UI. One Ubuntu host, no cluster. | A Kubernetes operator with two CRDs, `SandboxClass` and `SandboxEnvironment`. |
 | How you start a run | Click **New agent** in the web UI (or `POST /api/agents`); a terminal opens on it. | `kubectl apply` a `SandboxEnvironment`. |
-| How many at once | Many — one Claude container + one private DinD sidecar per agent, capped by `MAX_AGENTS`. | As many as `slots.capacity` allows, queued by priority. |
+| How many at once | Many — one agent container + one private DinD sidecar per agent, capped by `MAX_AGENTS`. | As many as `slots.capacity` allows, queued by priority. |
+| CLI harness | Per agent: **Claude Code** (default) or **opencode** — opencode is Ollama-only in v1 ([#176](https://github.com/psenna/ai-sandbox/issues/176)). | Claude Code only. |
 | Long-running / paused work | Not modelled — the agent's `tmux` session survives the operator or a browser tab restarting, but not the agent container stopping. | Modelled: an agent can declare a wait, the sandbox is **frozen** (snapshotted, pod deleted, slot released) and **woken** when the wait clears. |
 | Isolation | A private Docker bridge network + a rootless DinD daemon per agent, registry egress blocked. The operator drives Docker over a bind-mounted socket and shares no network with any agent. | Kubernetes `NetworkPolicy`, a hardened pod, and no Kubernetes credential in the agent container. |
 | Nested containers for dev work | Yes — a rootless DinD sidecar per agent (`DOCKER_HOST=tcp://docker:2375`). | **Not yet** — only the `none` engine is implemented ([#24](https://github.com/psenna/ai-sandbox/issues/24)). |
@@ -81,12 +87,20 @@ Shared, singleton services (one set, reused by every agent):
 | `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.7` | Validates + hash-verifies every npm / PyPI / Go package; serves `/npm` `/pypi` `/goproxy` + an admin dashboard at `/`. |
 | `docker-operator` | built from `docker-operator/Dockerfile` | The orchestrator: REST API + web UI on `127.0.0.1:${LISTEN_PORT:-8000}`, drives Docker over a bind-mounted socket. |
 
-Then, **per agent, on demand**, the operator creates: a Claude Code container
-(node + claude-code + git + docker-cli + tmux, from
-`docker-operator/agent/Dockerfile`), a private `docker:dind` sidecar under
-`sysbox-runc`, a private bridge network joining just those two, and three
-isolated volumes (workspace, Claude config, DinD cache). No agent shares a
+Then, **per agent, on demand**, the operator creates: an agent container
+(node + the agent's CLI harness + git + docker-cli + tmux — Claude Code from
+`docker-operator/agent/Dockerfile`, or opencode from
+`docker-operator/agent-opencode/Dockerfile`), a private `docker:dind` sidecar
+under `sysbox-runc`, a private bridge network joining just those two, and three
+isolated volumes (workspace, harness config, DinD cache). No agent shares a
 network or a volume with any other agent, and none can reach the operator.
+
+Which harness an agent runs is a per-agent choice on the create form — **Claude
+Code** (the default, on either backend) or **opencode** (Ollama-only in v1) —
+fixed for that agent's lifetime, and it selects the image (`AGENT_IMAGE` vs
+`AGENT_IMAGE_OPENCODE`), the CLI the tmux pane runs, and how the model
+configuration is injected. Details:
+[`docker-operator/README.md#choosing-a-harness`](docker-operator/README.md#choosing-a-harness).
 
 DependaProxy is connected into each agent's private network at create time, so
 that agent's DinD workloads can reach it; the DinD daemon
@@ -223,8 +237,9 @@ in-place agent image upgrades, troubleshooting — is in
 - `docker-compose.yaml` — the default stack; a thin `include:` of
   `docker-operator/docker-compose.yaml`.
 - `docker-operator/` — the Docker-native multi-agent orchestrator: the Go binary,
-  the agent image (`docker-operator/agent/`), its `docker-compose.yaml`, and its
-  own README. **Start here.**
+  the two agent images (`docker-operator/agent/` for Claude Code,
+  `docker-operator/agent-opencode/` for opencode), its `docker-compose.yaml`,
+  and its own README. **Start here.**
 - `operator/` — the Kubernetes operator: `SandboxClass` / `SandboxEnvironment`
   CRDs, the reconciler, the `sandboxctl` sidecar, a Helm chart.
 - `claude-code/` — assets baked into the agent images: `entrypoint.sh`,

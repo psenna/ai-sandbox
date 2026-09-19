@@ -1,10 +1,11 @@
 # docker-operator
 
 A Docker-native multi-agent orchestrator for ai-sandbox: create, list, watch
-and delete Claude Code agent containers through a REST API and a small web
-UI with a live terminal per agent — the same multi-agent, web-UI-driven
-experience as the [Kubernetes operator](../operator/README.md), but on
-plain Docker, single host, no cluster required. This is the repository's
+and delete agent containers — each running Claude Code or opencode — through a
+REST API and a small web UI with a live terminal per agent, the same
+multi-agent, web-UI-driven experience as the [Kubernetes
+operator](../operator/README.md), but on plain Docker, single host, no cluster
+required. This is the repository's
 **default** stack — `docker compose up` at the repo root brings it up. See
 the root README's [docker-operator-vs-Kubernetes-operator
 comparison](../README.md#two-ways-to-run-this-the-docker-operator-or-the-kubernetes-operator)
@@ -37,6 +38,9 @@ A single Go binary (`docker-operator`) that:
   shared Ollama daemon (with per-agent model names) or a real Anthropic
   account — chosen on the create form. See [Choosing a
   backend](#choosing-a-backend).
+- Lets each agent pick its **CLI harness** on the same form — Claude Code
+  (the default) or opencode, orthogonal to the backend except that opencode
+  is Ollama-only in v1. See [Choosing a harness](#choosing-a-harness).
 
 ## Architecture
 
@@ -72,7 +76,7 @@ A single Go binary (`docker-operator`) that:
        ┌─────────────────────────────────────────────────────────┐
        │  agent-<id>-dinernet (bridge, PRIVATE to this one agent)    │
        │                                                           │
-       │  agent-<id>            (Claude Code + tmux, on proxynet     │
+       │  agent-<id>            (the harness + tmux, on proxynet     │
        │                          AND this dinernet)                 │
        │  dind-<id>             (docker:27-dind, sysbox-runc)        │
        │  volumes: <id>-workspace, <id>-claude-config, <id>-dind-cache│
@@ -156,15 +160,21 @@ tab) restarting; it honestly does **not** survive the agent *container*
 itself stopping or restarting, unlike the Kubernetes operator's
 snapshot-based freeze/wake.
 
-The pane's actual process is `claude-supervisor.sh`
-(`docker-operator/agent/claude-supervisor.sh`), not `claude` directly: it
-auto-restarts `claude` with `--continue` whenever it exits non-zero — the
-common case being an accidental Ctrl+C landing on the foreground process
-while attached — so the terminal recovers on its own instead of sitting on
-a dead pane. A deliberate, clean exit (`/exit`) is left alone. If `claude`
-keeps failing (more than 5 times in a rolling 60s window), the supervisor
-gives up and `tmux-boot.sh`'s `remain-on-exit` takes over, leaving the pane
-dead-but-readable for inspection, same as before this wrapper existed.
+The pane's actual process is a supervisor script, not the harness CLI
+directly. For a Claude Code agent that is `claude-supervisor.sh`
+(`docker-operator/agent/claude-supervisor.sh`): it auto-restarts `claude` with
+`--continue` whenever it exits non-zero — the common case being an accidental
+Ctrl+C landing on the foreground process while attached — so the terminal
+recovers on its own instead of sitting on a dead pane. A deliberate, clean exit
+(`/exit`) is left alone. If `claude` keeps failing (more than 5 times in a
+rolling 60s window), the supervisor gives up and `tmux-boot.sh`'s
+`remain-on-exit` takes over, leaving the pane dead-but-readable for inspection,
+same as before this wrapper existed. An [opencode](#choosing-a-harness) agent
+runs `agent-opencode/opencode-supervisor.sh` instead (selected by the image's
+own `AGENT_SUPERVISOR` env var, which `tmux-boot.sh` reads): same job and the
+same 5-per-60s budget, but it restarts on **any** exit — a killed `opencode`
+reports 0, so the exit status carries no intent — and it never replays the
+first invocation's arguments, only the resumption flags.
 
 A mouse-wheel / two-finger scroll over that terminal scrolls the pane: the
 bridge execs `tmux set-option -g mouse on` before attaching, so tmux
@@ -210,7 +220,7 @@ walk matches, Refresh to re-pull, Esc to close.
 | Agent container | `docker-operator-agent-<id>` | per agent |
 | DinD sidecar container | `docker-operator-dind-<id>` | per agent |
 | Workspace volume | `docker-operator-agent-<id>-workspace` | per agent, isolated |
-| Claude config volume | `docker-operator-agent-<id>-claude-config` | per agent, isolated |
+| Harness config volume | `docker-operator-agent-<id>-claude-config` | per agent, isolated; mounted at `CLAUDE_CONFIG_DIR` for a Claude Code agent, at `XDG_DATA_HOME` (opencode's session DB) for an opencode one — the resource name is historical and harness-independent |
 | DinD image-cache volume | `docker-operator-agent-<id>-dind-cache` | per agent, isolated |
 | Private network | `docker-operator-agent-<id>-dinernet` | per agent, private |
 | Proxy network | `docker-operator-proxynet` | shared singleton (agents + shared services; **not** the operator) |
@@ -230,11 +240,11 @@ anything else on the same Docker host.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` / `default_auto_mode` (so the create form needs no second request). |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE`. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
-| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `model`, `fast_model`, `ollama_url`, `repo`, `auto_mode`). |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","harness":"claude-code"\|"opencode","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `harness` picks the CLI and defaults to `claude-code` (there is no operator-wide harness default); any other value is `400` (`invalid_param`, field `harness`, `"harness" must be "claude-code" or "opencode"`), and `"opencode"` requires the `ollama` backend — `opencode` against `anthropic`, named explicitly **or** inherited from a `DEFAULT_AGENT_BACKEND` of `anthropic`, is `400` (`invalid_param`, field `harness`, `the "opencode" harness requires the "ollama" backend`). See [Choosing a harness](#choosing-a-harness). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE` — or `AGENT_IMAGE_OPENCODE` for an `opencode` agent, which is also the repository an `image_tag` is resolved against. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `harness`, `model`, `fast_model`, `ollama_url`, `repo`, `auto_mode`). `harness` is omitted on records created before the field existed; the operator reads that as `claude-code`. |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
-| `POST` | `/api/agents/{id}/update` | In-place update: recreate **only** the agent container under the same agent ID. Body is the `POST /api/agents` body (every create-form field is editable here, including `backend` and `image_tag`). The DinD sidecar, private network, dependaproxy attachment and the three volumes are kept — so `/workspace`, the Claude config and the DinD cache all survive — but the running tmux/`claude` session ends; the new container resumes it with `claude --continue` (history is in the preserved config volume). Only a `running`/`stopped`/`error` agent is updatable (`409 not_updatable` otherwise); `404` if unknown; `400` on a bad field; a failure after the old container is gone leaves the agent `error` with its volumes intact for a retry (no auto-rollback). |
+| `POST` | `/api/agents/{id}/update` | In-place update: recreate **only** the agent container under the same agent ID. Body is the `POST /api/agents` body (every create-form field is editable here, including `backend` and `image_tag` — **except `harness`**, which is fixed at create time: a `harness` in the body is still validated, but never changes the stored record, and a body that would move an existing `opencode` agent onto `"backend":"anthropic"` is `400` on `harness`). The DinD sidecar, private network, dependaproxy attachment and the three volumes are kept — so `/workspace`, the harness config and the DinD cache all survive — but the running tmux/harness session ends; the new container resumes it with `--continue` (history is in the preserved config volume). Only a `running`/`stopped`/`error` agent is updatable (`409 not_updatable` otherwise); `404` if unknown; `400` on a bad field; a failure after the old container is gone leaves the agent `error` with its volumes intact for a retry (no auto-rollback). |
 | `GET` | `/api/files?path=` | List a file-store directory (`path=""` is the root). `501 filestore_disabled` when unconfigured. |
 | `DELETE` | `/api/files?path=` | Delete a file or directory tree. Already-gone is `200`. `""`, `"agents"` and `"shared"` are `400`. `501` when unconfigured. |
 | `GET` | `/api/files/download?path=` | Download one file (`application/octet-stream`). A directory is `400`. `501` when unconfigured. |
@@ -289,7 +299,72 @@ form:
 The backend, Ollama server and models are fixed once an agent is created
 (changing them would need the container's environment rebuilt).
 `DEFAULT_AGENT_BACKEND` sets which one the form (and an API request that
-names none) starts on.
+names none) starts on. The **Anthropic** option is unavailable to an
+[opencode](#choosing-a-harness) agent, which is Ollama-only in v1.
+
+## Choosing a harness
+
+Orthogonal to the backend (which picks the *model provider*), every agent runs
+one **CLI harness**, picked on the **New Agent** form's **Harness** radio group
+— rendered just above **Backend**:
+
+- **Claude Code** (the default) — the `claude` CLI, from
+  `agent/Dockerfile`, published as `AGENT_IMAGE`
+  (`ghcr.io/psenna/ai-sandbox-agent`). Runs on either backend.
+- **opencode** (<https://opencode.ai>) — the `opencode` TUI, from
+  `agent-opencode/Dockerfile`, published as `AGENT_IMAGE_OPENCODE`
+  (`ghcr.io/psenna/ai-sandbox-agent-opencode`). **Ollama-only in v1**:
+  selecting it hides and disables the **Anthropic account** backend option on
+  the form, and the API rejects the pair with `400 invalid_param` on
+  `harness`.
+
+There is no operator-wide harness default — nothing analogous to
+`DEFAULT_AGENT_BACKEND`, and `GET /api/agents` carries no `default_harness`.
+A create request that names no `harness` gets `claude-code`, as does an agent
+record written before the field existed.
+
+Both images are built from the same repo-root context and bake the **same five
+skills** (`use-git-proxy`, `use-dependaproxy`, `use-docker`, `implement-issue`,
+`store-file`) plus the always-loaded `agent-context/CLAUDE.md`, and share
+`entrypoint.sh` and `tmux-boot.sh` verbatim: opencode picks up
+`/workspace/CLAUDE.md` and `/workspace/.claude/skills/*` through its Claude Code
+compatibility paths, so git-proxy, DependaProxy and the DinD sidecar work
+identically under either harness. What actually differs:
+
+| | Claude Code | opencode |
+|---|---|---|
+| Image | `AGENT_IMAGE` | `AGENT_IMAGE_OPENCODE` (a per-agent `image_tag` resolves against this repository instead) |
+| Model wiring | `ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL` / `…_OPUS_` / `…_SONNET_` / `…_HAIKU_MODEL` against Ollama's Anthropic-compatible `/v1/messages` | a generated `opencode.json` passed inline as `OPENCODE_CONFIG_CONTENT` (no bind mount): an `@ai-sdk/openai-compatible` provider pointed at Ollama's **native** `<ollama_url>/v1`, with the form's two model names as `model` / `small_model` |
+| Config volume mount | `CLAUDE_CONFIG_DIR=/home/node/.claude-sandbox` | `XDG_DATA_HOME=/home/node/.local/share` (opencode's session DB) |
+| Pane process | `agent/claude-supervisor.sh` | `agent-opencode/opencode-supervisor.sh` |
+| Auto mode flag | `--permission-mode auto` | `--auto` |
+| Session resume | `--continue` (in-place update) / `--resume` (wake after a container restart) | `--continue` for both (`--resume` exits 1 on opencode) |
+| Claude Code plugin bundle | baked in | none — opencode has no such plugin system |
+| Claude-only knobs (`auto_compact_threshold`, `max_context_tokens`, `CLAUDE_CODE_ATTRIBUTION_HEADER`) | applied | not injected; the form's fields are ignored for an opencode agent |
+
+**v1 limitations** — all tracked by the epic,
+[#176](https://github.com/psenna/ai-sandbox/issues/176), which also carries the
+roadmap:
+
+- **opencode is Ollama-only.** There is no Anthropic path for it yet;
+  `harness=opencode` + `backend=anthropic` is rejected at create *and* at
+  update time.
+- **The harness is fixed at create time.** An in-place update never changes
+  it, so the update form shows the selector locked, legend **Harness (set at
+  create time)** — visible rather than hidden, so it is obvious why the
+  Anthropic backend option is missing for an opencode agent. To switch
+  harnesses, create a new agent. (The agent detail header shows the backend
+  only; that locked selector is where an existing agent's harness is visible.)
+- **The Kubernetes operator is unaffected.** `operator/` still runs Claude Code
+  only — the harness choice is a docker-operator feature.
+- **No commit-attribution parity.** Claude Code agents run with
+  `CLAUDE_CODE_ATTRIBUTION_HEADER=0`; opencode has no documented equivalent, so
+  commits an opencode agent writes carry whatever attribution opencode itself
+  adds. Tracked as a low-priority follow-up in
+  [#185](https://github.com/psenna/ai-sandbox/issues/185).
+
+The opencode image has an end-to-end smoke test of its own — see [End-to-end
+opencode smoke test](#end-to-end-opencode-smoke-test).
 
 ## Auto mode
 
@@ -454,12 +529,15 @@ at `/`.
 **4 — create an agent (needs `sysbox-runc`, see below)**
 
 Clicking **+ New Agent** in the UI — filling in the form (name, description,
-optional [repo](#choosing-a-repo), [backend](#choosing-a-backend), and for
-Ollama the server URL and two model names) — or `curl -X POST -H "Authorization: Bearer
+optional [repo](#choosing-a-repo), [harness](#choosing-a-harness),
+[backend](#choosing-a-backend), and for Ollama the server URL and two model
+names) — or `curl -X POST -H "Authorization: Bearer
 $OPERATOR_API_TOKEN" http://127.0.0.1:8000/api/agents -d '{"backend":"ollama"}'` —
 creates the two containers, three volumes and private network described in
-[Architecture](#architecture) above, then opens a live terminal running
-`claude` inside a `tmux` session. For an `anthropic` agent, set the shared
+[Architecture](#architecture) above, then opens a live terminal running the
+agent's harness (`claude`, or `opencode` for an
+[opencode agent](#choosing-a-harness): `-d '{"harness":"opencode","backend":"ollama"}'`)
+inside a `tmux` session. For an `anthropic` agent, set the shared
 credential first (sidebar **Anthropic account** panel — see [Anthropic
 login](#anthropic-login)).
 
