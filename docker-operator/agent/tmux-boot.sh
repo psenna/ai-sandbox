@@ -8,8 +8,9 @@
 # (/entrypoint.sh) runs first -- it writes the git-proxy and DependaProxy
 # configuration -- and ends in `exec "$@"`, which is how control reaches here.
 #
-# Positional args to this script are forwarded verbatim to `claude` (via
-# claude-supervisor.sh, see the new-session line below). Create passes none,
+# Positional args to this script are forwarded verbatim to the harness CLI via
+# $AGENT_SUPERVISOR (claude-supervisor.sh or opencode-supervisor.sh, see the
+# new-session line below). Create passes none,
 # so "$@" expands to nothing and the session runs a plain `claude`. The
 # in-place update flow passes "--continue" so the recreated container resumes
 # the previous Claude Code session from the preserved CLAUDE_CONFIG_DIR
@@ -41,6 +42,12 @@ set -eu
 : "${TERM:=xterm-256color}"
 export TERM
 
+# Which harness supervisor the session's pane runs. Each agent IMAGE sets
+# this (agent-opencode/Dockerfile -> opencode-supervisor.sh); the default
+# keeps the Claude Code image -- and a by-hand run of this script -- exactly
+# as it was before opencode existed.
+: "${AGENT_SUPERVISOR:=claude-supervisor.sh}"
+
 SESSION=main
 # Where the pane's output is captured. On the agent's OWN workspace volume, so
 # it outlives the tmux server, the container and the operator process, and so
@@ -67,7 +74,7 @@ OUTPUT_LOG=/workspace/.agent-output.log
 # server, apply the global option, and only then spawn the pane -- no window in
 # which the pane can die unprotected. Confirmed to survive both a normal exit
 # (pane_dead=1, status=3) and a missing binary (pane_dead=1, status=127).
-tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" claude-supervisor.sh "$@"
+tmux set-option -g remain-on-exit on \; new-session -d -s "$SESSION" "$AGENT_SUPERVISOR" "$@"
 
 # Capture everything the pane writes to a durable, unbounded file, so the
 # operator can read an agent's output programmatically (internal/wsbridge's

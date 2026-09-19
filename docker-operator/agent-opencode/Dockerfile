@@ -79,6 +79,17 @@ COPY claude-code/agent-context/CLAUDE.md                  /opt/agent-context/CLA
 COPY claude-code/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# tmux-boot.sh is shared verbatim with the Claude Code image (docker-operator/agent/Dockerfile)
+# -- it just execs a supervisor script inside tmux and is harness-agnostic via
+# the AGENT_SUPERVISOR env var, which THIS image sets below.
+COPY docker-operator/agent/tmux-boot.sh                       /usr/local/bin/tmux-boot.sh
+COPY docker-operator/agent-opencode/opencode-supervisor.sh    /usr/local/bin/opencode-supervisor.sh
+RUN chmod +x /usr/local/bin/tmux-boot.sh /usr/local/bin/opencode-supervisor.sh
+# tmux-boot.sh defaults to claude-supervisor.sh; this is where THIS image says
+# which harness its pane runs. An image-level property, so container spawn
+# code (a later issue) needs no extra env var for it.
+ENV AGENT_SUPERVISOR=opencode-supervisor.sh
+
 # Pre-create /workspace as node BEFORE switching USER: WORKDIR creates a
 # missing directory as root regardless of the active USER, and a fresh
 # workspace volume's ownership is inherited from this path via Docker's
