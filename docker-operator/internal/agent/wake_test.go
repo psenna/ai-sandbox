@@ -319,7 +319,7 @@ func TestReconcile_DindExitsImmediately_RetriedUntilHealthy(t *testing.T) {
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 	wrapped := &flakyContainerStart{Fake: f}
 	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), testOptions())
@@ -372,7 +372,7 @@ func TestReconcile_DindExitsImmediately_ExhaustsRetries_RecoversViaRecreate(t *t
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 	wrapped := &flakyContainerStart{Fake: f}
 	opts := testOptions()
@@ -420,7 +420,7 @@ func TestReconcile_DindExitsImmediately_RecreateAlsoFails_MarksError(t *testing.
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 	wrapped := &flakyContainerStart{Fake: f}
 	opts := testOptions()

@@ -305,9 +305,9 @@ func TestAgentSpec_ImagePerHarness(t *testing.T) {
 		imageOverride string
 		want          string
 	}{
-		{"default harness (\"\"), no override", "", "", testAgentImage},
+		{"default harness (\"\"), no override", "", "", testAgentImageClaudeCode},
 		{"default harness (\"\"), pinned override", "", "example.com/pinned:v1", "example.com/pinned:v1"},
-		{"claude-code, no override", config.HarnessClaudeCode, "", testAgentImage},
+		{"claude-code, no override", config.HarnessClaudeCode, "", testAgentImageClaudeCode},
 		{"claude-code, pinned override", config.HarnessClaudeCode, "example.com/pinned:v2", "example.com/pinned:v2"},
 		{"opencode, no override", config.HarnessOpenCode, "", testAgentImageOpenCode},
 		{"opencode, pinned override", config.HarnessOpenCode, "example.com/pinned-oc:v1", "example.com/pinned-oc:v1"},

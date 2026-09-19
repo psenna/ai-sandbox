@@ -10,7 +10,7 @@
 // Everything else defaults to something usable on a single local host: the
 // agent cap
 // (MAX_AGENTS), the HTTP listen address (LISTEN_ADDR), the BoltDB path
-// (STATE_DB_PATH), the agent image (AGENT_IMAGE), the shared network names
+// (STATE_DB_PATH), the agent image repository (AGENT_IMAGE_CLAUDECODE), the shared network names
 // (PROXYNET_NAME/DBNET_NAME), the DinD sidecar's runtime (DOCKER_RUNTIME),
 // and the shared-service URLs (GIT_PROXY_*, DEPENDAPROXY_*) that
 // internal/agent templates into every agent container's environment.

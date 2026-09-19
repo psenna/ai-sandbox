@@ -15,7 +15,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
-const testAgentImage = "test-agent-image:dev"
+const testAgentImageClaudeCode = "test-agent-image:dev"
 const testAgentImageOpenCode = "test-agent-image-opencode:dev"
 
 // testConfig returns a Config that exercises every field internal/agent
@@ -24,7 +24,7 @@ const testAgentImageOpenCode = "test-agent-image-opencode:dev"
 func testConfig(maxAgents int) config.Config {
 	return config.Config{
 		MaxAgents:              maxAgents,
-		AgentImage:             testAgentImage,
+		AgentImageClaudeCode:   testAgentImageClaudeCode,
 		AgentImageOpenCode:     testAgentImageOpenCode,
 		ProxynetName:           "test-proxynet",
 		DbnetName:              "test-dbnet",
@@ -125,7 +125,7 @@ func newTestManagerCfg(t *testing.T, cfg config.Config) (*Manager, *dockerclient
 	f.AutoHealthy = true
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	f.AddImage(cfg.AgentImageOpenCode)
 	st := newTestStore(t, cfg.MaxAgents)
 	m := NewManager(f, newTestRegistry(), st, cfg, testLogger(), testOptions())

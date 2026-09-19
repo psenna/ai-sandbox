@@ -106,12 +106,12 @@ func agentImage(t *testing.T, c dockerclient.Client) string {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if _, err := c.ImageInspect(context.Background(), cfg.AgentImage); dockerclient.IsNotFound(err) {
-		t.Skipf("agent image %q is not present on this daemon; build it first (docker-operator/agent/Dockerfile, `make agent-image`): %v", cfg.AgentImage, err)
+	if _, err := c.ImageInspect(context.Background(), cfg.AgentImageClaudeCode); dockerclient.IsNotFound(err) {
+		t.Skipf("agent image %q is not present on this daemon; build it first (docker-operator/agent/Dockerfile, `make agent-image`): %v", cfg.AgentImageClaudeCode, err)
 	} else if err != nil {
-		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImage, err)
+		t.Fatalf("ImageInspect(%q): %v", cfg.AgentImageClaudeCode, err)
 	}
-	return cfg.AgentImage
+	return cfg.AgentImageClaudeCode
 }
 
 // runAgentContainer creates and starts one throwaway agent container with the

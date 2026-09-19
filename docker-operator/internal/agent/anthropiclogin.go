@@ -65,13 +65,13 @@ func (m *Manager) StartAnthropicLogin(ctx context.Context) error {
 		return fmt.Errorf("checking for an existing Anthropic-login container: %w", err)
 	}
 
-	if err := m.ensureImage(ctx, m.cfg.AgentImage); err != nil {
+	if err := m.ensureImage(ctx, m.cfg.AgentImageClaudeCode); err != nil {
 		return err
 	}
 
 	id, err := m.docker.ContainerCreate(ctx, dockerclient.ContainerSpec{
 		Name:       AnthropicLoginContainerName,
-		Image:      m.cfg.AgentImage,
+		Image:      m.cfg.AgentImageClaudeCode,
 		Entrypoint: []string{"sh", "-c", anthropicLoginScript},
 		Env:        map[string]string{"TERM": "xterm-256color", "LANG": "C.UTF-8"},
 		Labels: map[string]string{

@@ -75,7 +75,7 @@ func TestUpdate_RecreatesOnlyAgentContainer(t *testing.T) {
 	}
 
 	calls := callsAfter(f, mark)
-	newRef := RepoWithoutTag(testAgentImage) + ":20260101-000000"
+	newRef := RepoWithoutTag(testAgentImageClaudeCode) + ":20260101-000000"
 	if !hasCall(calls, dockerclienttest.OpImagePull, newRef) {
 		t.Errorf("no ImagePull for the new ref %q; calls=%v", newRef, calls)
 	}
@@ -120,7 +120,7 @@ func TestUpdate_RecreatesOnlyAgentContainer(t *testing.T) {
 func TestUpdate_ReusesALocallyPresentImage(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
-	a := createRunningAgent(t, m) // runs testAgentImage, seeded via AddImage
+	a := createRunningAgent(t, m) // runs testAgentImageClaudeCode, seeded via AddImage
 	mark := len(f.Calls())
 
 	// Any pull at all must fail the test, so wire the fake to error on one.
@@ -130,8 +130,8 @@ func TestUpdate_ReusesALocallyPresentImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update: %v (an update that keeps the operator's local image must not pull)", err)
 	}
-	if updated.Image != testAgentImage {
-		t.Errorf("Image = %q, want the operator default %q", updated.Image, testAgentImage)
+	if updated.Image != testAgentImageClaudeCode {
+		t.Errorf("Image = %q, want the operator default %q", updated.Image, testAgentImageClaudeCode)
 	}
 	if hasOp(callsAfter(f, mark), dockerclienttest.OpImagePull) {
 		t.Errorf("Update pulled an image that is already on the daemon; calls=%v", callsAfter(f, mark))
@@ -234,7 +234,7 @@ func TestUpdate_KeepsIDAndVolumeNames(t *testing.T) {
 		updated.DindCacheVolume != a.DindCacheVolume {
 		t.Errorf("volume names changed: %+v vs %+v", updated, a)
 	}
-	if updated.Image != RepoWithoutTag(testAgentImage)+":20260101-000000" {
+	if updated.Image != RepoWithoutTag(testAgentImageClaudeCode)+":20260101-000000" {
 		t.Errorf("Image = %q, want the new ref", updated.Image)
 	}
 }

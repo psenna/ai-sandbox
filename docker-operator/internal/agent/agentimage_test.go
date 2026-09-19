@@ -125,11 +125,11 @@ const hex64 = "0000000000000000000000000000000000000000000000000000000000000000"
 func TestResolveAgentImageRef(t *testing.T) {
 	m, _, _ := newTestManager(t, 1)
 
-	if got, err := m.resolveAgentImageRef("", config.HarnessClaudeCode); err != nil || got != m.cfg.AgentImage {
-		t.Errorf("resolveAgentImageRef(\"\") = (%q, %v), want (%q, nil)", got, err, m.cfg.AgentImage)
+	if got, err := m.resolveAgentImageRef("", config.HarnessClaudeCode); err != nil || got != m.cfg.AgentImageClaudeCode {
+		t.Errorf("resolveAgentImageRef(\"\") = (%q, %v), want (%q, nil)", got, err, m.cfg.AgentImageClaudeCode)
 	}
 
-	wantValid := RepoWithoutTag(m.cfg.AgentImage) + ":20260101-120000"
+	wantValid := RepoWithoutTag(m.cfg.AgentImageClaudeCode) + ":20260101-120000"
 	if got, err := m.resolveAgentImageRef("20260101-120000", config.HarnessClaudeCode); err != nil || got != wantValid {
 		t.Errorf("resolveAgentImageRef(valid) = (%q, %v), want (%q, nil)", got, err, wantValid)
 	}
@@ -224,7 +224,7 @@ func TestCreate_StampsImage(t *testing.T) {
 	f := dockerclienttest.New()
 	f.AutoHealthy = true
 	cfg := testConfig(5)
-	cfg.AgentImage = "ghcr.io/psenna/ai-sandbox-agent:latest"
+	cfg.AgentImageClaudeCode = "ghcr.io/psenna/ai-sandbox-agent:latest"
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
 	f.AddImage("ghcr.io/psenna/ai-sandbox-agent:20260101-120000")

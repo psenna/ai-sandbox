@@ -240,7 +240,7 @@ anything else on the same Docker host.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` / `default_auto_mode` (so the create form needs no second request). |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","harness":"claude-code"\|"opencode","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `harness` picks the CLI and defaults to `claude-code` (there is no operator-wide harness default); any other value is `400` (`invalid_param`, field `harness`, `"harness" must be "claude-code" or "opencode"`), and `"opencode"` requires the `ollama` backend — `opencode` against `anthropic`, named explicitly **or** inherited from a `DEFAULT_AGENT_BACKEND` of `anthropic`, is `400` (`invalid_param`, field `harness`, `the "opencode" harness requires the "ollama" backend`). See [Choosing a harness](#choosing-a-harness). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE` — or `AGENT_IMAGE_OPENCODE` for an `opencode` agent, which is also the repository an `image_tag` is resolved against. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","harness":"claude-code"\|"opencode","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `harness` picks the CLI and defaults to `claude-code` (there is no operator-wide harness default); any other value is `400` (`invalid_param`, field `harness`, `"harness" must be "claude-code" or "opencode"`), and `"opencode"` requires the `ollama` backend — `opencode` against `anthropic`, named explicitly **or** inherited from a `DEFAULT_AGENT_BACKEND` of `anthropic`, is `400` (`invalid_param`, field `harness`, `the "opencode" harness requires the "ollama" backend`). See [Choosing a harness](#choosing-a-harness). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE_CLAUDECODE` — or `AGENT_IMAGE_OPENCODE` for an `opencode` agent, which is also the repository an `image_tag` is resolved against. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
 | `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `harness`, `model`, `fast_model`, `ollama_url`, `repo`, `auto_mode`). `harness` is omitted on records created before the field existed; the operator reads that as `claude-code`. |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
@@ -309,8 +309,8 @@ one **CLI harness**, picked on the **New Agent** form's **Harness** radio group
 — rendered just above **Backend**:
 
 - **Claude Code** (the default) — the `claude` CLI, from
-  `agent/Dockerfile`, published as `AGENT_IMAGE`
-  (`ghcr.io/psenna/ai-sandbox-agent`). Runs on either backend.
+  `agent/Dockerfile`, published as `AGENT_IMAGE_CLAUDECODE`
+  (`ghcr.io/psenna/ai-sandbox-agent`, tag resolved separately). Runs on either backend.
 - **opencode** (<https://opencode.ai>) — the `opencode` TUI, from
   `agent-opencode/Dockerfile`, published as `AGENT_IMAGE_OPENCODE`
   (`ghcr.io/psenna/ai-sandbox-agent-opencode`). **Ollama-only in v1**:
@@ -333,7 +333,7 @@ identically under either harness. What actually differs:
 
 | | Claude Code | opencode |
 |---|---|---|
-| Image | `AGENT_IMAGE` | `AGENT_IMAGE_OPENCODE` (a per-agent `image_tag` resolves against this repository instead) |
+| Image | `AGENT_IMAGE_CLAUDECODE` | `AGENT_IMAGE_OPENCODE` (a per-agent `image_tag` resolves against this repository instead) |
 | Model wiring | `ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL` / `…_OPUS_` / `…_SONNET_` / `…_HAIKU_MODEL` against Ollama's Anthropic-compatible `/v1/messages` | a generated `opencode.json` passed inline as `OPENCODE_CONFIG_CONTENT` (no bind mount): an `@ai-sdk/openai-compatible` provider pointed at Ollama's **native** `<ollama_url>/v1`, with the form's two model names as `model` / `small_model` |
 | Config volume mount | `CLAUDE_CONFIG_DIR=/home/node/.claude-sandbox` | `XDG_DATA_HOME=/home/node/.local/share` (opencode's session DB) |
 | Pane process | `agent/claude-supervisor.sh` | `agent-opencode/opencode-supervisor.sh` |
@@ -541,17 +541,18 @@ inside a `tmux` session. For an `anthropic` agent, set the shared
 credential first (sidebar **Anthropic account** panel — see [Anthropic
 login](#anthropic-login)).
 
-The agent image (`AGENT_IMAGE`, default
-`ghcr.io/psenna/ai-sandbox-agent:latest`) is pulled on first use — it is
-published to GHCR by
+The agent image repository (`AGENT_IMAGE_CLAUDECODE`, default
+`ghcr.io/psenna/ai-sandbox-agent`; the tag is resolved separately, not baked
+into this setting) is pulled on first use — it is published to GHCR by
 [`.github/workflows/docker-operator-agent-image.yml`](../.github/workflows/docker-operator-agent-image.yml)
 on every `docker-operator/agent/**` change to `main`, tagged with a UTC
-date-time plus `:latest`. Pin a date-time tag in `.env` for a reproducible
-default, or run `make agent-image` to build and shadow `:latest` locally.
-An agent whose harness is `opencode` instead runs `AGENT_IMAGE_OPENCODE`
-(default `ghcr.io/psenna/ai-sandbox-agent-opencode:latest`); a per-agent
-`image_tag` override still applies to whichever of the two repositories the
-agent's harness selects. This opencode image is published by the same
+date-time plus `:latest`. Create agents with an explicit `image_tag` for a
+reproducible pin, or run `make agent-image` to build and shadow `:latest`
+locally. An agent whose harness is `opencode` instead runs
+`AGENT_IMAGE_OPENCODE` (default `ghcr.io/psenna/ai-sandbox-agent-opencode`,
+also a bare repository); a per-agent `image_tag` override still applies to
+whichever of the two repositories the agent's harness selects. This opencode
+image is published by the same
 [`docker-operator-agent-image.yml`](../.github/workflows/docker-operator-agent-image.yml)
 workflow's `agent-image-opencode` job, and has its own `make
 agent-image-opencode` / `make agent-image-opencode-smoke` Makefile targets
@@ -562,10 +563,9 @@ The operator polls the registry for those date-time tags
 `AGENT_IMAGE_REGISTRY_TOKEN` override the derived registry root / supply a
 Bearer for a private repo) and surfaces them in the sidebar **Agent image**
 panel and a per-agent dropdown on the create form. Creating an agent with a
-non-default tag stamps the resolved reference on its record (`image`). Pin
-`AGENT_IMAGE` to a `:YYYYMMDD-HHMMSS` tag — or create agents with an explicit
-tag — so the per-agent upgrade prompts planned in follow-up issues have a
-known starting point.
+non-default tag stamps the resolved reference on its record (`image`). Create
+agents with an explicit `:YYYYMMDD-HHMMSS` `image_tag` so the per-agent
+upgrade prompts planned in follow-up issues have a known starting point.
 
 **This step needs `sysbox-runc` installed on the Docker host** (unprivileged
 Docker-in-Docker for the agent's own DinD sidecar; see

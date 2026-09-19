@@ -158,10 +158,10 @@ func checkCreateCallOrder(t *testing.T, f *dockerclienttest.Fake, m *Manager, go
 	t.Helper()
 	wantPrefix := []dockerclienttest.Call{
 		{Op: dockerclienttest.OpImageInspect, Target: dindImage},
-		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImage},
+		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImageClaudeCode},
 		// stampImageID's own inspect, right after ensureImages, to record
 		// store.Agent.ImageID.
-		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImage},
+		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImageClaudeCode},
 		{Op: dockerclienttest.OpVolumeCreate, Target: want.workspace},
 		{Op: dockerclienttest.OpVolumeCreate, Target: want.claudeConfig},
 		{Op: dockerclienttest.OpVolumeCreate, Target: want.dindCache},
@@ -257,7 +257,7 @@ func TestCreate_ImagePullOnlyWhenMissing(t *testing.T) {
 	f.AutoHealthy = true
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
-	f.AddImage(cfg.AgentImage) // only the agent image is pre-seeded; dindImage is missing
+	f.AddImage(cfg.AgentImageClaudeCode) // only the agent image is pre-seeded; dindImage is missing
 	st := newTestStore(t, 5)
 	m := NewManager(f, nil, st, cfg, testLogger(), testOptions())
 
@@ -273,7 +273,7 @@ func TestCreate_ImagePullOnlyWhenMissing(t *testing.T) {
 		switch c.Target {
 		case dindImage:
 			pulledDind = true
-		case cfg.AgentImage:
+		case cfg.AgentImageClaudeCode:
 			pulledAgent = true
 		}
 	}
@@ -352,7 +352,7 @@ func TestCreate_DindNeverHealthy_TimeoutRollback(t *testing.T) {
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 	m := NewManager(f, nil, st, cfg, testLogger(), testOptions())
 
@@ -427,7 +427,7 @@ func TestCreate_RollbackSurvivesCancelledContext(t *testing.T) {
 	cfg := testConfig(5)
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
-	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 
 	ctx, cancel := context.WithCancel(context.Background())

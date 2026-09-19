@@ -25,10 +25,10 @@ import (
 const (
 	defaultMaxAgents = 5
 
-	defaultListenAddr         = ":8080"
-	defaultStateDBPath        = "/var/lib/docker-operator/state.db"
-	defaultAgentImage         = "ghcr.io/psenna/ai-sandbox-agent:latest"
-	defaultAgentImageOpenCode = "ghcr.io/psenna/ai-sandbox-agent-opencode:latest"
+	defaultListenAddr           = ":8080"
+	defaultStateDBPath          = "/var/lib/docker-operator/state.db"
+	defaultAgentImageClaudeCode = "ghcr.io/psenna/ai-sandbox-agent"
+	defaultAgentImageOpenCode   = "ghcr.io/psenna/ai-sandbox-agent-opencode"
 
 	defaultProxynetName = "docker-operator-proxynet"
 	defaultDbnetName    = "docker-operator-dbnet"
@@ -96,6 +96,23 @@ const (
 
 // ValidHarness reports whether s is one of the two supported harness names.
 func ValidHarness(s string) bool { return s == HarnessClaudeCode || s == HarnessOpenCode }
+
+// NormalizeHarness canonicalises a harness name: HarnessOpenCode for
+// "opencode", HarnessClaudeCode for anything else -- including "" (a record
+// written before the Harness field existed) and an unrecognised value. This
+// is the ONE place "empty means claude-code" is decided, so no caller can
+// derive a third bucket (a third registry client, a third bbolt key).
+func NormalizeHarness(s string) string {
+	if s == HarnessOpenCode {
+		return HarnessOpenCode
+	}
+	return HarnessClaudeCode
+}
+
+// Harnesses returns every supported harness, in the fixed order the API and
+// the UI present them. A fresh slice per call: callers must not be able to
+// reorder a package-level one.
+func Harnesses() []string { return []string{HarnessClaudeCode, HarnessOpenCode} }
 
 // HarnessSupportsBackend reports whether a harness can run against a backend.
 // v1 rule, in ONE place so the API's early request check and internal/agent's
@@ -204,24 +221,27 @@ type Config struct {
 	// its parent directory.
 	StateDBPath string
 
-	// AgentImage is the image reference for agent containers -- the variant
-	// built by docker-operator/agent/Dockerfile (issue #67), which adds tmux
-	// and trims the K8s-operator-only skills. Defaults to
-	// ghcr.io/psenna/ai-sandbox-agent:latest, published by
+	// AgentImageClaudeCode is the image REPOSITORY for agent containers
+	// running the HarnessClaudeCode harness -- the variant built by
+	// docker-operator/agent/Dockerfile (issue #67), which adds tmux and trims
+	// the K8s-operator-only skills. A bare repository, no tag: the tag an
+	// agent runs is chosen per-agent (a create request's image_tag) or
+	// resolved from the host, never baked in here -- see Validate. Defaults
+	// to ghcr.io/psenna/ai-sandbox-agent, published by
 	// .github/workflows/docker-operator-agent-image.yml (which also pushes an
-	// immutable :<UTC date-time> tag); override with that pinned tag for
-	// reproducibility, or shadow :latest with a local `make agent-image`.
-	AgentImage string
+	// immutable <UTC date-time> tag).
+	AgentImageClaudeCode string
 
-	// AgentImageOpenCode is the image reference for agent containers running
+	// AgentImageOpenCode is the image REPOSITORY for agent containers running
 	// the HarnessOpenCode harness -- the variant built by
-	// docker-operator/agent-opencode/Dockerfile (issue #186). AgentImage
-	// stays the claude-code image regardless of this field: which of the two
-	// a given agent uses is decided per agent by its resolved harness (see
-	// internal/agent's agentImageFor), never by this config alone. A
-	// per-agent ImageTag override still substitutes into whichever repo the
-	// agent's harness selects. Defaults to
-	// ghcr.io/psenna/ai-sandbox-agent-opencode:latest.
+	// docker-operator/agent-opencode/Dockerfile (issue #186).
+	// AgentImageClaudeCode stays the claude-code repository regardless of
+	// this field: which of the two a given agent uses is decided per agent
+	// by its resolved harness (see internal/agent's agentImageFor, and
+	// AgentImageFor below), never by this config alone. Also a bare
+	// repository, no tag -- see Validate. A per-agent ImageTag override still
+	// substitutes into whichever repo the agent's harness selects. Defaults
+	// to ghcr.io/psenna/ai-sandbox-agent-opencode.
 	AgentImageOpenCode string
 
 	// AgentImageRefreshInterval is how often the operator polls the registry
@@ -232,7 +252,7 @@ type Config struct {
 	AgentImageRefreshInterval time.Duration
 
 	// AgentImageRegistryURL overrides the registry root the tag poll talks to.
-	// Empty (the default) derives it from AgentImage's domain
+	// Empty (the default) derives it from AgentImageClaudeCode's domain
 	// (https://<domain>, with docker.io special-cased). When set it must be an
 	// http or https URL.
 	AgentImageRegistryURL string
@@ -398,6 +418,17 @@ type Config struct {
 // cmd/docker-operator opens no filestore.Store.
 func (c Config) FilestoreEnabled() bool { return c.FilestoreDir != "" }
 
+// AgentImageFor returns the image REPOSITORY for harness: AgentImageOpenCode
+// for HarnessOpenCode, else AgentImageClaudeCode. The single source of the
+// harness->repository mapping for the agent-image discovery/upgrade-check
+// subsystem.
+func (c Config) AgentImageFor(harness string) string {
+	if NormalizeHarness(harness) == HarnessOpenCode {
+		return c.AgentImageOpenCode
+	}
+	return c.AgentImageClaudeCode
+}
+
 // Load parses args (typically os.Args[1:]) into a Config, falling back to
 // the environment (via getenv) and then to built-in defaults for any flag
 // not explicitly set on the command line.
@@ -447,12 +478,12 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&c.StateDBPath, "state-db-path",
 		envOr(getenv, "STATE_DB_PATH", defaultStateDBPath),
 		"path to the BoltDB file holding agent records (env STATE_DB_PATH)")
-	fs.StringVar(&c.AgentImage, "agent-image",
-		envOr(getenv, "AGENT_IMAGE", defaultAgentImage),
-		"container image for agent containers (env AGENT_IMAGE)")
+	fs.StringVar(&c.AgentImageClaudeCode, "agent-image-claudecode",
+		envOr(getenv, "AGENT_IMAGE_CLAUDECODE", defaultAgentImageClaudeCode),
+		"bare image repository for agent containers running the claude-code harness; no tag, which is chosen per-agent or resolved from the host (env AGENT_IMAGE_CLAUDECODE)")
 	fs.StringVar(&c.AgentImageOpenCode, "agent-image-opencode",
 		envOr(getenv, "AGENT_IMAGE_OPENCODE", defaultAgentImageOpenCode),
-		"container image for agent containers running the opencode harness (env AGENT_IMAGE_OPENCODE)")
+		"bare image repository for agent containers running the opencode harness; no tag, which is chosen per-agent or resolved from the host (env AGENT_IMAGE_OPENCODE)")
 	fs.DurationVar(&c.AgentImageRefreshInterval, "agent-image-refresh-interval",
 		imageRefreshInterval,
 		"how often to poll the registry for the agent image's published tags; clamped up to 1m by the operator (env AGENT_IMAGE_REFRESH_INTERVAL)")
@@ -621,11 +652,11 @@ func (c Config) validateLimitsAndPaths() error {
 	if strings.HasSuffix(c.StateDBPath, "/") {
 		return fmt.Errorf("state-db-path: %q ends in a separator, want a file path not a directory", c.StateDBPath)
 	}
-	if c.AgentImage == "" {
-		return fmt.Errorf("agent-image: must not be empty")
+	if err := validateImageRepo("agent-image-claudecode", c.AgentImageClaudeCode); err != nil {
+		return err
 	}
-	if c.AgentImageOpenCode == "" {
-		return fmt.Errorf("agent-image-opencode: must not be empty")
+	if err := validateImageRepo("agent-image-opencode", c.AgentImageOpenCode); err != nil {
+		return err
 	}
 	if c.DockerRuntime == "" {
 		return fmt.Errorf("docker-runtime: must not be empty")
@@ -767,6 +798,26 @@ func validateHostPort(field, addr string) error {
 	}
 	if n < 0 || n > 65535 {
 		return fmt.Errorf("%s: port %d is out of range 0-65535", field, n)
+	}
+	return nil
+}
+
+// validateImageRepo checks that ref is a bare image repository -- no :tag and
+// no @digest -- since the tag an agent runs is chosen per-agent or resolved
+// from the host, never baked into the operator's configuration. Care is taken
+// not to misparse a registry port (host:5000/team/img) as a tagged reference:
+// only a colon whose remainder contains no slash is a tag.
+func validateImageRepo(flagName, ref string) error {
+	if ref == "" {
+		return fmt.Errorf("%s: must not be empty", flagName)
+	}
+	if strings.Contains(ref, "@") {
+		return fmt.Errorf("%s: must be a bare repository with no %q digest (the image an agent runs is pinned per agent, not here): %q", flagName, "@sha256:", ref)
+	}
+	// A colon with a later slash is a registry port ("host:5000/team/img"),
+	// not a tag.
+	if i := strings.LastIndex(ref, ":"); i >= 0 && !strings.Contains(ref[i+1:], "/") {
+		return fmt.Errorf("%s: must be a bare repository with no %q tag (the image an agent runs is pinned per agent, not here): %q", flagName, ":"+ref[i+1:], ref)
 	}
 	return nil
 }
