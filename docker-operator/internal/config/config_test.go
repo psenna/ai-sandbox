@@ -616,6 +616,38 @@ func TestValidAutoMode(t *testing.T) {
 	}
 }
 
+func TestValidHarness(t *testing.T) {
+	valid := []string{HarnessClaudeCode, HarnessOpenCode}
+	for _, s := range valid {
+		if !ValidHarness(s) {
+			t.Errorf("ValidHarness(%q) = false, want true", s)
+		}
+	}
+	invalid := []string{"", "claude", "Claude-Code", "opencode ", "OPENCODE", "claude_code"}
+	for _, s := range invalid {
+		if ValidHarness(s) {
+			t.Errorf("ValidHarness(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestHarnessSupportsBackend(t *testing.T) {
+	tests := []struct {
+		harness, backend string
+		want             bool
+	}{
+		{HarnessClaudeCode, BackendOllama, true},
+		{HarnessClaudeCode, BackendAnthropic, true},
+		{HarnessOpenCode, BackendOllama, true},
+		{HarnessOpenCode, BackendAnthropic, false},
+	}
+	for _, tt := range tests {
+		if got := HarnessSupportsBackend(tt.harness, tt.backend); got != tt.want {
+			t.Errorf("HarnessSupportsBackend(%q, %q) = %v, want %v", tt.harness, tt.backend, got, tt.want)
+		}
+	}
+}
+
 func TestAutoModeString(t *testing.T) {
 	if got := AutoModeString(true); got != AutoModeOn {
 		t.Errorf("AutoModeString(true) = %q, want %q", got, AutoModeOn)

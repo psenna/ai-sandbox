@@ -129,6 +129,13 @@ type Agent struct {
 	// before this field existed; internal/agent treats empty as
 	// BackendOllama for backward compatibility.
 	Backend string `json:"backend,omitempty"`
+	// Harness is the CLI harness this agent runs: config.HarnessClaudeCode
+	// or config.HarnessOpenCode. Set once at create time from the request or
+	// the built-in claude-code default. Empty on records written before this
+	// field existed; internal/agent treats empty as HarnessClaudeCode for
+	// backward compatibility. Update deliberately leaves it alone -- an
+	// in-place update never changes an agent's harness.
+	Harness string `json:"harness,omitempty"`
 	// Model and FastModel are this agent's per-agent Ollama model names
 	// (default/opus tier, and sonnet/haiku tier). Only meaningful for a
 	// BackendOllama agent; empty for a BackendAnthropic one. Set once at
@@ -267,6 +274,7 @@ type CreateSpec struct {
 	// default) and validates them before calling Create; the store only
 	// persists what it is given.
 	Backend              string
+	Harness              string
 	Model                string
 	FastModel            string
 	OllamaURL            string
@@ -430,6 +438,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		Name:                 spec.Name,
 		Description:          spec.Description,
 		Backend:              spec.Backend,
+		Harness:              spec.Harness,
 		Model:                spec.Model,
 		FastModel:            spec.FastModel,
 		OllamaURL:            spec.OllamaURL,

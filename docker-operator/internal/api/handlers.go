@@ -214,8 +214,13 @@ type createAgentRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Backend     string `json:"backend"`
-	Model       string `json:"model"`
-	FastModel   string `json:"fast_model"`
+	// Harness is the CLI harness this agent runs: "claude-code" (the
+	// default when omitted), or "opencode". Orthogonal to Backend, but
+	// "opencode" requires the "ollama" backend -- the pair is rejected with
+	// 400 on the "harness" field.
+	Harness   string `json:"harness"`
+	Model     string `json:"model"`
+	FastModel string `json:"fast_model"`
 	// OllamaURL overrides the operator's OLLAMA_URL for this one agent (the
 	// Ollama server its model traffic is routed to). Empty falls back to that
 	// default; only valid for the ollama backend.
@@ -276,6 +281,10 @@ func validateAgentFields(req createAgentRequest) *apiErr {
 	switch {
 	case req.Backend != "" && !config.ValidBackend(req.Backend):
 		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend"}
+	case req.Harness != "" && !config.ValidHarness(req.Harness):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"harness" must be "claude-code" or "opencode"`, "harness"}
+	case req.Harness != "" && req.Backend != "" && !config.HarnessSupportsBackend(req.Harness, req.Backend):
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `the "opencode" harness requires the "ollama" backend`, "harness"}
 	case req.Backend == config.BackendAnthropic && (req.Model != "" || req.FastModel != "" || req.OllamaURL != ""):
 		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"model", "fast_model" and "ollama_url" are not valid for the anthropic backend`, "model"}
 	case req.OllamaURL != "" && !config.ValidOllamaURL(req.OllamaURL):
@@ -295,7 +304,7 @@ func validateAgentFields(req createAgentRequest) *apiErr {
 func toCreateRequest(req createAgentRequest) agent.CreateRequest {
 	return agent.CreateRequest{
 		Name: req.Name, Description: req.Description,
-		Backend: req.Backend, Model: req.Model, FastModel: req.FastModel,
+		Backend: req.Backend, Harness: req.Harness, Model: req.Model, FastModel: req.FastModel,
 		OllamaURL: req.OllamaURL, Repo: req.Repo,
 		AutoCompactThreshold: req.AutoCompactThreshold,
 		MaxContextTokens:     req.MaxContextTokens,
@@ -499,6 +508,10 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before creating an agent that uses it", "backend")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
+		case agent.IsInvalidHarness(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"harness" must be "claude-code" or "opencode"`, "harness")
+		case agent.IsIncompatibleHarness(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `the "opencode" harness requires the "ollama" backend`, "harness")
 		case agent.IsInvalidOllamaURL(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
 		case agent.IsInvalidRepo(err):
@@ -772,6 +785,10 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before switching an agent to it", "backend")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
+		case agent.IsInvalidHarness(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"harness" must be "claude-code" or "opencode"`, "harness")
+		case agent.IsIncompatibleHarness(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, `the "opencode" harness requires the "ollama" backend`, "harness")
 		case agent.IsInvalidOllamaURL(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"ollama_url" must be an http or https URL`, "ollama_url")
 		case agent.IsInvalidRepo(err):

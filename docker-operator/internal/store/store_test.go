@@ -913,6 +913,55 @@ func TestCreate_AnthropicAgentLeavesModelFieldsEmpty(t *testing.T) {
 	}
 }
 
+func TestCreate_PersistsHarness(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	spec := CreateSpec{
+		ID:      "agt_harness01",
+		Name:    "opencode-agent",
+		Backend: "ollama",
+		Harness: "opencode",
+	}
+	got, err := s.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got.Harness != "opencode" {
+		t.Fatalf("Create returned Harness = %q, want %q", got.Harness, "opencode")
+	}
+
+	// Round-trips through JSON + a reopen unchanged.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := Open(s.path, 5)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+	stored, err := s2.Get(ctx, spec.ID)
+	if err != nil {
+		t.Fatalf("Get after reopen: %v", err)
+	}
+	if stored.Harness != "opencode" {
+		t.Fatalf("after reopen Harness = %q, want %q", stored.Harness, "opencode")
+	}
+}
+
+func TestCreate_NoHarnessPersistsEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	got, err := s.Create(ctx, CreateSpec{ID: "agt_harness02"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got.Harness != "" {
+		t.Fatalf("Harness = %q, want empty (documents omitempty / pre-existing-record behaviour)", got.Harness)
+	}
+}
+
 func TestAnthropicAuth_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, 5)

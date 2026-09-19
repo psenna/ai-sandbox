@@ -29,6 +29,17 @@ var ErrNoAnthropicAuth = errors.New("no Anthropic credential is configured")
 // config.BackendOllama nor config.BackendAnthropic.
 var ErrInvalidBackend = errors.New("invalid agent backend")
 
+// ErrInvalidHarness is returned by Create for a harness that is neither
+// config.HarnessClaudeCode nor config.HarnessOpenCode.
+var ErrInvalidHarness = errors.New("invalid agent harness")
+
+// ErrIncompatibleHarness is returned by Create when the RESOLVED harness and
+// backend cannot be combined (v1: opencode + anthropic). The check must run
+// on the resolved pair, not the request's: a request that names opencode and
+// no backend at all still lands on anthropic when the operator's
+// DefaultBackend is anthropic.
+var ErrIncompatibleHarness = errors.New("incompatible agent harness and backend")
+
 // ErrInvalidRepo is returned by Create for a non-empty CreateRequest.Repo
 // that is not a plausible owner/repo(.git) reference.
 var ErrInvalidRepo = errors.New("invalid agent repo")
@@ -48,10 +59,12 @@ var ErrInvalidAutoMode = errors.New("invalid agent auto_mode")
 // IsNoAnthropicAuth / IsInvalidBackend / IsInvalidRepo / IsInvalidOllamaURL /
 // IsInvalidAutoCompactThreshold / IsInvalidAutoMode let internal/api map the
 // create-time request errors without importing the sentinels by name.
-func IsNoAnthropicAuth(err error) bool  { return errors.Is(err, ErrNoAnthropicAuth) }
-func IsInvalidBackend(err error) bool   { return errors.Is(err, ErrInvalidBackend) }
-func IsInvalidRepo(err error) bool      { return errors.Is(err, ErrInvalidRepo) }
-func IsInvalidOllamaURL(err error) bool { return errors.Is(err, ErrInvalidOllamaURL) }
+func IsNoAnthropicAuth(err error) bool     { return errors.Is(err, ErrNoAnthropicAuth) }
+func IsInvalidBackend(err error) bool      { return errors.Is(err, ErrInvalidBackend) }
+func IsInvalidHarness(err error) bool      { return errors.Is(err, ErrInvalidHarness) }
+func IsIncompatibleHarness(err error) bool { return errors.Is(err, ErrIncompatibleHarness) }
+func IsInvalidRepo(err error) bool         { return errors.Is(err, ErrInvalidRepo) }
+func IsInvalidOllamaURL(err error) bool    { return errors.Is(err, ErrInvalidOllamaURL) }
 func IsInvalidAutoCompactThreshold(err error) bool {
 	return errors.Is(err, ErrInvalidAutoCompactThreshold)
 }
@@ -307,6 +320,12 @@ type CreateRequest struct {
 	// Backend is "ollama", "anthropic", or "" to use the operator's
 	// DefaultBackend. Create validates it.
 	Backend string
+	// Harness is the CLI harness this agent runs: config.HarnessClaudeCode,
+	// config.HarnessOpenCode, or "" for the built-in default
+	// (HarnessClaudeCode -- there is no operator-wide harness default).
+	// Create validates it, and rejects a harness/backend pair the harness
+	// does not support (ErrIncompatibleHarness).
+	Harness string
 	// Model and FastModel override the operator's default Ollama models for
 	// this one agent (default/opus tier, and sonnet/haiku tier). Empty means
 	// "use the operator default". Ignored for the anthropic backend.
@@ -394,7 +413,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	// which internal/api maps to 409.
 	a, err := m.store.Create(ctx, store.CreateSpec{
 		ID: id, Name: req.Name, Description: req.Description,
-		Backend: rs.rb.kind, Model: rs.rb.model, FastModel: rs.rb.fastModel,
+		Backend: rs.rb.kind, Harness: rs.harness, Model: rs.rb.model, FastModel: rs.rb.fastModel,
 		OllamaURL: rs.rb.ollamaURL, Repo: rs.repo,
 		AutoCompactThreshold: rs.autoCompact,
 		MaxContextTokens:     rs.maxContextTokens,
@@ -418,6 +437,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 // the resolution -- and its 4xx-mappable error space -- lives in one place.
 type resolvedSpec struct {
 	rb               resolvedBackend
+	harness          string
 	repo             string
 	autoCompact      string
 	maxContextTokens string
@@ -434,6 +454,17 @@ func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest) (resolvedS
 	rb, err := m.resolveBackend(ctx, req)
 	if err != nil {
 		return resolvedSpec{}, err
+	}
+
+	// The harness: per-agent value, else the built-in claude-code default.
+	// Checked against the RESOLVED backend, so a request that names no
+	// backend on an anthropic-default operator is still rejected.
+	harness := firstNonEmpty(req.Harness, config.HarnessClaudeCode)
+	if !config.ValidHarness(harness) {
+		return resolvedSpec{}, fmt.Errorf("%w: %q", ErrInvalidHarness, harness)
+	}
+	if !config.HarnessSupportsBackend(harness, rb.kind) {
+		return resolvedSpec{}, fmt.Errorf("%w: harness %q with backend %q", ErrIncompatibleHarness, harness, rb.kind)
 	}
 
 	// The repo: a malformed one is a bad request, not a reason to burn a slot.
@@ -469,7 +500,7 @@ func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest) (resolvedS
 	}
 	autoMode := firstNonEmpty(req.AutoMode, config.AutoModeString(m.cfg.DefaultAutoMode))
 
-	return resolvedSpec{rb: rb, repo: repo, autoCompact: autoCompact, maxContextTokens: maxContextTokens, autoMode: autoMode}, nil
+	return resolvedSpec{rb: rb, harness: harness, repo: repo, autoCompact: autoCompact, maxContextTokens: maxContextTokens, autoMode: autoMode}, nil
 }
 
 // resolveBackend turns a CreateRequest's backend fields + the operator config
