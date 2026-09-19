@@ -128,11 +128,14 @@ func checkCreateLabels(t *testing.T, f *dockerclienttest.Fake, got store.Agent, 
 // Create used.
 func checkCmdWiring(t *testing.T, m *Manager, got store.Agent) {
 	t.Helper()
-	spec := m.agentSpec(got, resolvedBackend{
+	spec, err := m.agentSpec(got, resolvedBackend{
 		kind:      config.BackendOllama,
 		model:     m.cfg.AgentModel,
 		fastModel: m.cfg.AgentFastModel,
 	})
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
 	if len(spec.Cmd) != 1 || spec.Cmd[0] != tmuxBootPath {
 		t.Errorf("agent ContainerSpec.Cmd = %v, want [%q]", spec.Cmd, tmuxBootPath)
 	}
@@ -501,7 +504,10 @@ func TestCreate_AutoMode_ResolvesAndValidates(t *testing.T) {
 	if inherited.AutoMode != config.AutoModeOn {
 		t.Errorf("AutoMode = %q, want %q (the operator default)", inherited.AutoMode, config.AutoModeOn)
 	}
-	spec := m.agentSpec(inherited, resolvedBackend{kind: inherited.Backend}, autoModeArgs(inherited)...)
+	spec, err := m.agentSpec(inherited, resolvedBackend{kind: inherited.Backend}, autoModeArgs(inherited)...)
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
 	if len(spec.Cmd) != 3 || spec.Cmd[1] != "--permission-mode" || spec.Cmd[2] != "auto" {
 		t.Errorf("Cmd = %v, want [%q --permission-mode auto]", spec.Cmd, tmuxBootPath)
 	}

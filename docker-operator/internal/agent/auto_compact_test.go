@@ -18,19 +18,28 @@ func TestAgentEnv_AutoCompactThreshold(t *testing.T) {
 
 	t.Run("a resolved value is injected", func(t *testing.T) {
 		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n", AutoCompactThreshold: "85"}
-		env := m.agentEnv(a, rb)
+		env, err := m.agentEnv(a, rb)
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "CLAUDE_AUTO_COMPACT_THRESHOLD", "85")
 	})
 
 	t.Run("a resolved max-context value is injected as CLAUDE_CODE_MAX_CONTEXT_TOKENS", func(t *testing.T) {
 		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n", MaxContextTokens: "200000"}
-		env := m.agentEnv(a, rb)
+		env, err := m.agentEnv(a, rb)
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", "200000")
 	})
 
 	t.Run("an empty value omits the variable entirely", func(t *testing.T) {
 		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
-		env := m.agentEnv(a, rb)
+		env, err := m.agentEnv(a, rb)
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		for _, name := range []string{"CLAUDE_AUTO_COMPACT_THRESHOLD", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"} {
 			if _, ok := env[name]; ok {
 				t.Errorf("env[%s] present, want absent when the value is empty", name)

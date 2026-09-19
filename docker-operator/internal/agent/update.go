@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -105,7 +106,20 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("updating agent %q: %w", id, err)
 	}
-	newRef, err := m.resolveAgentImageRef(req.ImageTag)
+
+	// Update never changes an agent's harness (see the record-preservation
+	// note below), but a request can still change ONLY the backend to
+	// something the record's harness cannot run -- e.g. an opencode agent
+	// updated to backend=anthropic. resolveSpec's own check runs against
+	// req.Harness (always "" here, since UpdateRequest never sends a harness),
+	// which resolves to config.HarnessClaudeCode and so never catches this;
+	// checking harnessOf(a) -- the RECORD's harness -- against the resolved
+	// backend closes that gap.
+	if h := harnessOf(a); !config.HarnessSupportsBackend(h, rs.rb.kind) {
+		return store.Agent{}, fmt.Errorf("updating agent %q: %w: harness %q with backend %q", id, ErrIncompatibleHarness, h, rs.rb.kind)
+	}
+
+	newRef, err := m.resolveAgentImageRef(req.ImageTag, harnessOf(a))
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("updating agent %q: %w", id, err)
 	}
@@ -210,7 +224,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	if err := m.ensureAgentFiles(ctx, a); err != nil {
 		return m.failUpdate(ctx, &a, err)
 	}
-	if err := m.startAgentContainer(ctx, &a, rs.rb, append(autoModeArgs(a), "--continue")...); err != nil {
+	if err := m.startAgentContainer(ctx, &a, rs.rb, firstInvocationArgs(a, sessionContinue)...); err != nil {
 		return m.failUpdate(ctx, &a, err)
 	}
 	if err := m.waitTmuxSession(ctx, a); err != nil {

@@ -118,20 +118,25 @@ func RepoWithoutTag(ref string) string {
 }
 
 // resolveAgentImageRef turns a per-agent CreateRequest.ImageTag into the
-// concrete image reference the agent should run:
+// concrete image reference the agent should run, against the operator's
+// default image for harness (agentImageFor):
 //
-//   - "" => the operator's configured AgentImage, verbatim.
-//   - a syntactically valid tag => the operator image's repository with that
-//     tag substituted in. The tag is NOT checked against the discovered list.
+//   - "" => that harness's operator-configured default image, verbatim.
+//   - a syntactically valid tag => that image's repository with the tag
+//     substituted in. The tag is NOT checked against the discovered list.
 //   - anything else => ErrInvalidImageTag.
-func (m *Manager) resolveAgentImageRef(tag string) (string, error) {
+//
+// Create passes the request's resolved harness; Update passes the record's
+// existing harness (harnessOf(a)), since Update never changes it.
+func (m *Manager) resolveAgentImageRef(tag, harness string) (string, error) {
+	base := m.agentImageFor(harness)
 	if tag == "" {
-		return m.cfg.AgentImage, nil
+		return base, nil
 	}
 	if !imageTagRE.MatchString(tag) {
 		return "", fmt.Errorf("%w: %q", ErrInvalidImageTag, tag)
 	}
-	return RepoWithoutTag(m.cfg.AgentImage) + ":" + tag, nil
+	return RepoWithoutTag(base) + ":" + tag, nil
 }
 
 // RefreshAgentImageTags polls the registry for the agent image's tags and

@@ -29,13 +29,19 @@ func TestAgentEnv_Repo(t *testing.T) {
 
 	t.Run("GITHUB_REPO comes from the agent record, not the config", func(t *testing.T) {
 		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n", Repo: "acme/widget.git"}
-		env := m.agentEnv(a, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f"})
+		env, err := m.agentEnv(a, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f"})
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "GITHUB_REPO", "acme/widget.git")
 	})
 
 	t.Run("a bare agent gets an empty GITHUB_REPO", func(t *testing.T) {
 		a := store.Agent{ID: "a", ContainerName: "c", WorkspaceVolume: "w", ClaudeConfigVolume: "cc", DinernetName: "n"}
-		env := m.agentEnv(a, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f"})
+		env, err := m.agentEnv(a, resolvedBackend{kind: config.BackendOllama, model: "o", fastModel: "f"})
+		if err != nil {
+			t.Fatalf("agentEnv: %v", err)
+		}
 		wantEq(t, env, "GITHUB_REPO", "")
 	})
 }

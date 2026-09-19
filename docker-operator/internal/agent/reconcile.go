@@ -200,16 +200,19 @@ func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) (
 //
 // The agent container, when it needs restarting, is NOT simply `docker
 // start`ed: a stopped container's ENTRYPOINT/Cmd -- including whatever
-// claude session-resumption arg it was created or last updated with --
-// replays unchanged on a plain start, and tmux itself does not survive the
+// session-resumption arg it was created or last updated with -- replays
+// unchanged on a plain start, and tmux itself does not survive the
 // container stopping (its server dies with the container's PID 1), so a
 // plain restart would boot a brand new tmux session anyway, just with a
-// possibly-stale claude arg. Instead the agent container is recreated
+// possibly-stale harness arg. Instead the agent container is recreated
 // exactly like an in-place Update -- same volumes, same network, same
-// DinD sidecar, same agent ID -- but with "--resume" so the fresh session
-// picks the agent's previous Claude Code conversation back up from the
-// preserved CLAUDE_CONFIG_DIR volume, the same way "--continue" does for an
-// explicit Update.
+// DinD sidecar, same agent ID -- but with firstInvocationArgs(a,
+// sessionResume) so the fresh session picks the agent's previous conversation
+// back up from the preserved config volume. The resumption flag itself is
+// harness-dependent: claude-code takes "--resume" here (this old tmux
+// session did not survive), but opencode takes "--continue" -- opencode's
+// "--resume" exits 1 immediately -- exactly like firstInvocationArgs decides
+// for sessionContinue on an explicit Update.
 //
 // Any failure marks the record StatusError (never tearing anything down --
 // exactly failUpdate's contract, which this mirrors): the workspace, Claude-
@@ -265,7 +268,7 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 		m.markWakeError(ctx, a.ID, err)
 		return false, err
 	}
-	if err := m.startAgentContainer(ctx, &a, rb, append(autoModeArgs(a), "--resume")...); err != nil {
+	if err := m.startAgentContainer(ctx, &a, rb, firstInvocationArgs(a, sessionResume)...); err != nil {
 		m.markWakeError(ctx, a.ID, fmt.Errorf("starting the agent container: %w", err))
 		return false, err
 	}

@@ -16,6 +16,7 @@ import (
 )
 
 const testAgentImage = "test-agent-image:dev"
+const testAgentImageOpenCode = "test-agent-image-opencode:dev"
 
 // testConfig returns a Config that exercises every field internal/agent
 // reads, with values distinct enough from any real default that a test
@@ -24,6 +25,7 @@ func testConfig(maxAgents int) config.Config {
 	return config.Config{
 		MaxAgents:              maxAgents,
 		AgentImage:             testAgentImage,
+		AgentImageOpenCode:     testAgentImageOpenCode,
 		ProxynetName:           "test-proxynet",
 		DbnetName:              "test-dbnet",
 		GithubRepo:             "psenna/test.git",
@@ -124,6 +126,7 @@ func newTestManagerCfg(t *testing.T, cfg config.Config) (*Manager, *dockerclient
 	newDependaproxy(t, f, cfg.DependaproxyContainer)
 	f.AddImage(dindImage)
 	f.AddImage(cfg.AgentImage)
+	f.AddImage(cfg.AgentImageOpenCode)
 	st := newTestStore(t, cfg.MaxAgents)
 	m := NewManager(f, newTestRegistry(), st, cfg, testLogger(), testOptions())
 	return m, f, st

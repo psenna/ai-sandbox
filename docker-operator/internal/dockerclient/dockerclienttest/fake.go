@@ -274,6 +274,24 @@ func (f *Fake) Containers() []dockerclient.Container {
 	return out
 }
 
+// ContainerSpecOf returns the ContainerSpec a container was CREATED with,
+// found by ID or name, so a test can assert on what a flow actually handed
+// the daemon (Cmd, Env, Mounts) instead of re-deriving it and asserting on
+// its own copy -- which would keep passing if the flow itself regressed.
+// The second result is false when no such container exists.
+//
+// The returned spec is a shallow copy: its slices and maps are the Fake's
+// own, and a test must treat them as read-only.
+func (f *Fake) ContainerSpecOf(idOrName string) (dockerclient.ContainerSpec, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(idOrName)
+	if !ok {
+		return dockerclient.ContainerSpec{}, false
+	}
+	return c.spec, true
+}
+
 // AddImage seeds ref as present on the daemon, as if it had already been
 // pulled or built locally. ImageInspect(ref) succeeds and ContainerCreate
 // accepts ref as Image once RequireImages is enabled.

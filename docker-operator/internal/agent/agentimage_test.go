@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/registry"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/registry/registrytest"
@@ -124,16 +125,16 @@ const hex64 = "0000000000000000000000000000000000000000000000000000000000000000"
 func TestResolveAgentImageRef(t *testing.T) {
 	m, _, _ := newTestManager(t, 1)
 
-	if got, err := m.resolveAgentImageRef(""); err != nil || got != m.cfg.AgentImage {
+	if got, err := m.resolveAgentImageRef("", config.HarnessClaudeCode); err != nil || got != m.cfg.AgentImage {
 		t.Errorf("resolveAgentImageRef(\"\") = (%q, %v), want (%q, nil)", got, err, m.cfg.AgentImage)
 	}
 
 	wantValid := RepoWithoutTag(m.cfg.AgentImage) + ":20260101-120000"
-	if got, err := m.resolveAgentImageRef("20260101-120000"); err != nil || got != wantValid {
+	if got, err := m.resolveAgentImageRef("20260101-120000", config.HarnessClaudeCode); err != nil || got != wantValid {
 		t.Errorf("resolveAgentImageRef(valid) = (%q, %v), want (%q, nil)", got, err, wantValid)
 	}
 
-	if _, err := m.resolveAgentImageRef("bad tag!!"); !IsInvalidImageTag(err) {
+	if _, err := m.resolveAgentImageRef("bad tag!!", config.HarnessClaudeCode); !IsInvalidImageTag(err) {
 		t.Errorf("resolveAgentImageRef(invalid) err = %v, want IsInvalidImageTag", err)
 	}
 }
@@ -240,7 +241,11 @@ func TestCreate_StampsImage(t *testing.T) {
 	if got.Image != wantRef {
 		t.Errorf("record Image = %q, want %q", got.Image, wantRef)
 	}
-	if spec := m.agentSpec(got, resolvedBackend{kind: "ollama"}); spec.Image != wantRef {
+	spec, err := m.agentSpec(got, resolvedBackend{kind: "ollama"})
+	if err != nil {
+		t.Fatalf("agentSpec: %v", err)
+	}
+	if spec.Image != wantRef {
 		t.Errorf("agentSpec Image = %q, want %q", spec.Image, wantRef)
 	}
 	inspectedTag := false
