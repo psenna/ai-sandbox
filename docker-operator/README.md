@@ -473,7 +473,11 @@ default, or run `make agent-image` to build and shadow `:latest` locally.
 An agent whose harness is `opencode` instead runs `AGENT_IMAGE_OPENCODE`
 (default `ghcr.io/psenna/ai-sandbox-agent-opencode:latest`); a per-agent
 `image_tag` override still applies to whichever of the two repositories the
-agent's harness selects.
+agent's harness selects. This opencode image is published by the same
+[`docker-operator-agent-image.yml`](../.github/workflows/docker-operator-agent-image.yml)
+workflow's `agent-image-opencode` job, and has its own `make
+agent-image-opencode` / `make agent-image-opencode-smoke` Makefile targets
+(see [Development](#development) below).
 
 The operator polls the registry for those date-time tags
 (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`; `AGENT_IMAGE_REGISTRY_URL` /
@@ -543,4 +547,22 @@ See the [Makefile](Makefile) for every check CI runs (`vet`, `fmt-check`,
 disposable containers (see the Makefile's header comment); no host
 toolchain is assumed. `make agent-image` builds the agent image locally;
 `make agent-image-smoke` checks its contents without needing
-`AGENT_TOKEN`/`GITHUB_REPO` or a writable workspace.
+`AGENT_TOKEN`/`GITHUB_REPO` or a writable workspace. The opencode harness has
+the same pair of targets: `make agent-image-opencode` builds
+`docker-operator/agent-opencode/Dockerfile` locally, and `make
+agent-image-opencode-smoke` checks its contents the same way.
+
+### End-to-end opencode smoke test
+
+`hack/opencode-e2e.sh` (`make opencode-e2e`) exercises a real opencode+Ollama
+agent against the four acceptance-criteria bullets tracked by the epic tying
+`use-git-proxy`/`use-dependaproxy`/`use-docker`/session-resume together: image
+boot + baked context, each of the three skills actually working against a
+real proxy/daemon, a real edit pushed through git-proxy's policy gates, and
+session continuity across a container kill/resume. It is meant for a
+properly-provisioned host (sysbox-runc, a real docker-operator stack or a
+standalone container setup, and Ollama running a model capable of finishing a
+tool call within a timeout) — run on a lesser-provisioned host, several of
+its checks gracefully **SKIP** with a printed reason instead of failing, and
+the final summary table shows PASS/SKIP/FAIL per bullet. See the script's own
+header comment for the exact environment gaps that trigger a SKIP.
