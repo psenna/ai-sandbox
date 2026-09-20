@@ -15,7 +15,11 @@
 		maxAgents: 0,
 		selectedID: null,
 		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '', autoMode: 'on' },
-		agentImage: { tags: [], newest: '', operatorDefault: '', checkedAt: null, lastError: '' },
+		// agentImage is render.js's by-harness map (harnessImageTags): one
+		// entry per harness, each with its own repo/default tag/offered tags/
+		// last-checked/last-error. render.js is loaded before app.js (see
+		// index.html), so building the empty map here is safe.
+		agentImage: window.Render.harnessImageTags(null),
 		// templates caches GET /api/templates's list for the create form's
 		// template picker. Only relevant while that form is open, so it is
 		// fetched lazily from showCreateForm rather than at load time.
@@ -124,10 +128,7 @@
 	function currentForm() { return mainArea.querySelector('.create-form'); }
 
 	function buildFormDefaults() {
-		return Object.assign({}, state.defaults, {
-			imageTags: state.agentImage.tags,
-			imageDefaultTag: state.agentImage.operatorDefault,
-		});
+		return Object.assign({}, state.defaults, { agentImage: state.agentImage });
 	}
 
 	function currentBackendOf(form) {
@@ -180,6 +181,27 @@
 		});
 		syncBackendAndHarness();
 
+		// syncImageTagSelect re-renders the image-tag <select> for whichever
+		// harness is selected right now -- with NO network request: state
+		// .agentImage already holds every harness's tag list from the 3s poll.
+		// The tag the user picked survives the switch ONLY when the newly
+		// selected harness actually offers it (the two repositories publish
+		// independent tag histories); otherwise the new harness's own default
+		// is selected. Mirrors syncBackendAndHarness above: a `change` handler
+		// on the harness radios, re-running render.js's pure renderer rather
+		// than mutating options by hand. The select carries no listeners of its
+		// own, so replacing it outright is safe.
+		function syncImageTagSelect() {
+			var sel = form.querySelector('.create-form__image-tag');
+			if (!sel) return;
+			var info = window.Render.imageTagsForHarness(state.agentImage, currentHarnessOf(form));
+			var keep = window.Render.imageTagOffered(info, sel.value) ? sel.value : '';
+			sel.outerHTML = window.Render.renderImageTagSelect('create-form__image-tag', info.tags, info.defaultTag, keep);
+		}
+		form.querySelectorAll('input[name="harness"]').forEach(function (el) {
+			el.addEventListener('change', syncImageTagSelect);
+		});
+
 		form.querySelector('.create-form__cancel').addEventListener('click', function () {
 			showPlaceholder();
 		});
@@ -213,10 +235,12 @@
 			// apply".
 			var autoMode = form.querySelector('.create-form__auto-mode').value;
 			if (autoMode) body.auto_mode = autoMode;
-			// The image-tag <select>'s first option is the operator default;
-			// only send image_tag when the user picked something else.
+			// The image-tag <select>'s selection only needs sending when it
+			// differs from THIS HARNESS's own default tag (each harness has
+			// its own default -- issue #199).
 			var sel = form.querySelector('.create-form__image-tag');
-			if (sel && sel.value && sel.value !== state.agentImage.operatorDefault) body.image_tag = sel.value;
+			var harnessDefaultTag = window.Render.imageTagsForHarness(state.agentImage, body.harness).defaultTag;
+			if (sel && sel.value && sel.value !== harnessDefaultTag) body.image_tag = sel.value;
 			if (backend === 'ollama') {
 				body.model = form.querySelector('.create-form__model').value.trim();
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();
@@ -262,7 +286,8 @@
 			ollama_url: '',
 		};
 		var sel = form.querySelector('.create-form__image-tag');
-		if (sel && sel.value && sel.value !== state.agentImage.operatorDefault) fields.image_tag = sel.value;
+		var harnessDefaultTag = window.Render.imageTagsForHarness(state.agentImage, currentHarnessOf(form)).defaultTag;
+		if (sel && sel.value && sel.value !== harnessDefaultTag) fields.image_tag = sel.value;
 		if (backend === 'ollama') {
 			fields.model = form.querySelector('.create-form__model').value.trim();
 			fields.fast_model = form.querySelector('.create-form__fast-model').value.trim();
@@ -466,14 +491,7 @@
 	// --- agent image panel -------------------------------------------------
 
 	function mapAgentImage(data) {
-		data = data || {};
-		state.agentImage = {
-			tags: data.tags || [],
-			newest: data.newest || '',
-			operatorDefault: data.operator_default || '',
-			checkedAt: data.checked_at || null,
-			lastError: data.last_error || '',
-		};
+		state.agentImage = window.Render.harnessImageTags(data);
 	}
 
 	function renderAgentImagePanelNow() {
