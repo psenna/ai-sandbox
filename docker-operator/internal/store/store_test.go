@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -745,8 +746,8 @@ func TestEveryMethodHonoursACancelledContext(t *testing.T) {
 		{"GetAnthropicAuth", func() error { _, _, err := s.GetAnthropicAuth(ctx); return err }},
 		{"SetAnthropicAuth", func() error { return s.SetAnthropicAuth(ctx, AnthropicKindAPIKey, "x") }},
 		{"ClearAnthropicAuth", func() error { return s.ClearAnthropicAuth(ctx) }},
-		{"GetAgentImageTags", func() error { _, _, err := s.GetAgentImageTags(ctx); return err }},
-		{"SetAgentImageTags", func() error { return s.SetAgentImageTags(ctx, AgentImageTags{}) }},
+		{"GetAgentImageTags", func() error { _, _, err := s.GetAgentImageTags(ctx, "claude-code"); return err }},
+		{"SetAgentImageTags", func() error { return s.SetAgentImageTags(ctx, "claude-code", AgentImageTags{}) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1045,17 +1046,17 @@ func TestAgentImageTags_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, 5)
 
-	if _, ok, err := s.GetAgentImageTags(ctx); err != nil || ok {
+	if _, ok, err := s.GetAgentImageTags(ctx, "claude-code"); err != nil || ok {
 		t.Fatalf("GetAgentImageTags on a fresh store = (_, %v, %v), want (_, false, nil)", ok, err)
 	}
 
 	checked := time.Date(2026, 9, 10, 8, 0, 0, 0, time.UTC)
 	want := AgentImageTags{Tags: []string{"20260910-070000", "20260909-120000"}, CheckedAt: checked}
-	if err := s.SetAgentImageTags(ctx, want); err != nil {
+	if err := s.SetAgentImageTags(ctx, "claude-code", want); err != nil {
 		t.Fatalf("SetAgentImageTags: %v", err)
 	}
 
-	got, ok, err := s.GetAgentImageTags(ctx)
+	got, ok, err := s.GetAgentImageTags(ctx, "claude-code")
 	if err != nil || !ok {
 		t.Fatalf("GetAgentImageTags after set = (_, %v, %v), want (_, true, nil)", ok, err)
 	}
@@ -1075,7 +1076,7 @@ func TestAgentImageTags_RoundTrip(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = s2.Close() })
-	if got, ok, err := s2.GetAgentImageTags(ctx); err != nil || !ok || len(got.Tags) != 2 {
+	if got, ok, err := s2.GetAgentImageTags(ctx, "claude-code"); err != nil || !ok || len(got.Tags) != 2 {
 		t.Fatalf("after reopen GetAgentImageTags = (%+v, %v, %v), want the stored snapshot", got, ok, err)
 	}
 }
@@ -1084,14 +1085,14 @@ func TestAgentImageTags_ReplacesWholesale(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t, 5)
 
-	if err := s.SetAgentImageTags(ctx, AgentImageTags{Tags: []string{"a", "b", "c"}, CheckedAt: time.Now().UTC()}); err != nil {
+	if err := s.SetAgentImageTags(ctx, "claude-code", AgentImageTags{Tags: []string{"a", "b", "c"}, CheckedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("SetAgentImageTags (first): %v", err)
 	}
-	if err := s.SetAgentImageTags(ctx, AgentImageTags{Tags: []string{"b"}, CheckedAt: time.Now().UTC(), LastError: "boom"}); err != nil {
+	if err := s.SetAgentImageTags(ctx, "claude-code", AgentImageTags{Tags: []string{"b"}, CheckedAt: time.Now().UTC(), LastError: "boom"}); err != nil {
 		t.Fatalf("SetAgentImageTags (second): %v", err)
 	}
 
-	got, _, err := s.GetAgentImageTags(ctx)
+	got, _, err := s.GetAgentImageTags(ctx, "claude-code")
 	if err != nil {
 		t.Fatalf("GetAgentImageTags: %v", err)
 	}
@@ -1100,6 +1101,109 @@ func TestAgentImageTags_ReplacesWholesale(t *testing.T) {
 	}
 	if got.LastError != "boom" {
 		t.Errorf("LastError = %q, want %q", got.LastError, "boom")
+	}
+}
+
+// TestAgentImageTags_PerHarnessIsolation proves claude-code's and opencode's
+// snapshots are two independent bbolt keys: setting one never disturbs the
+// other, a later overwrite of one leaves the other untouched, and both
+// survive a Close+reopen of the store.
+func TestAgentImageTags_PerHarnessIsolation(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	claudeTags := AgentImageTags{Tags: []string{"20260910-070000"}, CheckedAt: time.Date(2026, 9, 10, 7, 0, 0, 0, time.UTC)}
+	openCodeTags := AgentImageTags{Tags: []string{"20260911-080000"}, CheckedAt: time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)}
+
+	if err := s.SetAgentImageTags(ctx, "claude-code", claudeTags); err != nil {
+		t.Fatalf("SetAgentImageTags(claude-code): %v", err)
+	}
+	if err := s.SetAgentImageTags(ctx, "opencode", openCodeTags); err != nil {
+		t.Fatalf("SetAgentImageTags(opencode): %v", err)
+	}
+
+	if got, ok, err := s.GetAgentImageTags(ctx, "claude-code"); err != nil || !ok || !reflect.DeepEqual(got, claudeTags) {
+		t.Fatalf("GetAgentImageTags(claude-code) = (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, claudeTags)
+	}
+	if got, ok, err := s.GetAgentImageTags(ctx, "opencode"); err != nil || !ok || !reflect.DeepEqual(got, openCodeTags) {
+		t.Fatalf("GetAgentImageTags(opencode) = (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, openCodeTags)
+	}
+
+	// Overwriting claude-code must not touch opencode's snapshot.
+	claudeTags2 := AgentImageTags{Tags: []string{"20260912-090000"}, CheckedAt: time.Date(2026, 9, 12, 9, 0, 0, 0, time.UTC)}
+	if err := s.SetAgentImageTags(ctx, "claude-code", claudeTags2); err != nil {
+		t.Fatalf("SetAgentImageTags(claude-code) overwrite: %v", err)
+	}
+	if got, ok, err := s.GetAgentImageTags(ctx, "claude-code"); err != nil || !ok || !reflect.DeepEqual(got, claudeTags2) {
+		t.Fatalf("GetAgentImageTags(claude-code) after overwrite = (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, claudeTags2)
+	}
+	if got, ok, err := s.GetAgentImageTags(ctx, "opencode"); err != nil || !ok || !reflect.DeepEqual(got, openCodeTags) {
+		t.Fatalf("GetAgentImageTags(opencode) after claude-code overwrite = (%+v, %v, %v), want it unchanged at (%+v, true, nil)", got, ok, err, openCodeTags)
+	}
+
+	// Both survive a Close+reopen.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := Open(s.path, 5)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+	if got, ok, err := s2.GetAgentImageTags(ctx, "claude-code"); err != nil || !ok || !reflect.DeepEqual(got, claudeTags2) {
+		t.Fatalf("after reopen GetAgentImageTags(claude-code) = (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, claudeTags2)
+	}
+	if got, ok, err := s2.GetAgentImageTags(ctx, "opencode"); err != nil || !ok || !reflect.DeepEqual(got, openCodeTags) {
+		t.Fatalf("after reopen GetAgentImageTags(opencode) = (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, openCodeTags)
+	}
+}
+
+// TestAgentImageTags_ClaudeCodeUsesTheLegacyKey is the explicit no-migration
+// regression guard: claude-code's snapshot must live under the original,
+// harness-less "agent_image_tags" key so that a pre-harness-aware binary (or
+// one after a downgrade) still finds it.
+func TestAgentImageTags_ClaudeCodeUsesTheLegacyKey(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	tags := AgentImageTags{Tags: []string{"20260910-070000"}, CheckedAt: time.Date(2026, 9, 10, 7, 0, 0, 0, time.UTC)}
+	if err := s.SetAgentImageTags(ctx, "claude-code", tags); err != nil {
+		t.Fatalf("SetAgentImageTags: %v", err)
+	}
+
+	var got AgentImageTags
+	if err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketSettings)
+		if b == nil {
+			return fmt.Errorf("the %q bucket is missing", bucketSettings)
+		}
+		raw := b.Get([]byte("agent_image_tags"))
+		if raw == nil {
+			return errors.New("no value stored under the literal legacy key \"agent_image_tags\"")
+		}
+		return json.Unmarshal(raw, &got)
+	}); err != nil {
+		t.Fatalf("reading the raw legacy key: %v", err)
+	}
+	if !reflect.DeepEqual(got, tags) {
+		t.Errorf("value under the legacy key = %+v, want %+v", got, tags)
+	}
+}
+
+// TestAgentImageTags_UnknownHarnessIsClaudeCode proves any harness string
+// other than exactly "opencode" is treated as claude-code, matching
+// agentImageTagsKey's fallback rule.
+func TestAgentImageTags_UnknownHarnessIsClaudeCode(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, 5)
+
+	tags := AgentImageTags{Tags: []string{"20260910-070000"}, CheckedAt: time.Date(2026, 9, 10, 7, 0, 0, 0, time.UTC)}
+	if err := s.SetAgentImageTags(ctx, "totally-bogus", tags); err != nil {
+		t.Fatalf("SetAgentImageTags(totally-bogus): %v", err)
+	}
+
+	if got, ok, err := s.GetAgentImageTags(ctx, "claude-code"); err != nil || !ok || !reflect.DeepEqual(got, tags) {
+		t.Fatalf("GetAgentImageTags(claude-code) after setting an unknown harness = (%+v, %v, %v), want (%+v, true, nil)", got, ok, err, tags)
 	}
 }
 

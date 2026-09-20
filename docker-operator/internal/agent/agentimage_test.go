@@ -149,7 +149,7 @@ func TestRefreshAgentImageTags_StoresFilteredSortedDesc(t *testing.T) {
 		t.Fatalf("RefreshAgentImageTags: %v", err)
 	}
 
-	got, ok, err := st.GetAgentImageTags(context.Background())
+	got, ok, err := st.GetAgentImageTags(context.Background(), "claude-code")
 	if err != nil || !ok {
 		t.Fatalf("GetAgentImageTags = (_, %v, %v)", ok, err)
 	}
@@ -170,7 +170,7 @@ func TestRefreshAgentImageTags_KeepsLastListOnError(t *testing.T) {
 	ctx := context.Background()
 
 	seed := store.AgentImageTags{Tags: []string{"20260101-120000", "20251231-090000"}}
-	if err := st.SetAgentImageTags(ctx, seed); err != nil {
+	if err := st.SetAgentImageTags(ctx, "claude-code", seed); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestRefreshAgentImageTags_KeepsLastListOnError(t *testing.T) {
 		t.Fatalf("RefreshAgentImageTags err = %v, want it to wrap registry.ErrOffline", err)
 	}
 
-	got, _, gerr := st.GetAgentImageTags(ctx)
+	got, _, gerr := st.GetAgentImageTags(ctx, "claude-code")
 	if gerr != nil {
 		t.Fatalf("GetAgentImageTags: %v", gerr)
 	}
@@ -201,14 +201,14 @@ func TestRefreshAgentImageTags_NilRegistry(t *testing.T) {
 	ctx := context.Background()
 
 	seed := store.AgentImageTags{Tags: []string{"20260101-120000"}}
-	if err := st.SetAgentImageTags(ctx, seed); err != nil {
+	if err := st.SetAgentImageTags(ctx, "claude-code", seed); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
 	if err := m.RefreshAgentImageTags(ctx); err != nil {
 		t.Fatalf("RefreshAgentImageTags with a nil registry = %v, want nil", err)
 	}
-	got, _, err := st.GetAgentImageTags(ctx)
+	got, _, err := st.GetAgentImageTags(ctx, "claude-code")
 	if err != nil {
 		t.Fatalf("GetAgentImageTags: %v", err)
 	}
