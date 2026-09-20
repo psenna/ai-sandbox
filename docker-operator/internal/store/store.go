@@ -294,7 +294,28 @@ var (
 
 	keySettingsAnthropicAuth  = []byte("anthropic_auth")
 	keySettingsAgentImageTags = []byte("agent_image_tags")
+
+	// The agent-image tag snapshot is per harness. claude-code deliberately
+	// keeps the ORIGINAL, harness-less key, so the snapshot written by every
+	// version before harness-aware discovery is read back verbatim as the
+	// claude-code one -- no migration, and an older binary reading this file
+	// after a downgrade still finds its key where it left it.
+	keySettingsAgentImageTagsOpenCode = []byte("agent_image_tags_opencode")
 )
+
+// harnessOpenCode duplicates config.HarnessOpenCode's value on purpose:
+// internal/store depends on no other internal package.
+const harnessOpenCode = "opencode"
+
+// agentImageTagsKey maps a harness to its snapshot key. Anything that is not
+// exactly harnessOpenCode -- "", "claude-code", a future typo -- maps to the
+// claude-code key, so an unexpected value can never create a third key.
+func agentImageTagsKey(harness string) []byte {
+	if harness == harnessOpenCode {
+		return keySettingsAgentImageTagsOpenCode
+	}
+	return keySettingsAgentImageTags
+}
 
 const (
 	// dbFileMode is the mode Open creates the database file with. It is the
@@ -673,9 +694,10 @@ func (s *Store) ClearAnthropicAuth(ctx context.Context) error {
 }
 
 // AgentImageTags is the operator's last-known snapshot of the agent image's
-// published tags. It is a process-wide singleton (not per agent), refreshed
-// on a timer by internal/agent's Manager, which is also what fills CheckedAt
-// -- the store stamps nothing and validates nothing here.
+// published tags: one snapshot per harness (the two agent-image repositories
+// are polled independently); still not per agent. It is refreshed on a timer
+// by internal/agent's Manager, which is also what fills CheckedAt -- the
+// store stamps nothing and validates nothing here.
 type AgentImageTags struct {
 	// Tags is the discovered tag list, already filtered and sorted by the
 	// Manager before it is stored.
@@ -688,10 +710,11 @@ type AgentImageTags struct {
 	LastError string `json:"last_error,omitempty"`
 }
 
-// GetAgentImageTags returns the stored agent-image tag snapshot. The bool is
-// false (and AgentImageTags is the zero value) when no refresh has ever been
-// recorded.
-func (s *Store) GetAgentImageTags(ctx context.Context) (AgentImageTags, bool, error) {
+// GetAgentImageTags returns the stored agent-image tag snapshot for harness
+// (see agentImageTagsKey for how harness maps to a key). The bool is false
+// (and AgentImageTags is the zero value) when no refresh has ever been
+// recorded for that harness.
+func (s *Store) GetAgentImageTags(ctx context.Context, harness string) (AgentImageTags, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return AgentImageTags{}, false, err
 	}
@@ -704,7 +727,7 @@ func (s *Store) GetAgentImageTags(ctx context.Context) (AgentImageTags, bool, er
 		if b == nil {
 			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
 		}
-		raw := b.Get(keySettingsAgentImageTags)
+		raw := b.Get(agentImageTagsKey(harness))
 		if raw == nil {
 			return nil
 		}
@@ -721,9 +744,10 @@ func (s *Store) GetAgentImageTags(ctx context.Context) (AgentImageTags, bool, er
 }
 
 // SetAgentImageTags stores (replacing any existing) the agent-image tag
-// snapshot wholesale, so tags the registry no longer publishes are pruned.
-// No validation and no timestamp stamping: the Manager supplies CheckedAt.
-func (s *Store) SetAgentImageTags(ctx context.Context, tags AgentImageTags) error {
+// snapshot wholesale for harness, so tags the registry no longer publishes
+// are pruned. No validation and no timestamp stamping: the Manager supplies
+// CheckedAt.
+func (s *Store) SetAgentImageTags(ctx context.Context, harness string, tags AgentImageTags) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -736,7 +760,7 @@ func (s *Store) SetAgentImageTags(ctx context.Context, tags AgentImageTags) erro
 		if b == nil {
 			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
 		}
-		return b.Put(keySettingsAgentImageTags, raw)
+		return b.Put(agentImageTagsKey(harness), raw)
 	})
 }
 

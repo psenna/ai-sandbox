@@ -145,7 +145,8 @@ func (m *Manager) resolveAgentImageRef(tag, harness string) (string, error) {
 // previous Tags with an advanced CheckedAt and a LastError, and -- for a real
 // poll error -- returns it wrapped.
 func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
-	prev, _, prevErr := m.store.GetAgentImageTags(ctx)
+	// TODO(#198): thread the real per-agent harness through here instead of hardcoding claude-code.
+	prev, _, prevErr := m.store.GetAgentImageTags(ctx, "claude-code")
 	if prevErr != nil {
 		// Best-effort: an unreadable snapshot is treated as "no previous
 		// list" (the write below then replaces whatever is there), but the
@@ -155,7 +156,7 @@ func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
 	now := time.Now().UTC()
 
 	if m.registry == nil {
-		return m.store.SetAgentImageTags(ctx, store.AgentImageTags{
+		return m.store.SetAgentImageTags(ctx, "claude-code", store.AgentImageTags{
 			Tags:      prev.Tags,
 			CheckedAt: now,
 			LastError: "registry client not configured",
@@ -164,7 +165,7 @@ func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
 
 	raw, err := m.registry.ListTags(ctx)
 	if err != nil {
-		if serr := m.store.SetAgentImageTags(ctx, store.AgentImageTags{
+		if serr := m.store.SetAgentImageTags(ctx, "claude-code", store.AgentImageTags{
 			Tags:      prev.Tags,
 			CheckedAt: now,
 			LastError: err.Error(),
@@ -176,7 +177,7 @@ func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
 		return fmt.Errorf("refreshing agent image tags: %w", err)
 	}
 
-	return m.store.SetAgentImageTags(ctx, store.AgentImageTags{
+	return m.store.SetAgentImageTags(ctx, "claude-code", store.AgentImageTags{
 		Tags:      SortTagsNewestFirst(FilterDateTimeTags(raw)),
 		CheckedAt: now,
 	})
@@ -185,5 +186,6 @@ func (m *Manager) RefreshAgentImageTags(ctx context.Context) error {
 // AgentImageTags returns the stored agent-image tag snapshot. The bool is
 // false when no refresh has ever completed.
 func (m *Manager) AgentImageTags(ctx context.Context) (store.AgentImageTags, bool, error) {
-	return m.store.GetAgentImageTags(ctx)
+	// TODO(#198): thread the real per-agent harness through here instead of hardcoding claude-code.
+	return m.store.GetAgentImageTags(ctx, "claude-code")
 }
