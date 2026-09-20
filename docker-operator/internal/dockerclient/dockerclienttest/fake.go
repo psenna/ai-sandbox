@@ -59,6 +59,7 @@ const (
 	OpEvents            Op = "Events"
 	OpImageInspect      Op = "ImageInspect"
 	OpImagePull         Op = "ImagePull"
+	OpImageList         Op = "ImageList"
 )
 
 // Call is one recorded invocation of a Fake method. Target is the object the
@@ -818,6 +819,38 @@ func (f *Fake) ImagePull(ctx context.Context, ref string) error {
 	defer f.mu.Unlock()
 	f.images[ref] = struct{}{}
 	return nil
+}
+
+// ImageList returns the seeded images (from AddImage or ImagePull) whose
+// repository is repo, using the same "a colon with no later slash is the tag
+// separator" rule the real client applies. An empty repo returns every
+// seeded image.
+func (f *Fake) ImageList(ctx context.Context, repo string) ([]dockerclient.Image, error) {
+	if err := f.call(OpImageList, repo); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []dockerclient.Image
+	for ref := range f.images {
+		if repo != "" && fakeRepoOf(ref) != repo {
+			continue
+		}
+		out = append(out, dockerclient.Image{ID: "sha256:" + ref, RepoTags: []string{ref}})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RepoTags[0] < out[j].RepoTags[0] })
+	return out, nil
+}
+
+// fakeRepoOf returns the repository part of a seeded image reference (the
+// part before the tag-separating colon), mirroring the real client's rule
+// that a colon with a later slash is a registry port, not a tag separator.
+func fakeRepoOf(ref string) string {
+	i := strings.LastIndex(ref, ":")
+	if i <= 0 || strings.Contains(ref[i+1:], "/") {
+		return ref
+	}
+	return ref[:i]
 }
 
 // Events streams events matching filter to a fresh subscriber. One goroutine

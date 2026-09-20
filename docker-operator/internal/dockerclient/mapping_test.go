@@ -59,6 +59,51 @@ func TestLabelFilter(t *testing.T) {
 	}
 }
 
+func TestReferenceFilter(t *testing.T) {
+	if f := referenceFilter(""); f != nil {
+		t.Errorf("referenceFilter(\"\") = %#v, want nil", f)
+	}
+	f := referenceFilter("myapp")
+	if f == nil {
+		t.Fatal("referenceFilter(myapp) = nil, want a filter")
+	}
+	if !f["reference"]["myapp:*"] {
+		t.Errorf("reference terms = %v, want to contain myapp:*", f["reference"])
+	}
+}
+
+func TestKeepRepoTags(t *testing.T) {
+	if got := keepRepoTags("myapp", nil); got != nil {
+		t.Errorf("keepRepoTags(nil) = %#v, want nil", got)
+	}
+
+	in := []string{
+		"myapp:v1",
+		"myapp:v2",
+		"myapp-other:v1", // same-named prefix, different repo -- must be excluded
+		"otherapp:v1",
+		"<none>:<none>", // dangling -- must be dropped
+		"registry.example.com:5000/myapp:v1",
+	}
+	got := keepRepoTags("myapp", in)
+	want := []string{"myapp:v1", "myapp:v2"}
+	if !equalStrings(got, want) {
+		t.Errorf("keepRepoTags(myapp) = %v, want %v", got, want)
+	}
+
+	// An empty repo keeps every genuinely tagged entry, dropping only the
+	// dangling "<none>:<none>" form.
+	gotAll := keepRepoTags("", in)
+	wantAll := []string{"myapp:v1", "myapp:v2", "myapp-other:v1", "otherapp:v1", "registry.example.com:5000/myapp:v1"}
+	if !equalStrings(gotAll, wantAll) {
+		t.Errorf("keepRepoTags(\"\") = %v, want %v", gotAll, wantAll)
+	}
+
+	if got := keepRepoTags("unknown/repo", in); got != nil {
+		t.Errorf("keepRepoTags(unknown repo) = %v, want nil", got)
+	}
+}
+
 func TestEventFilter(t *testing.T) {
 	if f := eventFilter(EventFilter{}); f != nil {
 		t.Errorf("eventFilter(empty) = %#v, want nil", f)

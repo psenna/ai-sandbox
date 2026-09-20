@@ -412,4 +412,46 @@ var conformanceCases = []conformanceCase{
 			t.Errorf("ContainerInspect(missing) err = %v, want IsNotFound", err)
 		}
 	}},
+
+	{name: "ImageListScopedByRepo", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+		const repo = "alpine"
+
+		// The suite already relies on alpine:latest being pullable/present
+		// for the container-lifecycle cases (see isImageNotFoundErr); reuse
+		// it here instead of pulling a second image, since this client has
+		// no ImagePull-in-test path of its own.
+		if _, err := c.ImageInspect(ctx, repo+":latest"); err != nil {
+			if dockerclient.IsNotFound(err) {
+				t.Skipf("%s:latest not available on the daemon -- run `docker pull %s:latest` first: %v", repo, repo, err)
+			}
+			t.Fatalf("ImageInspect: %v", err)
+		}
+
+		list, err := c.ImageList(ctx, repo)
+		if err != nil {
+			t.Fatalf("ImageList(%q): %v", repo, err)
+		}
+		if len(list) == 0 {
+			t.Fatalf("ImageList(%q) = empty, want at least one entry", repo)
+		}
+		for _, img := range list {
+			if len(img.RepoTags) == 0 {
+				t.Errorf("ImageList(%q) entry %+v has no RepoTags", repo, img)
+			}
+			for _, tag := range img.RepoTags {
+				if !strings.HasPrefix(tag, repo+":") {
+					t.Errorf("ImageList(%q) entry tag = %q, want prefix %q", repo, tag, repo+":")
+				}
+			}
+		}
+
+		none, err := c.ImageList(ctx, "definitely/not-a-real-repo")
+		if err != nil {
+			t.Fatalf("ImageList(unknown repo): %v", err)
+		}
+		if len(none) != 0 {
+			t.Errorf("ImageList(unknown repo) = %v, want empty", none)
+		}
+	}},
 }
