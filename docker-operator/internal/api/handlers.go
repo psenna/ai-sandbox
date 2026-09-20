@@ -75,11 +75,12 @@ type AgentManager interface {
 	DockerRuntime() string
 
 	// AgentImageTags returns the operator's last-known snapshot of the agent
-	// image's published tags (the bool is false before the first refresh
-	// completes); RefreshAgentImageTags forces a poll now. A poll error is
-	// non-fatal to the caller -- the last-known list is kept.
-	AgentImageTags(ctx context.Context) (store.AgentImageTags, bool, error)
-	RefreshAgentImageTags(ctx context.Context) error
+	// image's published tags for one harness (the bool is false before the
+	// first refresh completes); RefreshAgentImageTags forces a poll now for
+	// one harness. A poll error is non-fatal to the caller -- the last-known
+	// list is kept.
+	AgentImageTags(ctx context.Context, harness string) (store.AgentImageTags, bool, error)
+	RefreshAgentImageTags(ctx context.Context, harness string) error
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
@@ -362,7 +363,8 @@ const activityReadTimeout = 4 * time.Second
 // unavailable. The result is non-nil even for an empty input.
 func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []agentView {
 	var tags []string
-	if snap, ok, err := h.mgr.AgentImageTags(ctx); err == nil && ok {
+	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
+	if snap, ok, err := h.mgr.AgentImageTags(ctx, config.HarnessClaudeCode); err == nil && ok {
 		tags = snap.Tags
 	}
 	views := make([]agentView, len(agents))
@@ -551,7 +553,8 @@ func (h *Handler) agentImageTagsBody(info store.AgentImageTags) agentImageTagsRe
 }
 
 func (h *Handler) handleAgentImageTags(w http.ResponseWriter, r *http.Request) {
-	info, _, err := h.mgr.AgentImageTags(r.Context())
+	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
+	info, _, err := h.mgr.AgentImageTags(r.Context(), config.HarnessClaudeCode)
 	if err != nil {
 		h.internalError(w, "reading the agent image tags", err)
 		return
@@ -563,10 +566,12 @@ func (h *Handler) handleAgentImageRefresh(w http.ResponseWriter, r *http.Request
 	// A poll failure is not fatal to this request: the refresh keeps the
 	// last-known list and records the error, and the client still gets a 200
 	// with last_error populated.
-	if err := h.mgr.RefreshAgentImageTags(r.Context()); err != nil {
+	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
+	if err := h.mgr.RefreshAgentImageTags(r.Context(), config.HarnessClaudeCode); err != nil {
 		h.log.Warn("on-demand agent image tag refresh failed", "error", err)
 	}
-	info, _, err := h.mgr.AgentImageTags(r.Context())
+	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
+	info, _, err := h.mgr.AgentImageTags(r.Context(), config.HarnessClaudeCode)
 	if err != nil {
 		h.internalError(w, "reading back the agent image tags", err)
 		return

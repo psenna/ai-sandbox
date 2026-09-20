@@ -200,7 +200,7 @@ func TestUpdate_PreservesHarness(t *testing.T) {
 	// The recreated container's image must still be resolved from the
 	// RECORD's harness (opencode), not the request's (which never names a
 	// harness at all) -- proving Update calls resolveAgentImageRef with
-	// harnessOf(a), not req.Harness.
+	// HarnessOf(a), not req.Harness.
 	var found bool
 	for _, c := range f.Containers() {
 		if c.Name == updated.ContainerName {
@@ -305,11 +305,11 @@ func TestAgentSpec_ImagePerHarness(t *testing.T) {
 		imageOverride string
 		want          string
 	}{
-		{"default harness (\"\"), no override", "", "", testAgentImageClaudeCode},
+		{"default harness (\"\"), no override", "", "", RepoWithoutTag(testAgentImageClaudeCode) + ":latest"},
 		{"default harness (\"\"), pinned override", "", "example.com/pinned:v1", "example.com/pinned:v1"},
-		{"claude-code, no override", config.HarnessClaudeCode, "", testAgentImageClaudeCode},
+		{"claude-code, no override", config.HarnessClaudeCode, "", RepoWithoutTag(testAgentImageClaudeCode) + ":latest"},
 		{"claude-code, pinned override", config.HarnessClaudeCode, "example.com/pinned:v2", "example.com/pinned:v2"},
-		{"opencode, no override", config.HarnessOpenCode, "", testAgentImageOpenCode},
+		{"opencode, no override", config.HarnessOpenCode, "", RepoWithoutTag(testAgentImageOpenCode) + ":latest"},
 		{"opencode, pinned override", config.HarnessOpenCode, "example.com/pinned-oc:v1", "example.com/pinned-oc:v1"},
 	}
 	for _, tc := range cases {
@@ -334,23 +334,27 @@ func TestAgentSpec_ImagePerHarness(t *testing.T) {
 // harness's own default image repository.
 func TestResolveAgentImageRef_PerHarness(t *testing.T) {
 	m, _, _ := newTestManager(t, 5)
+	ctx := context.Background()
 	for _, harness := range []string{config.HarnessClaudeCode, config.HarnessOpenCode} {
 		t.Run(harness+": empty tag returns that harness's default image", func(t *testing.T) {
-			want := m.agentImageFor(harness)
-			got, err := m.resolveAgentImageRef("", harness)
+			// newTestManagerCfg pre-seeds the daemon with exactly
+			// m.AgentImageFor(harness) (tag included), so the local-default
+			// path resolves back to that same reference.
+			want := m.AgentImageFor(harness)
+			got, err := m.resolveAgentImageRef(ctx, "", harness)
 			if err != nil || got != want {
 				t.Errorf("resolveAgentImageRef(\"\", %q) = (%q, %v), want (%q, nil)", harness, got, err, want)
 			}
 		})
 		t.Run(harness+": a valid pinned tag substitutes into that harness's repo", func(t *testing.T) {
-			want := RepoWithoutTag(m.agentImageFor(harness)) + ":20260101-120000"
-			got, err := m.resolveAgentImageRef("20260101-120000", harness)
+			want := RepoWithoutTag(m.AgentImageFor(harness)) + ":20260101-120000"
+			got, err := m.resolveAgentImageRef(ctx, "20260101-120000", harness)
 			if err != nil || got != want {
 				t.Errorf("resolveAgentImageRef(valid, %q) = (%q, %v), want (%q, nil)", harness, got, err, want)
 			}
 		})
 		t.Run(harness+": a malformed tag is IsInvalidImageTag", func(t *testing.T) {
-			if _, err := m.resolveAgentImageRef("bad tag!!", harness); !IsInvalidImageTag(err) {
+			if _, err := m.resolveAgentImageRef(ctx, "bad tag!!", harness); !IsInvalidImageTag(err) {
 				t.Errorf("resolveAgentImageRef(invalid, %q) err = %v, want IsInvalidImageTag", harness, err)
 			}
 		})

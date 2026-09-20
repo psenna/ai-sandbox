@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,10 @@ func checkCmdWiring(t *testing.T, m *Manager, got store.Agent) {
 func checkCreateCallOrder(t *testing.T, f *dockerclienttest.Fake, m *Manager, got store.Agent, want wantNames, before int) {
 	t.Helper()
 	wantPrefix := []dockerclienttest.Call{
+		// resolveAgentImageRef's empty-tag path queries the local daemon for
+		// what it already holds (Manager.defaultImageTagFor), before anything
+		// else -- even before the MAX_AGENTS slot is reserved.
+		{Op: dockerclienttest.OpImageList, Target: RepoWithoutTag(m.cfg.AgentImageClaudeCode)},
 		{Op: dockerclienttest.OpImageInspect, Target: dindImage},
 		{Op: dockerclienttest.OpImageInspect, Target: m.cfg.AgentImageClaudeCode},
 		// stampImageID's own inspect, right after ensureImages, to record
@@ -228,7 +233,11 @@ func checkExecTriplet(t *testing.T, calls []dockerclienttest.Call, wantContainer
 }
 
 // TestCreate_AtCapacity proves a create over MAX_AGENTS is rejected before it
-// ever reaches Docker.
+// ever creates or mutates anything -- with one deliberate exception: an empty
+// ImageTag makes resolveAgentImageRef read-only query the local daemon for
+// its default tag (Manager.defaultImageTagFor) BEFORE the MAX_AGENTS slot is
+// reserved, by design (an invalid tag must not consume a slot either), so
+// exactly one read-only ImageList call is allowed through here.
 func TestCreate_AtCapacity(t *testing.T) {
 	m, f, st := newTestManager(t, 1)
 	ctx := context.Background()
@@ -245,8 +254,12 @@ func TestCreate_AtCapacity(t *testing.T) {
 	if !store.IsAtCapacity(err) {
 		t.Errorf("Create error = %v, want store.IsAtCapacity", err)
 	}
-	if after := len(f.Calls()); after != before {
-		t.Errorf("Create at capacity made %d new docker calls, want 0: %v", after-before, f.Calls()[before:])
+	calls := f.Calls()[before:]
+	wantCalls := []dockerclienttest.Call{
+		{Op: dockerclienttest.OpImageList, Target: RepoWithoutTag(m.cfg.AgentImageClaudeCode)},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("Create at capacity made docker calls %v, want exactly %v (the one read-only local-image lookup)", calls, wantCalls)
 	}
 }
 

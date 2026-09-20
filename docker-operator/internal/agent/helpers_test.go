@@ -11,12 +11,19 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/registry"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/registry/registrytest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
-const testAgentImageClaudeCode = "test-agent-image:dev"
-const testAgentImageOpenCode = "test-agent-image-opencode:dev"
+// Domain-qualified deliberately: RepoWithoutTag normalizes a domain-less
+// reference (e.g. "test-agent-image:dev") to "docker.io/library/..." via
+// distribution/reference, which would break every repo-keyed local-image
+// lookup added in #198 -- the fake daemon is seeded with these exact refs
+// (see newTestManagerCfg's f.AddImage calls), and a lookup keyed by the
+// normalized form would never match them.
+const testAgentImageClaudeCode = "test.example.com/agent-image:dev"
+const testAgentImageOpenCode = "test.example.com/agent-image-opencode:dev"
 
 // testConfig returns a Config that exercises every field internal/agent
 // reads, with values distinct enough from any real default that a test
@@ -128,15 +135,20 @@ func newTestManagerCfg(t *testing.T, cfg config.Config) (*Manager, *dockerclient
 	f.AddImage(cfg.AgentImageClaudeCode)
 	f.AddImage(cfg.AgentImageOpenCode)
 	st := newTestStore(t, cfg.MaxAgents)
-	m := NewManager(f, newTestRegistry(), st, cfg, testLogger(), testOptions())
+	m := NewManager(f, newTestRegistries(), st, cfg, testLogger(), testOptions())
 	return m, f, st
 }
 
-// newTestRegistry is the default registry.Client the test Manager is wired
-// with -- an empty fake, so RefreshAgentImageTags is exercisable without a
-// real HTTP server. Tests that care about the discovered tags set their own
-// *registrytest.Fake on the Manager instead.
-func newTestRegistry() *registrytest.Fake { return &registrytest.Fake{} }
+// newTestRegistries is the default per-harness registry.Client map the test
+// Manager is wired with -- an empty fake per harness, so RefreshAgentImageTags
+// is exercisable without a real HTTP server. Tests that care about the
+// discovered tags set their own *registrytest.Fake into m.registries instead.
+func newTestRegistries() map[string]registry.Client {
+	return map[string]registry.Client{
+		config.HarnessClaudeCode: &registrytest.Fake{},
+		config.HarnessOpenCode:   &registrytest.Fake{},
+	}
+}
 
 // resourceCounts snapshots how many volumes/networks/containers the fake
 // currently holds, so a rollback test can assert a failed create leaves the

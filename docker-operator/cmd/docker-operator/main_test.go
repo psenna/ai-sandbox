@@ -95,15 +95,17 @@ func TestWarnIfReachableFromAgents(t *testing.T) {
 // --- agent-image tag refresher -------------------------------------------
 
 type countingRefresher struct {
-	mu     sync.Mutex
-	calls  int
-	err    error
-	notify chan struct{}
+	mu      sync.Mutex
+	calls   int
+	harness string
+	err     error
+	notify  chan struct{}
 }
 
-func (c *countingRefresher) RefreshAgentImageTags(ctx context.Context) error {
+func (c *countingRefresher) RefreshAgentImageTags(ctx context.Context, harness string) error {
 	c.mu.Lock()
 	c.calls++
+	c.harness = harness
 	c.mu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -116,6 +118,12 @@ func (c *countingRefresher) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
+}
+
+func (c *countingRefresher) lastHarness() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.harness
 }
 
 func TestClampDuration(t *testing.T) {
@@ -135,7 +143,7 @@ func TestStartAgentImageRefresher_PollsOnceThenTicks(t *testing.T) {
 	log, _ := capturingLogger()
 	r := &countingRefresher{notify: make(chan struct{}, 8)}
 
-	stop := startAgentImageRefresher(r, 20*time.Millisecond, log)
+	stop := startAgentImageRefresher(r, config.HarnessOpenCode, 20*time.Millisecond, log)
 
 	// The immediate poll plus at least one tick.
 	for i := 0; i < 2; i++ {
@@ -150,6 +158,9 @@ func TestStartAgentImageRefresher_PollsOnceThenTicks(t *testing.T) {
 	stable := r.count()
 	if stable < 2 {
 		t.Fatalf("refresher ran %d times, want >= 2 (one immediate + at least one tick)", stable)
+	}
+	if got := r.lastHarness(); got != config.HarnessOpenCode {
+		t.Errorf("refresher was polled with harness %q, want %q", got, config.HarnessOpenCode)
 	}
 	// No further polls after stop.
 	time.Sleep(60 * time.Millisecond)
@@ -221,7 +232,7 @@ func TestStartAgentImageRefresher_StopIsClean(t *testing.T) {
 	log, _ := capturingLogger()
 	r := &countingRefresher{notify: make(chan struct{}, 1), err: errors.New("boom")}
 
-	stop := startAgentImageRefresher(r, time.Hour, log)
+	stop := startAgentImageRefresher(r, config.HarnessClaudeCode, time.Hour, log)
 	// Returns promptly even though the interval is an hour: the one immediate
 	// poll has run (and its error was swallowed), and stop just cancels.
 	done := make(chan struct{})
