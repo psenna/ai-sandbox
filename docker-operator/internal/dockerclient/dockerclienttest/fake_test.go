@@ -3,6 +3,7 @@ package dockerclienttest
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,6 +234,58 @@ func TestExecOutputAndExitSeeding(t *testing.T) {
 	}
 	if status.ExitCode != 3 {
 		t.Errorf("ExitCode = %d, want 3", status.ExitCode)
+	}
+}
+
+func TestImageListScopedByRepo(t *testing.T) {
+	f := New()
+	ctx := context.Background()
+
+	f.AddImage("myapp:v1")
+	f.AddImage("myapp:v2")
+	f.AddImage("myapp-other:v1") // same-named prefix, different repo
+
+	list, err := f.ImageList(ctx, "myapp")
+	if err != nil {
+		t.Fatalf("ImageList(myapp): %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ImageList(myapp) = %v, want exactly 2 entries", list)
+	}
+	if list[0].RepoTags[0] != "myapp:v1" || list[1].RepoTags[0] != "myapp:v2" {
+		t.Errorf("ImageList(myapp) = %v, want [myapp:v1 myapp:v2] (sorted)", list)
+	}
+	for _, img := range list {
+		for _, tag := range img.RepoTags {
+			if strings.HasPrefix(tag, "myapp-other") {
+				t.Errorf("ImageList(myapp) leaked %q from a different repository", tag)
+			}
+		}
+	}
+}
+
+func TestImageListUnknownRepoIsEmpty(t *testing.T) {
+	f := New()
+	ctx := context.Background()
+	f.AddImage("myapp:v1")
+
+	list, err := f.ImageList(ctx, "unknown")
+	if err != nil {
+		t.Fatalf("ImageList(unknown) = err %v, want nil", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("ImageList(unknown) = %v, want empty", list)
+	}
+}
+
+func TestImageListFailInjection(t *testing.T) {
+	f := New()
+	ctx := context.Background()
+	boom := errors.New("boom")
+
+	f.Fail(OpImageList, boom)
+	if _, err := f.ImageList(ctx, "myapp"); !errors.Is(err, boom) {
+		t.Errorf("ImageList (after Fail) = %v, want %v", err, boom)
 	}
 }
 

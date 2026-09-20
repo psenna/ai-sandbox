@@ -196,6 +196,17 @@ type ImageClient interface {
 	// either public (docker:27-dind) or built locally (the agent image), and
 	// a registry credential the operator could leak would buy nothing.
 	ImagePull(ctx context.Context, ref string) error
+
+	// ImageList returns every image on the daemon whose repository is repo
+	// (any tag). An empty repo lists every image. It never contacts a
+	// registry.
+	//
+	// "Repository" means the reference with no tag and no digest, e.g.
+	// "ghcr.io/psenna/ai-sandbox-agent". Entries the daemon returns that
+	// carry no tag inside repo (dangling "<none>:<none>" layers, other
+	// repositories a loose daemon-side filter let through) are dropped, so
+	// every returned Image has at least one RepoTags entry inside repo.
+	ImageList(ctx context.Context, repo string) ([]Image, error)
 }
 
 // Image is an image present on the daemon.
@@ -782,6 +793,24 @@ func (d *Docker) ImagePull(ctx context.Context, ref string) error {
 	return nil
 }
 
+// ImageList returns the images present on the daemon for one repository.
+func (d *Docker) ImageList(ctx context.Context, repo string) ([]Image, error) {
+	res, err := d.api.ImageList(ctx, client.ImageListOptions{Filters: referenceFilter(repo)})
+	if err != nil {
+		return nil, fmt.Errorf("listing images for repository %q: %w", repo, err)
+	}
+	out := make([]Image, 0, len(res.Items))
+	for _, s := range res.Items {
+		tags := keepRepoTags(repo, s.RepoTags)
+		if len(tags) == 0 {
+			continue
+		}
+		out = append(out, Image{ID: s.ID, RepoTags: tags})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RepoTags[0] < out[j].RepoTags[0] })
+	return out, nil
+}
+
 // DemuxStream copies a non-TTY exec stream from src, writing the process's
 // stdout to stdout and its stderr to stderr. A TTY exec stream is raw and
 // must not be passed here.
@@ -827,6 +856,49 @@ func labelFilter(labels map[string]string) client.Filters {
 		f.Add("label", k+"="+v)
 	}
 	return f
+}
+
+// referenceFilter builds the images/json "reference" filter for one
+// repository. The pattern is "<repo>:*", made explicit even though a bare
+// "<repo>" matches the same set (moby's reference.FamiliarMatch falls back to
+// matching the familiar NAME when the full pattern match fails, so a tagless
+// pattern is not "no tag" -- it's "every tag", same as ":*"). Confirmed by
+// direct experiment that this filter does real work (it also prunes the
+// RepoTags the daemon returns per image, not just which images are listed)
+// but is still not the correctness boundary: keepRepoTags re-checks every
+// entry regardless, so a daemon that ignored this filter entirely would
+// still produce correct results. An empty repo returns no filter, since
+// ImageList(ctx, "") lists every image.
+func referenceFilter(repo string) client.Filters {
+	if repo == "" {
+		return nil
+	}
+	f := make(client.Filters)
+	f.Add("reference", repo+":*")
+	return f
+}
+
+// keepRepoTags returns the entries of repoTags that name a genuine tag
+// (dropping the dangling "<none>:<none>" form a daemon-side filter can still
+// let through) and, when repo is non-empty, that belong to repo. A colon
+// with a later slash is a registry port, not a tag separator, so it is not
+// treated as one.
+func keepRepoTags(repo string, repoTags []string) []string {
+	var out []string
+	for _, rt := range repoTags {
+		if rt == "<none>:<none>" {
+			continue
+		}
+		i := strings.LastIndex(rt, ":")
+		if i <= 0 || strings.Contains(rt[i+1:], "/") {
+			continue
+		}
+		if repo != "" && rt[:i] != repo {
+			continue
+		}
+		out = append(out, rt)
+	}
+	return out
 }
 
 func eventFilter(filter EventFilter) client.Filters {
