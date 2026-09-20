@@ -57,9 +57,16 @@
 		var label = statusLabel(agent.status);
 		var selected = agent.id === selectedID ? ' agent-item--selected' : '';
 		var name = agent.name ? escapeHTML(agent.name) : '(unnamed)';
-		var upgrade = agent.upgrade_available
-			? '<span class="agent-item__upgrade" title="a newer agent image is available">⬆</span>'
-			: '';
+		// upgrade_ready is the stronger signal (a newer image of this agent's
+		// own harness is ALREADY on this host, so the update needs no pull) and
+		// wins the marker's modifier. It is not a subset of upgrade_available
+		// -- see agentView's doc comment -- so either flag alone shows a marker.
+		var upgrade = '';
+		if (agent.upgrade_ready) {
+			upgrade = '<span class="agent-item__upgrade agent-item__upgrade--ready" title="a newer agent image is already on this host">⬆</span>';
+		} else if (agent.upgrade_available) {
+			upgrade = '<span class="agent-item__upgrade" title="a newer agent image is available">⬆</span>';
+		}
 
 		var dotCls = label.cls;
 		var activityCls = '';
@@ -124,12 +131,38 @@
 		return harness !== 'opencode' || backend !== 'anthropic';
 	}
 
+	// HARNESSES mirrors config.Harnesses(): the set GET /api/agent-image/tags
+	// always returns one entry per. The order is load-bearing -- it is the
+	// order renderAgentImagePanel renders its per-harness blocks in.
+	var HARNESSES = ['claude-code', 'opencode'];
+
+	var HARNESS_LABELS = { 'claude-code': 'Claude Code', 'opencode': 'opencode' };
+
+	// normalizeHarness mirrors config.NormalizeHarness: only "opencode" is
+	// opencode; everything else -- including "" on a record written before the
+	// field existed -- is claude-code.
+	function normalizeHarness(harness) {
+		return harness === 'opencode' ? 'opencode' : 'claude-code';
+	}
+
+	// harnessLabel maps a harness id to the label the UI shows for it.
+	function harnessLabel(harness) {
+		return HARNESS_LABELS[harness] || String(harness || '');
+	}
+
 	// renderCreateForm renders the "New Agent" form -- also the "Update agent"
 	// form when opts.{title,submitLabel} say so. defaults pre-fills the backend
 	// choice, the Ollama server + two model fields and the repo from the
 	// operator's configuration (GET /api/agents' default_* fields). The Ollama
 	// server field is left blank with the operator's default shown as its
 	// placeholder, so submitting it untouched means "use the operator default".
+	//
+	// defaults.agentImage is a harnessImageTags by-harness map ({claude-code:
+	// {repo, defaultTag, newest, tags, checkedAt, lastError}, opencode: {...}}).
+	// The image-tag row is sourced from whichever harness is selected right
+	// now (see the `harness`/`imageInfo` locals below) -- each harness has its
+	// own image repository and its own default tag, so the row is re-derived
+	// per render rather than shared.
 	//
 	// opts.values, when given (the update form passes the agent record),
 	// OVERRIDES those defaults field by field so the form opens pre-filled with
@@ -193,6 +226,12 @@
 		var autoModeValue = values.auto_mode || '';
 		var operatorAutoModeLabel = defaults.autoMode === 'off' ? 'off' : 'on';
 		var selectedImageTag = values.image_tag || imageTagOf(values.image) || '';
+		// The image-tag row is keyed by the harness selected RIGHT NOW (the
+		// update form's locked harness, or claude-code by default): each
+		// harness has its own image repository, its own published tag history
+		// and its own default tag, so the options are never shared. app.js
+		// re-renders just this select on a harness change (syncImageTagSelect).
+		var imageInfo = imageTagsForHarness(defaults.agentImage, harness);
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		var nameValue = escapeHTML(values.name || '');
 		var descriptionValue = escapeHTML(values.description || '');
@@ -205,7 +244,7 @@
 					'<input class="create-form__repo" type="text" value="' + repo + '" placeholder="owner/repo.git — blank for a bare terminal">' +
 				'</label>' +
 				'<label class="create-form__row">Agent image' +
-					renderImageTagSelect('create-form__image-tag', (defaults.imageTags || []), defaults.imageDefaultTag || '', selectedImageTag) +
+					renderImageTagSelect('create-form__image-tag', imageInfo.tags, imageInfo.defaultTag, selectedImageTag) +
 				'</label>' +
 				'<label class="create-form__row">Auto-compact threshold' +
 					'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '" placeholder="Claude Code auto-compact threshold — blank to use the built-in default">' +
@@ -430,56 +469,162 @@
 		return 'checked ' + days + ' day' + (days === 1 ? '' : 's') + ' ago';
 	}
 
-	// renderImageTagSelect renders a <select> over the union of the discovered
-	// tags, the operator's default tag, and selectedTag -- de-duplicated and
-	// ordered newest-first (a plain descending string sort: chronological for
-	// the YYYYMMDD-HHMMSS date-time tags, and "latest" sorts above the digits).
-	// The operator's default keeps its natural position and is only marked
-	// "<tag> (default)"; it is not hoisted to the top. selectedTag (else the
-	// default, else "") is the selected option. Every value is escaped.
-	function renderImageTagSelect(cls, tags, operatorDefaultTag, selectedTag) {
-		var def = String(operatorDefaultTag || '');
+	// normalizeImageTagOptions accepts the API's [{tag, present}] list (and
+	// tolerates a plain ["tag", ...] array, which carries no presence
+	// information -- those count as present, so an old-shaped payload never
+	// labels every option "pull required"), drops blanks and de-duplicates by
+	// tag KEEPING THE SERVER'S ORDER: internal/agent.OfferedImageTags already
+	// orders the list (newest published date-time tags first, then every tag
+	// the host holds, then the default), and that ordering is the product
+	// decision -- re-sorting it here would float a hand-built local tag above
+	// the newest published one.
+	function normalizeImageTagOptions(tags) {
+		var seen = {};
+		var out = [];
+		(tags || []).forEach(function (t) {
+			var isString = typeof t === 'string';
+			var tag = isString ? t : String((t && t.tag) || '');
+			if (!tag || seen[tag]) return;
+			seen[tag] = true;
+			out.push({ tag: tag, present: isString ? true : !!(t && t.present) });
+		});
+		return out;
+	}
+
+	// imageTagNames returns just the tag strings of an options list, for the
+	// string-based helpers above (newestDateTimeTag/upgradeAvailable).
+	function imageTagNames(tags) {
+		return normalizeImageTagOptions(tags).map(function (o) { return o.tag; });
+	}
+
+	// harnessImageTags maps GET /api/agent-image/tags' (and POST
+	// /api/agent-image/refresh's) body -- {harnesses: {<harness>: {repo,
+	// default_tag, newest, tags: [{tag, present}], checked_at, last_error}}} --
+	// into the by-harness map the UI holds in state, with camelCase names and
+	// normalised options. Every harness of HARNESSES is always present (one the
+	// server omitted maps to an empty entry), in HARNESSES order, followed by
+	// any harness the server reported that this build doesn't know about -- so
+	// a future third harness still renders rather than silently vanishing.
+	function harnessImageTags(data) {
+		var src = (data && data.harnesses) || {};
+		var out = {};
+		function put(h) {
+			var e = src[h] || {};
+			out[h] = {
+				repo: e.repo || '',
+				defaultTag: e.default_tag || '',
+				newest: e.newest || '',
+				tags: normalizeImageTagOptions(e.tags),
+				checkedAt: e.checked_at || null,
+				lastError: e.last_error || '',
+			};
+		}
+		HARNESSES.forEach(put);
+		Object.keys(src).forEach(function (h) { if (!out[h]) put(h); });
+		return out;
+	}
+
+	// imageTagsForHarness picks one harness's entry out of a harnessImageTags
+	// map: an exact key match first (so a harness this build doesn't know still
+	// works), else the normalizeHarness fallback, else an all-blank entry. It
+	// never returns undefined and never returns a half-filled entry, so callers
+	// can read .tags/.defaultTag unconditionally.
+	function imageTagsForHarness(byHarness, harness) {
+		var map = byHarness || {};
+		var e = map[harness] || map[normalizeHarness(harness)] || {};
+		return {
+			repo: e.repo || '',
+			defaultTag: e.defaultTag || '',
+			newest: e.newest || '',
+			tags: normalizeImageTagOptions(e.tags),
+			checkedAt: e.checkedAt || null,
+			lastError: e.lastError || '',
+		};
+	}
+
+	// imageTagOffered reports whether tag is one of the options `entry` offers.
+	// entry may be a harnessImageTags entry or a bare options array. app.js uses
+	// it to decide whether the tag the user picked survives a harness switch:
+	// the two repositories publish independent tag histories, so a claude-code
+	// tag usually does NOT exist for opencode.
+	function imageTagOffered(entry, tag) {
+		var t = String(tag || '');
+		if (!t) return false;
+		var tags = Array.isArray(entry) ? entry : ((entry && entry.tags) || []);
+		return tags.some(function (o) {
+			return (typeof o === 'string' ? o : String((o && o.tag) || '')) === t;
+		});
+	}
+
+	// renderImageTagSelect renders a <select> over one harness's offered tags
+	// (GET /api/agent-image/tags' [{tag, present}] list for that harness), IN
+	// THE SERVER'S ORDER, plus defaultTag and selectedTag appended if the
+	// harness does not offer them. A tag the host does not already hold is
+	// labelled "pull required" (and carries data-pull-required="true") so the
+	// user knows choosing it makes the update wait on a registry pull; the
+	// operator default is labelled "(default)" in place, never hoisted.
+	// selectedTag (else defaultTag, else "") is the selected option, and every
+	// value is escaped.
+	function renderImageTagSelect(cls, tags, defaultTag, selectedTag) {
+		var def = String(defaultTag || '');
 		var selected = String(selectedTag || '');
 
-		var all = {};
-		(tags || []).forEach(function (t) {
-			t = String(t || '');
-			if (t) all[t] = true;
-		});
-		if (def) all[def] = true;
-		if (selected) all[selected] = true;
+		var ordered = normalizeImageTagOptions(tags);
+		var seen = {};
+		ordered.forEach(function (o) { seen[o.tag] = true; });
+		// A default or a currently-selected tag the harness does not offer is
+		// still shown (and, being absent from the host's inventory, marked
+		// "pull required") rather than silently dropped -- an agent pinned to
+		// an old tag must keep seeing the tag it is actually on.
+		if (def && !seen[def]) { seen[def] = true; ordered.push({ tag: def, present: false }); }
+		if (selected && !seen[selected]) { seen[selected] = true; ordered.push({ tag: selected, present: false }); }
 
-		var ordered = Object.keys(all).sort().reverse();
-		var matched = selected && all[selected] ? selected : def;
+		var matched = selected || def;
 
 		var html = '<select class="' + escapeHTML(cls) + '">';
 		if (!def) {
-			// No operator default (e.g. a digest-pinned AGENT_IMAGE): offer a
-			// blank option so "leave as the operator default" stays submittable.
+			// No default for this harness (its inventory is unavailable, or a
+			// digest-pinned image): offer a blank option so "leave it to the
+			// operator default" stays submittable.
 			html += '<option value=""' + (matched === '' ? ' selected' : '') + '>(operator default)</option>';
 		}
-		ordered.forEach(function (t) {
-			var label = t === def ? t + ' (default)' : t;
-			html += '<option value="' + escapeHTML(t) + '"' +
-				(t === matched ? ' selected' : '') + '>' + escapeHTML(label) + '</option>';
+		ordered.forEach(function (o) {
+			var notes = [];
+			if (o.tag === def) notes.push('default');
+			if (!o.present) notes.push('pull required');
+			var label = notes.length ? o.tag + ' (' + notes.join(', ') + ')' : o.tag;
+			html += '<option value="' + escapeHTML(o.tag) + '"' +
+				(o.tag === matched ? ' selected' : '') +
+				(o.present ? '' : ' data-pull-required="true"') +
+				'>' + escapeHTML(label) + '</option>';
 		});
 		return html + '</select>';
 	}
 
-	// renderAgentImagePanel renders the sidebar "Agent image" panel body from
-	// {tags, newest, operatorDefault, checkedAt, lastError}. Mirrors
-	// renderAnthropicStatus's shape.
-	function renderAgentImagePanel(info) {
-		info = info || {};
-		var newest = info.newest || newestDateTimeTag(info.tags);
-		var newestText = newest ? escapeHTML(newest) : 'none discovered';
-		var html =
-			'<div class="agent-image-panel__title">Agent image</div>' +
-			'<span class="agent-image-panel__newest">Newest tag: ' + newestText + '</span>' +
-			'<span class="agent-image-panel__checked">' + escapeHTML(formatCheckedAgo(info.checkedAt)) + '</span>';
-		if (info.lastError) {
-			html += '<p class="agent-image-panel__error">' + escapeHTML(info.lastError) + '</p>';
-		}
+	// renderAgentImagePanel renders the sidebar "Agent image" panel body from a
+	// harnessImageTags map: ONE block per harness (each with its own newest
+	// tag, its own last-checked time and its own error line -- the two
+	// repositories are polled independently, issue #199), under a SINGLE
+	// "Check now" button, since POST /api/agent-image/refresh refreshes every
+	// harness in one call. The raw API body is accepted too, so a caller that
+	// hasn't mapped it yet still renders.
+	function renderAgentImagePanel(byHarness) {
+		var map = (byHarness && byHarness.harnesses) ? harnessImageTags(byHarness) : (byHarness || {});
+		var keys = HARNESSES.filter(function (h) { return Object.prototype.hasOwnProperty.call(map, h); });
+		Object.keys(map).forEach(function (h) { if (keys.indexOf(h) < 0) keys.push(h); });
+
+		var html = '<div class="agent-image-panel__title">Agent image</div>';
+		keys.forEach(function (h) {
+			var e = imageTagsForHarness(map, h);
+			var newest = e.newest || newestDateTimeTag(imageTagNames(e.tags));
+			html +=
+				'<div class="agent-image-panel__harness" data-harness="' + escapeHTML(h) + '">' +
+					'<span class="agent-image-panel__harness-name">' + escapeHTML(harnessLabel(h)) + '</span>' +
+					'<span class="agent-image-panel__newest">Newest tag: ' + (newest ? escapeHTML(newest) : 'none discovered') + '</span>' +
+					'<span class="agent-image-panel__checked">' + escapeHTML(formatCheckedAgo(e.checkedAt)) + '</span>' +
+					(e.lastError ? '<p class="agent-image-panel__error">' + escapeHTML(e.lastError) + '</p>' : '') +
+				'</div>';
+		});
 		html += '<div class="agent-image-panel__actions">' +
 			'<button class="agent-image-panel__refresh btn btn--ghost btn--sm" type="button">Check now</button>' +
 			'</div>';
@@ -589,6 +734,8 @@
 		statusLabel: statusLabel,
 		backendLabel: backendLabel,
 		harnessSupportsBackend: harnessSupportsBackend,
+		normalizeHarness: normalizeHarness,
+		harnessLabel: harnessLabel,
 		renderAgentListItem: renderAgentListItem,
 		renderAgentList: renderAgentList,
 		renderCapacity: renderCapacity,
@@ -601,6 +748,10 @@
 		upgradeAvailable: upgradeAvailable,
 		imageTagOf: imageTagOf,
 		formatCheckedAgo: formatCheckedAgo,
+		harnessImageTags: harnessImageTags,
+		imageTagsForHarness: imageTagsForHarness,
+		imageTagOffered: imageTagOffered,
+		imageTagNames: imageTagNames,
 		renderImageTagSelect: renderImageTagSelect,
 		renderAgentImagePanel: renderAgentImagePanel,
 		formatBytes: formatBytes,

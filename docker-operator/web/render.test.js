@@ -398,6 +398,24 @@ test('renderAgentListItem: upgrade marker present only when upgrade_available is
 	);
 });
 
+test('renderAgentListItem: upgrade_ready adds the --ready modifier to the upgrade marker', () => {
+	const ready = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', upgrade_available: true, upgrade_ready: true });
+	assert.match(ready, /class="agent-item__upgrade agent-item__upgrade--ready"/);
+	assert.match(ready, /already on this host/);
+
+	// upgrade_ready is not a subset of upgrade_available: a host can hold a
+	// newer image the registry snapshot does not list yet, so it flags alone.
+	assert.match(
+		Render.renderAgentListItem({ id: 'agt_b', name: 'B', status: 'running', upgrade_ready: true }),
+		/agent-item__upgrade--ready/);
+
+	const availableOnly = Render.renderAgentListItem({ id: 'agt_c', name: 'C', status: 'running', upgrade_available: true });
+	assert.match(availableOnly, /class="agent-item__upgrade"/);
+	assert.doesNotMatch(availableOnly, /agent-item__upgrade--ready/);
+
+	assert.doesNotMatch(Render.renderAgentListItem({ id: 'agt_d', name: 'D', status: 'running' }), /agent-item__upgrade/);
+});
+
 test('imageTagOf: tag only when no slash follows the last colon', () => {
 	assert.equal(Render.imageTagOf('ghcr.io/psenna/agent:20260101-120000'), '20260101-120000');
 	assert.equal(Render.imageTagOf('host/x:tag'), 'tag');
@@ -416,74 +434,205 @@ test('formatCheckedAgo: falsy is "never checked", otherwise coarse buckets', () 
 	assert.equal(Render.formatCheckedAgo(new Date(Date.now() - 2 * 86400 * 1000).toISOString()), 'checked 2 days ago');
 });
 
-test('renderImageTagSelect: newest-first, deduped, "latest" default sorts above the date-time tags', () => {
-	const html = Render.renderImageTagSelect('c', ['20251231-090000', '20260101-120000', '20251231-090000', 'latest'], 'latest', '');
+// --- agent image: per-harness map (issue #200) ---------------------------
+
+test('harnessImageTags: maps the API body to a camelCase by-harness map, one entry per harness', () => {
+	const map = Render.harnessImageTags({
+		harnesses: {
+			'claude-code': {
+				repo: 'ghcr.io/x/agent', default_tag: '20260101-120000', newest: '20260101-120000',
+				tags: [{ tag: '20260101-120000', present: true }, { tag: '20251231-090000', present: false }],
+				checked_at: '2026-01-02T00:00:00Z', last_error: '',
+			},
+		},
+	});
+	assert.deepEqual(Object.keys(map), ['claude-code', 'opencode']);
+	assert.equal(map['claude-code'].repo, 'ghcr.io/x/agent');
+	assert.equal(map['claude-code'].defaultTag, '20260101-120000');
+	assert.equal(map['claude-code'].checkedAt, '2026-01-02T00:00:00Z');
+	assert.deepEqual(map['claude-code'].tags, [
+		{ tag: '20260101-120000', present: true },
+		{ tag: '20251231-090000', present: false },
+	]);
+	// A harness the server did not report is still present, just empty.
+	assert.deepEqual(map.opencode, { repo: '', defaultTag: '', newest: '', tags: [], checkedAt: null, lastError: '' });
+});
+
+test('harnessImageTags: missing/empty input yields one empty entry per known harness', () => {
+	for (const input of [null, undefined, {}, { harnesses: null }]) {
+		const map = Render.harnessImageTags(input);
+		assert.deepEqual(Object.keys(map), ['claude-code', 'opencode']);
+		assert.deepEqual(map['claude-code'].tags, []);
+	}
+});
+
+test('harnessImageTags: a harness this build does not know is kept, after the known ones', () => {
+	const map = Render.harnessImageTags({ harnesses: { 'future-harness': { default_tag: 'latest' } } });
+	assert.deepEqual(Object.keys(map), ['claude-code', 'opencode', 'future-harness']);
+	assert.equal(map['future-harness'].defaultTag, 'latest');
+});
+
+test('imageTagsForHarness: picks the harness entry, degrading to claude-code then to an empty entry', () => {
+	const map = Render.harnessImageTags({
+		harnesses: {
+			'claude-code': { default_tag: 'cc', tags: [{ tag: 'cc', present: true }] },
+			opencode: { default_tag: 'oc', tags: [{ tag: 'oc', present: false }] },
+		},
+	});
+	assert.equal(Render.imageTagsForHarness(map, 'opencode').defaultTag, 'oc');
+	assert.equal(Render.imageTagsForHarness(map, 'claude-code').defaultTag, 'cc');
+	// "" (a record written before the harness field existed) and anything
+	// unrecognised is claude-code, like config.NormalizeHarness.
+	assert.equal(Render.imageTagsForHarness(map, '').defaultTag, 'cc');
+	assert.equal(Render.imageTagsForHarness(map, undefined).defaultTag, 'cc');
+	assert.equal(Render.imageTagsForHarness(map, 'bogus').defaultTag, 'cc');
+	assert.deepEqual(Render.imageTagsForHarness(null, 'opencode'),
+		{ repo: '', defaultTag: '', newest: '', tags: [], checkedAt: null, lastError: '' });
+});
+
+test('imageTagOffered: true only for a tag that harness actually offers', () => {
+	const entry = { tags: [{ tag: '20260101-120000', present: true }, { tag: 'latest', present: false }] };
+	assert.equal(Render.imageTagOffered(entry, '20260101-120000'), true);
+	assert.equal(Render.imageTagOffered(entry, 'latest'), true);
+	assert.equal(Render.imageTagOffered(entry, '20260202-020202'), false);
+	assert.equal(Render.imageTagOffered(entry, ''), false);
+	assert.equal(Render.imageTagOffered(null, 'latest'), false);
+	assert.equal(Render.imageTagOffered(entry.tags, 'latest'), true);
+});
+
+test('renderImageTagSelect: keeps the server\'s order, de-dupes, and labels the default in place', () => {
+	const html = Render.renderImageTagSelect('c', [
+		{ tag: '20260101-120000', present: false },
+		{ tag: '20251231-090000', present: true },
+		{ tag: '20251231-090000', present: true },
+		{ tag: 'latest', present: true },
+	], 'latest', '');
 	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
-	assert.equal(opts[0], '<option value="latest" selected>latest (default)</option>');
-	assert.equal(opts[1], '<option value="20260101-120000">20260101-120000</option>');
-	assert.equal(opts[2], '<option value="20251231-090000">20251231-090000</option>');
 	assert.equal(opts.length, 3, 'no repeats: ' + html);
+	// Server order is preserved: internal/agent.OfferedImageTags already put
+	// the newest published tags first and appended the default last.
+	assert.equal(opts[0], '<option value="20260101-120000" data-pull-required="true">20260101-120000 (pull required)</option>');
+	assert.equal(opts[1], '<option value="20251231-090000">20251231-090000</option>');
+	assert.equal(opts[2], '<option value="latest" selected>latest (default)</option>');
 });
 
-test('renderImageTagSelect: a date-time default keeps its chronological position (not hoisted to the top)', () => {
-	const html = Render.renderImageTagSelect(
-		'c', ['20260801-000000', '20260910-110802', '20260909-144348'], '20260909-144348', '');
-	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
-	assert.equal(opts[0], '<option value="20260910-110802">20260910-110802</option>');
-	assert.equal(opts[1], '<option value="20260909-144348" selected>20260909-144348 (default)</option>');
-	assert.equal(opts[2], '<option value="20260801-000000">20260801-000000</option>');
-	assert.equal(opts.length, 3);
+test('renderImageTagSelect: a tag the host does not hold is labelled "pull required", a present one is not', () => {
+	const html = Render.renderImageTagSelect('c', [
+		{ tag: '20260101-120000', present: true },
+		{ tag: '20251231-090000', present: false },
+	], '', '');
+	assert.match(html, /<option value="20260101-120000">20260101-120000<\/option>/);
+	assert.match(html, /<option value="20251231-090000" data-pull-required="true">20251231-090000 \(pull required\)<\/option>/);
 });
 
-test('renderImageTagSelect: no operator default => a blank "(operator default)" option, selected', () => {
-	const html = Render.renderImageTagSelect('c', ['20260101-120000'], '', '');
+test('renderImageTagSelect: a default that is not on the host carries both notes', () => {
+	const html = Render.renderImageTagSelect('c', [{ tag: 'latest', present: false }], 'latest', '');
+	assert.match(html, /<option value="latest" selected data-pull-required="true">latest \(default, pull required\)<\/option>/);
+});
+
+test('renderImageTagSelect: no default for this harness => a blank "(operator default)" option, selected', () => {
+	const html = Render.renderImageTagSelect('c', [{ tag: '20260101-120000', present: true }], '', '');
 	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
 	assert.equal(opts[0], '<option value="" selected>(operator default)</option>');
 	assert.equal(opts[1], '<option value="20260101-120000">20260101-120000</option>');
 });
 
-test('renderImageTagSelect: a selectedTag not in the list still appears and is selected', () => {
-	const html = Render.renderImageTagSelect('c', ['20260101-120000'], 'latest', '20200101-000000');
-	assert.match(html, /<option value="20200101-000000" selected>20200101-000000<\/option>/);
+test('renderImageTagSelect: a selectedTag this harness does not offer is appended, selected and pull-required', () => {
+	const html = Render.renderImageTagSelect('c', [{ tag: '20260101-120000', present: true }], 'latest', '20200101-000000');
+	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
+	assert.equal(opts[opts.length - 1],
+		'<option value="20200101-000000" selected data-pull-required="true">20200101-000000 (pull required)</option>');
 	assert.doesNotMatch(html, /value="latest" selected/);
 });
 
 test('renderImageTagSelect: falls back to the default option when selectedTag is empty', () => {
-	const html = Render.renderImageTagSelect('c', ['20260101-120000'], 'latest', '');
+	const html = Render.renderImageTagSelect(
+		'c', [{ tag: 'latest', present: true }, { tag: '20260101-120000', present: true }], 'latest', '');
 	assert.match(html, /<option value="latest" selected>latest \(default\)<\/option>/);
 });
 
+test('renderImageTagSelect: tolerates a plain string tag list (no presence info => no "pull required")', () => {
+	const html = Render.renderImageTagSelect('c', ['20260101-120000'], '', '');
+	assert.match(html, /<option value="20260101-120000">20260101-120000<\/option>/);
+	assert.doesNotMatch(html, /pull required/);
+});
+
 test('renderImageTagSelect: escapes every value', () => {
-	const html = Render.renderImageTagSelect('c', ['"><img src=x>'], '"><b>', '');
+	const html = Render.renderImageTagSelect('c', [{ tag: '"><img src=x>', present: true }], '"><b>', '');
 	assert.doesNotMatch(html, /<img src=x>/);
 	assert.doesNotMatch(html, /<b>/);
 });
 
-test('renderAgentImagePanel: with tags shows the newest and a Check now button', () => {
-	const html = Render.renderAgentImagePanel({
-		tags: ['20260101-120000'], newest: '20260101-120000', operatorDefault: 'latest',
-		checkedAt: new Date().toISOString(), lastError: '',
-	});
-	assert.match(html, /20260101-120000/);
-	assert.match(html, /checked just now/);
-	assert.match(html, /agent-image-panel__refresh/);
-	assert.doesNotMatch(html, /agent-image-panel__error/);
+test('renderImageTagSelect: an empty list with no default still renders a submittable select', () => {
+	assert.equal(
+		Render.renderImageTagSelect('create-form__image-tag', [], '', ''),
+		'<select class="create-form__image-tag"><option value="" selected>(operator default)</option></select>');
 });
 
-test('renderAgentImagePanel: no tags shows "none discovered"', () => {
-	const html = Render.renderAgentImagePanel({ tags: [], newest: '', operatorDefault: 'latest', checkedAt: null });
-	assert.match(html, /none discovered/);
-	assert.match(html, /never checked/);
+test('renderAgentImagePanel: one block per harness, claude-code first, under a single Check now button', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: {
+			'claude-code': { newest: '20260101-120000', tags: [{ tag: '20260101-120000', present: true }], checked_at: new Date().toISOString() },
+			opencode: { newest: '20260202-020202', tags: [{ tag: '20260202-020202', present: false }], checked_at: new Date().toISOString() },
+		},
+	}));
+	assert.match(html, /data-harness="claude-code"/);
+	assert.match(html, /data-harness="opencode"/);
+	assert.match(html, /Claude Code/);
+	assert.match(html, /Newest tag: 20260101-120000/);
+	assert.match(html, /Newest tag: 20260202-020202/);
+	assert.ok(html.indexOf('data-harness="claude-code"') < html.indexOf('data-harness="opencode"'),
+		'claude-code block should come first: ' + html);
+	// One shared refresh button: POST /api/agent-image/refresh refreshes every
+	// harness in a single call.
+	assert.equal(html.match(/agent-image-panel__refresh/g).length, 1);
+	assert.ok(html.lastIndexOf('data-harness=') < html.indexOf('agent-image-panel__refresh'),
+		'the Check now button sits after every harness block');
+	assert.equal((html.match(/checked just now/g) || []).length, 2);
 });
 
-test('renderAgentImagePanel: a last error renders the error line', () => {
-	const html = Render.renderAgentImagePanel({ tags: [], lastError: 'registry is unreachable' });
-	assert.match(html, /agent-image-panel__error/);
-	assert.match(html, /registry is unreachable/);
+test('renderAgentImagePanel: each harness reports its own newest tag and its own checked-at', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: {
+			'claude-code': { newest: '20260101-120000', tags: [{ tag: '20260101-120000', present: true }], checked_at: new Date().toISOString() },
+			opencode: { newest: '', tags: [], checked_at: null },
+		},
+	}));
+	assert.equal((html.match(/none discovered/g) || []).length, 1);
+	assert.equal((html.match(/never checked/g) || []).length, 1);
 });
 
-test('renderAgentImagePanel: missing input does not throw', () => {
+test('renderAgentImagePanel: a per-harness last error renders inside that harness\'s block only', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: {
+			'claude-code': { tags: [{ tag: '20260101-120000', present: true }] },
+			opencode: { tags: [], last_error: 'registry is unreachable' },
+		},
+	}));
+	assert.equal((html.match(/agent-image-panel__error/g) || []).length, 1);
+	assert.match(html.slice(html.indexOf('data-harness="opencode"')), /registry is unreachable/);
+});
+
+test('renderAgentImagePanel: falls back to the newest date-time tag when the server sent no newest', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: { 'claude-code': { tags: [{ tag: '20251231-090000', present: true }, { tag: '20260101-120000', present: false }] } },
+	}));
+	assert.match(html, /Newest tag: 20260101-120000/);
+});
+
+test('renderAgentImagePanel: accepts the raw API body as well as an already-mapped map', () => {
+	const raw = { harnesses: { 'claude-code': { newest: '20260101-120000', tags: [] } } };
+	assert.equal(Render.renderAgentImagePanel(raw), Render.renderAgentImagePanel(Render.harnessImageTags(raw)));
+});
+
+test('renderAgentImagePanel: missing input does not throw and still renders the Check now button', () => {
 	assert.doesNotThrow(() => Render.renderAgentImagePanel());
+	assert.match(Render.renderAgentImagePanel(), /agent-image-panel__refresh/);
+});
+
+test('renderAgentImagePanel: a harness key containing HTML is escaped', () => {
+	const html = Render.renderAgentImagePanel({ '"><img src=x>': { tags: [] } });
+	assert.doesNotMatch(html, /<img src=x>/);
 });
 
 // --- renderCreateForm: opts + image-tag row -----------------------------
@@ -503,7 +652,11 @@ test('renderCreateForm: opts.title and opts.submitLabel override the defaults', 
 });
 
 test('renderCreateForm: the image-tag row renders the select seeded from defaults', () => {
-	const html = Render.renderCreateForm({ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' });
+	const html = Render.renderCreateForm({
+		agentImage: Render.harnessImageTags({
+			harnesses: { 'claude-code': { default_tag: 'latest', tags: [{ tag: '20260101-120000', present: true }, { tag: 'latest', present: true }] } },
+		}),
+	});
 	assert.match(html, /create-form__image-tag/);
 	assert.match(html, /latest \(default\)/);
 	assert.match(html, /20260101-120000/);
@@ -511,7 +664,7 @@ test('renderCreateForm: the image-tag row renders the select seeded from default
 
 test('renderCreateForm: opts.values pre-fills name/description and a selected image tag', () => {
 	const html = Render.renderCreateForm(
-		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },
+		{ agentImage: Render.harnessImageTags({ harnesses: { 'claude-code': { default_tag: 'latest', tags: [{ tag: '20260101-120000', present: true }] } } }) },
 		{ values: { name: 'Neo', description: 'the one', image_tag: '20260101-120000' } });
 	assert.match(html, /class="create-form__name" type="text" value="Neo"/);
 	assert.match(html, /class="create-form__description" type="text" value="the one"/);
@@ -601,9 +754,46 @@ test('harnessSupportsBackend: opencode is Ollama-only, claude-code runs on eithe
 	assert.equal(Render.harnessSupportsBackend('claude-code', 'ollama'), true);
 });
 
+test('renderCreateForm: the image-tag row is sourced from the SELECTED harness\'s own tags', () => {
+	const defaults = {
+		agentImage: Render.harnessImageTags({
+			harnesses: {
+				'claude-code': { default_tag: '20260101-120000', tags: [{ tag: '20260101-120000', present: true }] },
+				opencode: { default_tag: '20260202-020202', tags: [{ tag: '20260202-020202', present: false }] },
+			},
+		}),
+	};
+
+	const cc = Render.renderCreateForm(defaults);
+	assert.match(cc, /<option value="20260101-120000" selected>20260101-120000 \(default\)<\/option>/);
+	assert.doesNotMatch(cc, /20260202-020202/);
+
+	// Same defaults, opencode selected: opencode's OWN tag history and default,
+	// never claude-code's -- what app.js's syncImageTagSelect re-renders on a
+	// harness radio change.
+	const oc = Render.renderCreateForm(defaults, { values: { harness: 'opencode' } });
+	assert.match(oc, /<option value="20260202-020202" selected data-pull-required="true">20260202-020202 \(default, pull required\)<\/option>/);
+	assert.doesNotMatch(oc, /20260101-120000/);
+});
+
+test('renderCreateForm: an agent record with no harness field falls back to claude-code\'s tags', () => {
+	const defaults = {
+		agentImage: Render.harnessImageTags({
+			harnesses: { 'claude-code': { default_tag: 'latest', tags: [{ tag: 'latest', present: true }] } },
+		}),
+	};
+	const html = Render.renderCreateForm(defaults, { values: { name: 'legacy' } });
+	assert.match(html, /<option value="latest" selected>latest \(default\)<\/option>/);
+});
+
+test('renderCreateForm: no agentImage map at all still renders a submittable image-tag select', () => {
+	assert.match(Render.renderCreateForm({}),
+		/<select class="create-form__image-tag"><option value="" selected>\(operator default\)<\/option><\/select>/);
+});
+
 test('renderCreateForm: with no image_tag, opts.values.image seeds the selected tag from the resolved ref', () => {
 	const html = Render.renderCreateForm(
-		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },
+		{ agentImage: Render.harnessImageTags({ harnesses: { 'claude-code': { default_tag: 'latest', tags: [{ tag: '20260101-120000', present: true }] } } }) },
 		{ values: { image: 'ghcr.io/x/agent:20260101-120000' } });
 	assert.match(html, /<option value="20260101-120000" selected>/);
 });
@@ -641,7 +831,7 @@ test('renderCreateForm: a Template-shaped opts.values pre-fills every infra fiel
 		image_tag: template.image_tag, auto_mode: template.auto_mode,
 	};
 	const html = Render.renderCreateForm(
-		{ imageTags: ['20260101-120000'], imageDefaultTag: 'latest' },
+		{ agentImage: Render.harnessImageTags({ harnesses: { 'claude-code': { default_tag: 'latest', tags: [{ tag: '20260101-120000', present: true }] } } }) },
 		{ values: values });
 
 	assert.match(html, /class="create-form__model" type="text" value="tpl-opus"/);

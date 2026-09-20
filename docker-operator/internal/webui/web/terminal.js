@@ -414,7 +414,19 @@
 				nameInput.value = agent.name || '';
 				descInput.value = agent.description || '';
 				idEl.textContent = agent.id;
-				if (upgradeBtn) upgradeBtn.hidden = !agent.upgrade_available;
+				if (upgradeBtn) {
+					// upgrade_ready means a newer image of this agent's own
+					// harness is already on the host: the update needs no
+					// registry pull. It is not a subset of upgrade_available
+					// (see agentView's doc comment), so either flag shows the
+					// button; ready wins the wording.
+					upgradeBtn.hidden = !(agent.upgrade_available || agent.upgrade_ready);
+					upgradeBtn.textContent = agent.upgrade_ready ? 'Upgrade ready' : 'Upgrade available';
+					upgradeBtn.title = agent.upgrade_ready
+						? 'a newer agent image is already on this host — updating needs no pull'
+						: 'a newer agent image has been published';
+					upgradeBtn.classList.toggle('detail__upgrade--ready', !!agent.upgrade_ready);
+				}
 			})
 			.catch(function (e) {
 				if (destroyed) return;
@@ -583,13 +595,16 @@
 		]).then(function (res) {
 			if (current !== view) return; // superseded while fetching
 			var agent = res[0];
-			var tagInfo = res[1] || {};
-			var operatorDefaultTag = tagInfo.operator_default || '';
+			// The same fetched response now carries EVERY harness; pick the one
+			// block belonging to this agent's own harness (the update form's
+			// harness is locked, so it can never change under us) -- an
+			// opencode agent must be offered opencode's tags and measured
+			// against opencode's default, never claude-code's (issue #199).
+			var byHarness = window.Render.harnessImageTags(res[1]);
+			var harnessInfo = window.Render.imageTagsForHarness(byHarness, agent.harness);
+			var operatorDefaultTag = harnessInfo.defaultTag;
 			var opDefaults = (typeof window.getAgentDefaults === 'function' && window.getAgentDefaults()) || {};
-			var defaults = Object.assign({}, opDefaults, {
-				imageTags: tagInfo.tags || [],
-				imageDefaultTag: operatorDefaultTag,
-			});
+			var defaults = Object.assign({}, opDefaults, { agentImage: byHarness });
 
 			mainArea.innerHTML = window.Render.renderCreateForm(defaults, {
 				title: 'Update agent', submitLabel: 'Update', values: agent,
@@ -608,6 +623,10 @@
 				el.addEventListener('change', function () { syncBackend(form); });
 			});
 			syncBackend(form);
+			// No image-tag-select sync is wired here (unlike app.js's
+			// syncImageTagSelect): the update form's harness radios are
+			// disabled (harnessLocked above), so the harness -- and therefore
+			// which harness's tags the select offers -- can never change.
 
 			form.querySelector('.create-form__cancel').addEventListener('click', function () {
 				renderAgentDetail(mainArea, agentID);

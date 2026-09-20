@@ -413,6 +413,9 @@ html, body {
 
 .detail__upgrade:hover:not(:disabled) { background: var(--accent); color: #fff; }
 
+.detail__upgrade--ready { color: var(--status-running); border-color: var(--status-running); }
+.detail__upgrade--ready:hover:not(:disabled) { background: var(--status-running); color: #fff; }
+
 .detail__delete-btn {
 	flex: 0 0 auto;
 }
@@ -456,6 +459,11 @@ html, body {
 	line-height: 1;
 	color: var(--accent);
 }
+
+/* upgrade_ready: the newer image is already on this host, so the update needs
+   no registry pull -- a different (green, "go") colour from the plain
+   published-upgrade marker above. */
+.agent-item__upgrade--ready { color: var(--status-running); }
 
 /* --- agent list backend badge --- */
 .agent-item__backend {
@@ -502,6 +510,9 @@ html, body {
 	color: var(--fg-dim);
 	margin-bottom: 4px;
 }
+
+.agent-image-panel__harness { margin-bottom: 6px; }
+.agent-image-panel__harness-name { display: block; color: var(--fg); }
 
 .agent-image-panel__newest { display: block; }
 .agent-image-panel__checked { display: block; color: var(--fg-dim); margin-bottom: 6px; }
