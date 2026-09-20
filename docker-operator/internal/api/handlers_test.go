@@ -50,7 +50,6 @@ type fakeManager struct {
 	defaultMaxContextTokens     string
 	defaultAutoMode             string
 
-	agentImage    string
 	dockerRuntime string
 
 	anthropicKind      string
@@ -65,10 +64,11 @@ type fakeManager struct {
 	loginStartErr error
 	loginStopErr  error
 
-	imageTags    store.AgentImageTags
-	imageTagsErr error
-	refreshErr   error
-	refreshCalls int
+	imageInv     map[string]agent.ImageInventory
+	imageInvErr  map[string]error
+	refreshErr   map[string]error
+	refreshCalls map[string]int
+	defaultRefs  map[string]string
 
 	templates map[string]store.Template
 
@@ -94,7 +94,11 @@ func newFakeManager(maxAgents int) *fakeManager {
 		defaultOllamaURL: "http://ollama:11434",
 		defaultRepo:      "psenna/ai-sandbox.git",
 		defaultAutoMode:  config.AutoModeOn,
-		agentImage:       "ghcr.io/psenna/ai-sandbox-agent:latest",
+		imageInv:         map[string]agent.ImageInventory{},
+		imageInvErr:      map[string]error{},
+		refreshErr:       map[string]error{},
+		refreshCalls:     map[string]int{},
+		defaultRefs:      map[string]string{},
 	}
 }
 
@@ -207,23 +211,75 @@ func (f *fakeManager) DefaultAutoCompactThreshold() string { return f.defaultAut
 func (f *fakeManager) DefaultMaxContextTokens() string     { return f.defaultMaxContextTokens }
 func (f *fakeManager) DefaultAutoMode() string             { return f.defaultAutoMode }
 
-func (f *fakeManager) AgentImage() string    { return f.agentImage }
 func (f *fakeManager) DockerRuntime() string { return f.dockerRuntime }
 
-func (f *fakeManager) AgentImageTags(_ context.Context, _ string) (store.AgentImageTags, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.imageTagsErr != nil {
-		return store.AgentImageTags{}, false, f.imageTagsErr
+// fakeAgentRepo mirrors config.AgentImageFor's two real defaults.
+func fakeAgentRepo(harness string) string {
+	if config.NormalizeHarness(harness) == config.HarnessOpenCode {
+		return "ghcr.io/psenna/ai-sandbox-agent-opencode"
 	}
-	return f.imageTags, len(f.imageTags.Tags) > 0 || !f.imageTags.CheckedAt.IsZero(), nil
+	return "ghcr.io/psenna/ai-sandbox-agent"
 }
 
-func (f *fakeManager) RefreshAgentImageTags(_ context.Context, _ string) error {
+// fakeInventory builds one harness's inventory from published+local tag
+// lists, computing DefaultTag/Options the way the real Manager would.
+func fakeInventory(harness string, registryTags, localTags []string) agent.ImageInventory {
+	h := config.NormalizeHarness(harness)
+	def := agent.NewestDateTimeTag(localTags)
+	if def == "" {
+		def = agent.NewestDateTimeTag(registryTags)
+	}
+	if def == "" {
+		def = "latest"
+	}
+	return agent.ImageInventory{
+		Harness:      h,
+		Repo:         fakeAgentRepo(h),
+		RegistryTags: registryTags,
+		LocalTags:    localTags,
+		DefaultTag:   def,
+		Options:      agent.OfferedImageTags(registryTags, localTags, def),
+	}
+}
+
+func (f *fakeManager) setInventory(harness string, inv agent.ImageInventory) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.refreshCalls++
-	return f.refreshErr
+	f.imageInv[config.NormalizeHarness(harness)] = inv
+}
+
+func (f *fakeManager) AgentImageInventory(_ context.Context, harness string) (agent.ImageInventory, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := config.NormalizeHarness(harness)
+	if err := f.imageInvErr[h]; err != nil {
+		return agent.ImageInventory{}, err
+	}
+	if inv, ok := f.imageInv[h]; ok {
+		return inv, nil
+	}
+	return agent.ImageInventory{Harness: h, Repo: fakeAgentRepo(h)}, nil
+}
+
+func (f *fakeManager) DefaultAgentImageRef(_ context.Context, harness string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := config.NormalizeHarness(harness)
+	if ref, ok := f.defaultRefs[h]; ok {
+		return ref
+	}
+	if inv, ok := f.imageInv[h]; ok && inv.DefaultTag != "" {
+		return inv.Repo + ":" + inv.DefaultTag
+	}
+	return fakeAgentRepo(h) + ":latest"
+}
+
+func (f *fakeManager) RefreshAgentImageTags(_ context.Context, harness string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := config.NormalizeHarness(harness)
+	f.refreshCalls[h]++
+	return f.refreshErr[h]
 }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
@@ -833,7 +889,8 @@ func TestList_Empty(t *testing.T) {
 
 func TestHandleList_UpgradeAvailableComputed(t *testing.T) {
 	mgr := newFakeManager(5)
-	mgr.imageTags = store.AgentImageTags{Tags: []string{"20260901-120000", "20260801-120000"}}
+	mgr.setInventory(config.HarnessClaudeCode, fakeInventory(config.HarnessClaudeCode,
+		[]string{"20260901-120000", "20260801-120000"}, nil))
 	mgr.seed(store.Agent{ID: "agt_old", Name: "old", Image: "ghcr.io/psenna/ai-sandbox-agent:20260801-120000"})
 	mgr.seed(store.Agent{ID: "agt_new", Name: "new", Image: "ghcr.io/psenna/ai-sandbox-agent:20260901-120000"})
 	mgr.seed(store.Agent{ID: "agt_latest", Name: "latest", Image: "ghcr.io/psenna/ai-sandbox-agent:latest"})
@@ -899,9 +956,123 @@ func TestHandleList_NoTagsNoUpgrades(t *testing.T) {
 	}
 }
 
+// TestHandleList_UpgradeIsPerHarness is the regression test for issue #199:
+// buildAgentViews used to compare EVERY agent against claude-code's tag list
+// regardless of its own harness, so an opencode agent already on the newest
+// opencode tag was flagged as needing an upgrade just because it looked old
+// against claude-code's (unrelated) tag list.
+func TestHandleList_UpgradeIsPerHarness(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.setInventory(config.HarnessClaudeCode, fakeInventory(config.HarnessClaudeCode,
+		[]string{"20260910-120000", "20260901-120000"}, nil))
+	mgr.setInventory(config.HarnessOpenCode, fakeInventory(config.HarnessOpenCode,
+		[]string{"20260905-120000", "20260801-120000"}, nil))
+
+	mgr.seed(store.Agent{ID: "agt_oc_current", Harness: config.HarnessOpenCode,
+		Image: "ghcr.io/psenna/ai-sandbox-agent-opencode:20260906-120000"})
+	mgr.seed(store.Agent{ID: "agt_cc_old", Harness: config.HarnessClaudeCode,
+		Image: "ghcr.io/psenna/ai-sandbox-agent:20260906-120000"})
+	mgr.seed(store.Agent{ID: "agt_oc_old", Harness: config.HarnessOpenCode,
+		Image: "ghcr.io/psenna/ai-sandbox-agent-opencode:20260701-120000"})
+	mgr.seed(store.Agent{ID: "agt_legacy",
+		Image: "ghcr.io/psenna/ai-sandbox-agent:20260906-120000"})
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID               string `json:"id"`
+			UpgradeAvailable bool   `json:"upgrade_available"`
+			UpgradeReady     bool   `json:"upgrade_ready"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	wantAvailable := map[string]bool{
+		"agt_oc_current": false, // the reported bug: reads true before the fix
+		"agt_cc_old":     true,
+		"agt_oc_old":     true,
+		"agt_legacy":     true,
+	}
+	got := map[string]bool{}
+	gotReady := map[string]bool{}
+	for _, a := range resp.Agents {
+		got[a.ID] = a.UpgradeAvailable
+		gotReady[a.ID] = a.UpgradeReady
+	}
+	for id, w := range wantAvailable {
+		if got[id] != w {
+			t.Errorf("agent %s upgrade_available = %v, want %v (each agent must be compared against its OWN harness's tags); body: %s",
+				id, got[id], w, rec.Body)
+		}
+		if gotReady[id] {
+			t.Errorf("agent %s upgrade_ready = true, want false: no tag is present on this host", id)
+		}
+	}
+}
+
+// TestHandleList_UpgradeReadyOnlyWhenLocallyPresent proves UpgradeReady is
+// computed against the HOST's local tags (agent.ImageInventory.LocalTags),
+// not the registry snapshot: a newer tag published but not yet pulled must
+// report upgrade_available without upgrade_ready.
+func TestHandleList_UpgradeReadyOnlyWhenLocallyPresent(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.setInventory(config.HarnessClaudeCode, fakeInventory(config.HarnessClaudeCode,
+		[]string{"20260910-120000", "20260901-120000"},
+		[]string{"20260910-120000", "20260901-120000"}))
+	mgr.setInventory(config.HarnessOpenCode, fakeInventory(config.HarnessOpenCode,
+		[]string{"20260910-120000", "20260901-120000"},
+		[]string{"20260901-120000"}))
+
+	mgr.seed(store.Agent{ID: "agt_cc", Harness: config.HarnessClaudeCode,
+		Image: "ghcr.io/psenna/ai-sandbox-agent:20260901-120000"})
+	mgr.seed(store.Agent{ID: "agt_oc", Harness: config.HarnessOpenCode,
+		Image: "ghcr.io/psenna/ai-sandbox-agent-opencode:20260901-120000"})
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID               string `json:"id"`
+			UpgradeAvailable bool   `json:"upgrade_available"`
+			UpgradeReady     bool   `json:"upgrade_ready"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	wantAvailable := map[string]bool{"agt_cc": true, "agt_oc": true}
+	wantReady := map[string]bool{"agt_cc": true, "agt_oc": false}
+	got := map[string]bool{}
+	gotReady := map[string]bool{}
+	for _, a := range resp.Agents {
+		got[a.ID] = a.UpgradeAvailable
+		gotReady[a.ID] = a.UpgradeReady
+	}
+	for id, w := range wantAvailable {
+		if got[id] != w {
+			t.Errorf("agent %s upgrade_available = %v, want %v; body: %s", id, got[id], w, rec.Body)
+		}
+	}
+	for id, w := range wantReady {
+		if gotReady[id] != w {
+			t.Errorf("agent %s upgrade_ready = %v, want %v (agt_cc's newer tag is locally present, agt_oc's is not); body: %s",
+				id, gotReady[id], w, rec.Body)
+		}
+	}
+}
+
 func TestHandleGet_IncludesImageAndUpgradeAvailable(t *testing.T) {
 	mgr := newFakeManager(5)
-	mgr.imageTags = store.AgentImageTags{Tags: []string{"20260901-120000", "20260801-120000"}}
+	mgr.setInventory(config.HarnessClaudeCode, fakeInventory(config.HarnessClaudeCode,
+		[]string{"20260901-120000", "20260801-120000"}, nil))
 	mgr.seed(store.Agent{ID: "agt_a", Name: "a", Image: "ghcr.io/psenna/ai-sandbox-agent:20260801-120000"})
 	h := newTestHandler(mgr, dockerclienttest.New())
 
@@ -928,6 +1099,7 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 	b, err := json.Marshal(agentView{
 		Agent:            store.Agent{ID: "agt_a", Name: "a", Status: store.StatusRunning, Image: "ghcr.io/x/y:latest"},
 		UpgradeAvailable: true,
+		UpgradeReady:     true,
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -936,7 +1108,7 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"id", "name", "status", "image", "upgrade_available"} {
+	for _, k := range []string{"id", "name", "status", "image", "upgrade_available", "upgrade_ready"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("marshalled agentView missing top-level key %q; got %s", k, b)
 		}
@@ -982,7 +1154,7 @@ func TestAgentInfo(t *testing.T) {
 		Status: store.StatusRunning,
 		Repo:   "acme/widget.git",
 	})
-	mgr.agentImage = "ghcr.io/example/agent:1.2.3"
+	mgr.defaultRefs[config.HarnessClaudeCode] = "ghcr.io/example/agent:1.2.3"
 	mgr.dockerRuntime = "crun"
 	h := newTestHandler(mgr, dockerclienttest.New())
 
@@ -1000,6 +1172,43 @@ func TestAgentInfo(t *testing.T) {
 	}
 	if resp.Operator.AgentImage != "ghcr.io/example/agent:1.2.3" || resp.Operator.DockerRuntime != "crun" {
 		t.Errorf("operator = %+v, want the manager's agent image and docker runtime", resp.Operator)
+	}
+}
+
+// TestAgentInfo_PerHarnessDefaultImage proves handleAgentInfo asks the
+// manager for the DEFAULT IMAGE OF THE AGENT'S OWN HARNESS, not a single
+// operator-wide value: an opencode agent's info response must carry the
+// opencode default, not claude-code's.
+func TestAgentInfo_PerHarnessDefaultImage(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_cc", Name: "cc", Status: store.StatusRunning, Harness: config.HarnessClaudeCode})
+	mgr.seed(store.Agent{ID: "agt_oc", Name: "oc", Status: store.StatusRunning, Harness: config.HarnessOpenCode})
+	mgr.defaultRefs[config.HarnessClaudeCode] = "ghcr.io/example/agent:1.2.3"
+	mgr.defaultRefs[config.HarnessOpenCode] = "ghcr.io/example/agent-opencode:9.9.9"
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_cc/info", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var resp agentInfoResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding info response: %v", err)
+	}
+	if resp.Operator.AgentImage != "ghcr.io/example/agent:1.2.3" {
+		t.Errorf("claude-code agent's operator.agent_image = %q, want the claude-code default", resp.Operator.AgentImage)
+	}
+
+	rec = doJSON(t, h, "GET", "/api/agents/agt_oc/info", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	resp = agentInfoResponse{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding info response: %v", err)
+	}
+	if resp.Operator.AgentImage != "ghcr.io/example/agent-opencode:9.9.9" {
+		t.Errorf("opencode agent's operator.agent_image = %q, want the opencode-specific default", resp.Operator.AgentImage)
 	}
 }
 

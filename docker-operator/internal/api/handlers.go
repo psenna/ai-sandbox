@@ -68,18 +68,24 @@ type AgentManager interface {
 	// default" resolves to.
 	DefaultAutoMode() string
 
-	// AgentImage/DockerRuntime are the operator-level parameters every agent
-	// inherits (its container image, its DinD sidecar's runtime); the
-	// /api/agents/{id}/info handler serves them next to the agent record.
-	AgentImage() string
+	// DockerRuntime is the operator-level parameter every agent inherits (its
+	// DinD sidecar's runtime); the /api/agents/{id}/info handler serves it
+	// next to the agent record.
 	DockerRuntime() string
 
-	// AgentImageTags returns the operator's last-known snapshot of the agent
-	// image's published tags for one harness (the bool is false before the
-	// first refresh completes); RefreshAgentImageTags forces a poll now for
-	// one harness. A poll error is non-fatal to the caller -- the last-known
-	// list is kept.
-	AgentImageTags(ctx context.Context, harness string) (store.AgentImageTags, bool, error)
+	// DefaultAgentImageRef is the concrete image reference a NEW agent of
+	// harness would run when nothing pins a tag -- the operator's repository
+	// for that harness at the host-aware default tag. Per harness on purpose:
+	// the two harnesses run two different image repositories.
+	DefaultAgentImageRef(ctx context.Context, harness string) string
+
+	// AgentImageInventory is everything the operator knows about ONE
+	// harness's agent image: the last-known published tag list, the tags the
+	// host already holds, the default tag and the offer list the two produce.
+	// RefreshAgentImageTags forces a registry poll now for one harness; a
+	// poll error is non-fatal to the caller -- the last-known list is kept
+	// and surfaced as the inventory's LastError.
+	AgentImageInventory(ctx context.Context, harness string) (agent.ImageInventory, error)
 	RefreshAgentImageTags(ctx context.Context, harness string) error
 
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
@@ -330,10 +336,21 @@ type patchAgentRequest struct {
 type agentView struct {
 	store.Agent
 	// UpgradeAvailable is true when the agent runs a date-time image tag and
-	// the operator's discovered tag list contains a strictly newer one. It is
-	// false for an agent on :latest, on any non-date-time tag, with no
-	// recorded image, or when the tag list is unavailable.
+	// the operator's last-known PUBLISHED tag list FOR THIS AGENT'S HARNESS
+	// contains a strictly newer one. It is false for an agent on :latest, on
+	// any non-date-time tag, with no recorded image, or when that harness's
+	// inventory is unavailable. Each harness is compared against its own
+	// image repository -- an opencode agent is never measured against what
+	// the claude-code repository has published (issue #199).
 	UpgradeAvailable bool `json:"upgrade_available"`
+	// UpgradeReady is the stronger, no-pull form of the same check: a
+	// strictly newer date-time tag of this agent's harness repository is
+	// ALREADY present on this host, so updating the agent onto it needs no
+	// registry round-trip. It is computed against the host's local tag list,
+	// so it is not a strict subset of UpgradeAvailable: a host that holds a
+	// newer image the registry snapshot does not (yet) list reports
+	// upgrade_ready without upgrade_available.
+	UpgradeReady bool `json:"upgrade_ready"`
 	// Activity is the harness's last-reported turn-boundary state --
 	// "working" or "waiting" (wsbridge.Activity's two values) -- or "" when
 	// unknown: the agent isn't StatusRunning, its harness has never wired
@@ -354,25 +371,36 @@ type agentView struct {
 const activityReadTimeout = 4 * time.Second
 
 // buildAgentViews wraps each agent in an agentView, computing
-// UpgradeAvailable against the operator's last-known agent-image tag list,
-// and Activity by reading each StatusRunning agent's container concurrently
-// (one exec per agent; sequential would multiply this endpoint's latency by
-// the agent count). The tag list is fetched once and best-effort: on any
-// error, or before the first refresh completes, it is treated as empty and
-// nothing is flagged -- the list must not fail because tag discovery is
-// unavailable. The result is non-nil even for an empty input.
+// UpgradeAvailable/UpgradeReady against EACH AGENT'S OWN HARNESS's agent
+// image inventory (issue #199 -- previously every agent was compared against
+// claude-code's tag list regardless of its own harness), and Activity by
+// reading each StatusRunning agent's container concurrently (one exec per
+// agent; sequential would multiply this endpoint's latency by the agent
+// count). Each harness's inventory is fetched once and best-effort: on any
+// error it is treated as absent and nothing is flagged for that harness --
+// the list must not fail because tag discovery is unavailable. The result is
+// non-nil even for an empty input.
 func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []agentView {
-	var tags []string
-	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
-	if snap, ok, err := h.mgr.AgentImageTags(ctx, config.HarnessClaudeCode); err == nil && ok {
-		tags = snap.Tags
+	inv := make(map[string]agent.ImageInventory, len(config.Harnesses()))
+	for _, harness := range config.Harnesses() {
+		got, err := h.mgr.AgentImageInventory(ctx, harness)
+		if err != nil {
+			h.log.Warn("could not read the agent image inventory; no upgrade is flagged for this harness",
+				"harness", harness, "error", err)
+			continue
+		}
+		inv[harness] = got
 	}
+
 	views := make([]agentView, len(agents))
 	var wg sync.WaitGroup
 	for i, a := range agents {
+		cur := agent.ImageTagOf(a.Image)
+		hi := inv[config.NormalizeHarness(agent.HarnessOf(a))]
 		views[i] = agentView{
 			Agent:            a,
-			UpgradeAvailable: agent.UpgradeAvailable(agent.ImageTagOf(a.Image), tags),
+			UpgradeAvailable: agent.UpgradeAvailable(cur, hi.RegistryTags),
+			UpgradeReady:     agent.UpgradeAvailable(cur, hi.LocalTags),
 		}
 		if a.Status != store.StatusRunning || a.ContainerID == "" {
 			continue
@@ -420,7 +448,10 @@ type agentListResponse struct {
 
 // agentOperatorInfo is the operator-level part of the /api/agents/{id}/info
 // response: the parameters set on the operator (not per agent) that apply to
-// every agent -- its container image and the DinD sidecar's runtime.
+// this agent -- the DinD sidecar's runtime (every agent's) and AgentImage,
+// which is the image reference a NEW agent of THIS agent's harness would run
+// today, not the agent's own pinned image (the agent record itself, embedded
+// alongside, already carries that).
 type agentOperatorInfo struct {
 	AgentImage    string `json:"agent_image"`
 	DockerRuntime string `json:"docker_runtime"`
@@ -434,16 +465,26 @@ type agentInfoResponse struct {
 	Operator agentOperatorInfo `json:"operator"`
 }
 
+type agentImageTagOption struct {
+	Tag     string `json:"tag"`
+	Present bool   `json:"present"`
+}
+
+type agentImageHarness struct {
+	Repo       string                `json:"repo"`
+	DefaultTag string                `json:"default_tag"`
+	Newest     string                `json:"newest"`
+	Tags       []agentImageTagOption `json:"tags"`
+	CheckedAt  *time.Time            `json:"checked_at"`
+	LastError  string                `json:"last_error"`
+}
+
 // agentImageTagsResponse is the GET /api/agent-image/tags and
-// POST /api/agent-image/refresh body: the discovered date-time tags
-// (newest-first), the newest of them, the operator's own default image tag,
-// when the list was last checked, and the last refresh error if any.
+// POST /api/agent-image/refresh body. Harnesses always carries one entry per
+// config.Harnesses() -- a harness whose inventory could not be read is
+// present with empty lists and its error in last_error, never missing.
 type agentImageTagsResponse struct {
-	Tags            []string   `json:"tags"`
-	Newest          string     `json:"newest"`
-	OperatorDefault string     `json:"operator_default"`
-	CheckedAt       *time.Time `json:"checked_at"`
-	LastError       string     `json:"last_error"`
+	Harnesses map[string]agentImageHarness `json:"harnesses"`
 }
 
 // anthropicAuthRequest is the PUT /api/anthropic/auth body.
@@ -533,50 +574,54 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, a)
 }
 
-// agentImageTagsBody builds the response DTO from a stored snapshot.
-func (h *Handler) agentImageTagsBody(info store.AgentImageTags) agentImageTagsResponse {
-	tags := info.Tags
-	if tags == nil {
-		tags = []string{}
+func agentImageHarnessBody(inv agent.ImageInventory) agentImageHarness {
+	opts := make([]agentImageTagOption, 0, len(inv.Options))
+	for _, o := range inv.Options {
+		opts = append(opts, agentImageTagOption{Tag: o.Tag, Present: o.Present})
 	}
-	resp := agentImageTagsResponse{
-		Tags:            tags,
-		Newest:          agent.NewestDateTimeTag(info.Tags),
-		OperatorDefault: agent.ImageTagOf(h.mgr.AgentImage()),
-		LastError:       info.LastError,
+	body := agentImageHarness{
+		Repo:       inv.Repo,
+		DefaultTag: inv.DefaultTag,
+		Newest:     agent.NewestDateTimeTag(inv.RegistryTags),
+		Tags:       opts,
+		LastError:  inv.LastError,
 	}
-	if !info.CheckedAt.IsZero() {
-		t := info.CheckedAt
-		resp.CheckedAt = &t
+	if !inv.CheckedAt.IsZero() {
+		t := inv.CheckedAt
+		body.CheckedAt = &t
+	}
+	return body
+}
+
+func (h *Handler) agentImageTagsBody(ctx context.Context) agentImageTagsResponse {
+	harnesses := config.Harnesses()
+	resp := agentImageTagsResponse{Harnesses: make(map[string]agentImageHarness, len(harnesses))}
+	for _, harness := range harnesses {
+		inv, err := h.mgr.AgentImageInventory(ctx, harness)
+		if err != nil {
+			h.log.Warn("could not read the agent image inventory", "harness", harness, "error", err)
+			resp.Harnesses[harness] = agentImageHarness{
+				Tags:      []agentImageTagOption{},
+				LastError: err.Error(),
+			}
+			continue
+		}
+		resp.Harnesses[harness] = agentImageHarnessBody(inv)
 	}
 	return resp
 }
 
 func (h *Handler) handleAgentImageTags(w http.ResponseWriter, r *http.Request) {
-	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
-	info, _, err := h.mgr.AgentImageTags(r.Context(), config.HarnessClaudeCode)
-	if err != nil {
-		h.internalError(w, "reading the agent image tags", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, h.agentImageTagsBody(info))
+	writeJSON(w, http.StatusOK, h.agentImageTagsBody(r.Context()))
 }
 
 func (h *Handler) handleAgentImageRefresh(w http.ResponseWriter, r *http.Request) {
-	// A poll failure is not fatal to this request: the refresh keeps the
-	// last-known list and records the error, and the client still gets a 200
-	// with last_error populated.
-	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
-	if err := h.mgr.RefreshAgentImageTags(r.Context(), config.HarnessClaudeCode); err != nil {
-		h.log.Warn("on-demand agent image tag refresh failed", "error", err)
+	for _, harness := range config.Harnesses() {
+		if err := h.mgr.RefreshAgentImageTags(r.Context(), harness); err != nil {
+			h.log.Warn("on-demand agent image tag refresh failed", "harness", harness, "error", err)
+		}
 	}
-	// TODO(#199): use each agent's own harness instead of hardcoding claude-code.
-	info, _, err := h.mgr.AgentImageTags(r.Context(), config.HarnessClaudeCode)
-	if err != nil {
-		h.internalError(w, "reading back the agent image tags", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, h.agentImageTagsBody(info))
+	writeJSON(w, http.StatusOK, h.agentImageTagsBody(r.Context()))
 }
 
 func (h *Handler) handleAnthropicAuthGet(w http.ResponseWriter, r *http.Request) {
@@ -729,7 +774,7 @@ func (h *Handler) handleAgentInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, agentInfoResponse{
 		Agent: a,
 		Operator: agentOperatorInfo{
-			AgentImage:    h.mgr.AgentImage(),
+			AgentImage:    h.mgr.DefaultAgentImageRef(r.Context(), agent.HarnessOf(a)),
 			DockerRuntime: h.mgr.DockerRuntime(),
 		},
 	})
