@@ -113,13 +113,13 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 	// updated to backend=anthropic. resolveSpec's own check runs against
 	// req.Harness (always "" here, since UpdateRequest never sends a harness),
 	// which resolves to config.HarnessClaudeCode and so never catches this;
-	// checking harnessOf(a) -- the RECORD's harness -- against the resolved
+	// checking HarnessOf(a) -- the RECORD's harness -- against the resolved
 	// backend closes that gap.
-	if h := harnessOf(a); !config.HarnessSupportsBackend(h, rs.rb.kind) {
+	if h := HarnessOf(a); !config.HarnessSupportsBackend(h, rs.rb.kind) {
 		return store.Agent{}, fmt.Errorf("updating agent %q: %w: harness %q with backend %q", id, ErrIncompatibleHarness, h, rs.rb.kind)
 	}
 
-	newRef, err := m.resolveAgentImageRef(req.ImageTag, harnessOf(a))
+	newRef, err := m.resolveAgentImageRef(ctx, req.ImageTag, HarnessOf(a))
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("updating agent %q: %w", id, err)
 	}

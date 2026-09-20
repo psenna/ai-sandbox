@@ -99,28 +99,28 @@ func run(log *slog.Logger) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// The registry client for agent-image tag discovery. A failure to build it
-	// is deliberately NOT fatal: the only way it fails is an
-	// AGENT_IMAGE_CLAUDECODE that github.com/distribution/reference cannot
-	// parse (an uppercase local build tag, say), and taking the whole
-	// operator -- every running agent's lifecycle API -- down over a cosmetic
-	// sidebar panel is the wrong trade. agent.Manager tolerates a nil
-	// registry: RefreshAgentImageTags then records "registry client not
-	// configured" and keeps the last-known list.
-	var reg registry.Client
-	if hc, rerr := registry.New(registry.Options{
-		Image:     cfg.AgentImageClaudeCode,
-		BaseURL:   cfg.AgentImageRegistryURL,
-		AuthToken: cfg.AgentImageRegistryToken.Reveal(),
-		UserAgent: "docker-operator/" + version,
-	}); rerr != nil {
-		log.Warn("agent-image tag discovery is disabled: the registry client could not be built",
-			"agent_image", cfg.AgentImageClaudeCode, "agent_image_registry_url", cfg.AgentImageRegistryURL, "error", rerr)
-	} else {
-		reg = hc
+	// One tag-discovery client per harness, over the SAME registry root and
+	// credential -- only the repository differs. A failure to build one is
+	// deliberately NOT fatal, and disables discovery for that harness ONLY.
+	regs := make(map[string]registry.Client, len(config.Harnesses()))
+	for _, harness := range config.Harnesses() {
+		image := cfg.AgentImageFor(harness)
+		hc, rerr := registry.New(registry.Options{
+			Image:     image,
+			BaseURL:   cfg.AgentImageRegistryURL,
+			AuthToken: cfg.AgentImageRegistryToken.Reveal(),
+			UserAgent: "docker-operator/" + version,
+		})
+		if rerr != nil {
+			log.Warn("agent-image tag discovery is disabled for this harness: the registry client could not be built",
+				"harness", harness, "agent_image", image,
+				"agent_image_registry_url", cfg.AgentImageRegistryURL, "error", rerr)
+			continue
+		}
+		regs[harness] = hc
 	}
 
-	mgr := agent.NewManager(docker, reg, st, cfg, log, agent.Options{})
+	mgr := agent.NewManager(docker, regs, st, cfg, log, agent.Options{})
 
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), reconcileTimeout)
 	report, err := mgr.Reconcile(reconcileCtx)
@@ -152,12 +152,20 @@ func run(log *slog.Logger) error {
 	stopLoginJanitor := startAnthropicLoginJanitor(mgr, log)
 	defer stopLoginJanitor()
 
-	// Poll the registry for the agent image's published tags on a timer (and
-	// once immediately, inside the goroutine, so a slow or offline registry
-	// never delays ListenAndServe).
-	stopImageRefresher := startAgentImageRefresher(mgr,
-		clampDuration(cfg.AgentImageRefreshInterval, minAgentImageRefreshInterval), log)
-	defer stopImageRefresher()
+	// Poll each harness's registry for its agent image's published tags on a
+	// timer (and once immediately, inside its own goroutine, so a slow or
+	// offline registry never delays ListenAndServe and never delays the
+	// OTHER harness's poll).
+	refreshInterval := clampDuration(cfg.AgentImageRefreshInterval, minAgentImageRefreshInterval)
+	stopImageRefreshers := make([]func(), 0, len(config.Harnesses()))
+	for _, harness := range config.Harnesses() {
+		stopImageRefreshers = append(stopImageRefreshers, startAgentImageRefresher(mgr, harness, refreshInterval, log))
+	}
+	defer func() {
+		for _, stop := range stopImageRefreshers {
+			stop()
+		}
+	}()
 
 	// The centralized per-agent file store. Empty FILESTORE_DIR disables it
 	// entirely (no /api/files* routes, no /workspace/store mount); an open
@@ -312,24 +320,21 @@ func clampDuration(d, min time.Duration) time.Duration {
 // agentImageRefresher is the one Manager method startAgentImageRefresher
 // needs, as an interface seam so main_test.go can drive it with a counter.
 type agentImageRefresher interface {
-	RefreshAgentImageTags(context.Context) error
+	RefreshAgentImageTags(ctx context.Context, harness string) error
 }
 
-// startAgentImageRefresher runs one immediate agent-image tag poll and then
-// re-polls every interval. It is modeled on startAnthropicLoginJanitor, with
-// two differences: the first poll happens inside the goroutine (before the
-// ticker) so a slow registry cannot delay startup, and the returned stop
-// function only cancels and waits -- there is nothing to tear down. A poll
-// error is logged at Warn and the last-known list is kept; context
-// cancellation is not logged.
-func startAgentImageRefresher(r agentImageRefresher, interval time.Duration, log *slog.Logger) func() {
+// startAgentImageRefresher runs one immediate agent-image tag poll for ONE
+// harness and then re-polls every interval. One call (and so one goroutine)
+// per harness on purpose: a slow or hung poll of one registry can never
+// delay the other's.
+func startAgentImageRefresher(r agentImageRefresher, harness string, interval time.Duration, log *slog.Logger) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 
-		if err := r.RefreshAgentImageTags(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Warn("agent-image refresher: initial poll failed (last-known list kept)", "error", err)
+		if err := r.RefreshAgentImageTags(ctx, harness); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn("agent-image refresher: initial poll failed (last-known list kept)", "harness", harness, "error", err)
 		}
 
 		t := time.NewTicker(interval)
@@ -339,8 +344,8 @@ func startAgentImageRefresher(r agentImageRefresher, interval time.Duration, log
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := r.RefreshAgentImageTags(ctx); err != nil && !errors.Is(err, context.Canceled) {
-					log.Warn("agent-image refresher: poll failed (last-known list kept)", "error", err)
+				if err := r.RefreshAgentImageTags(ctx, harness); err != nil && !errors.Is(err, context.Canceled) {
+					log.Warn("agent-image refresher: poll failed (last-known list kept)", "harness", harness, "error", err)
 				}
 			}
 		}

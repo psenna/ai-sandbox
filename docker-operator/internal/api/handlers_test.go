@@ -210,7 +210,7 @@ func (f *fakeManager) DefaultAutoMode() string             { return f.defaultAut
 func (f *fakeManager) AgentImage() string    { return f.agentImage }
 func (f *fakeManager) DockerRuntime() string { return f.dockerRuntime }
 
-func (f *fakeManager) AgentImageTags(_ context.Context) (store.AgentImageTags, bool, error) {
+func (f *fakeManager) AgentImageTags(_ context.Context, _ string) (store.AgentImageTags, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.imageTagsErr != nil {
@@ -219,7 +219,7 @@ func (f *fakeManager) AgentImageTags(_ context.Context) (store.AgentImageTags, b
 	return f.imageTags, len(f.imageTags.Tags) > 0 || !f.imageTags.CheckedAt.IsZero(), nil
 }
 
-func (f *fakeManager) RefreshAgentImageTags(_ context.Context) error {
+func (f *fakeManager) RefreshAgentImageTags(_ context.Context, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refreshCalls++

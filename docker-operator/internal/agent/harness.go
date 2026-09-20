@@ -5,29 +5,30 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
-// harnessOf returns a's harness, treating "" (a record written before the
+// HarnessOf returns a's harness, treating "" (a record written before the
 // Harness field existed, or a zero-value store.Agent in a test) as
 // config.HarnessClaudeCode -- the built-in default resolveSpec applies to a
 // create/update request that names no harness.
-func harnessOf(a store.Agent) string {
+func HarnessOf(a store.Agent) string {
 	return firstNonEmpty(a.Harness, config.HarnessClaudeCode)
 }
 
-// agentImageFor returns the operator's default image for harness: the
-// opencode image for config.HarnessOpenCode, else the ordinary claude-code
-// AgentImage. It does not consider any per-agent override -- see
-// agentImageRef for that.
-func (m *Manager) agentImageFor(harness string) string {
-	if harness == config.HarnessOpenCode {
-		return m.cfg.AgentImageOpenCode
-	}
-	return m.cfg.AgentImageClaudeCode
+// AgentImageFor returns the operator's default image REPOSITORY for harness
+// (bare: no tag -- see config.Config.AgentImageFor and its Validate rule).
+// It considers no per-agent override (see agentImageRef) and no tag at all
+// (see defaultAgentImageRef / resolveAgentImageRef).
+func (m *Manager) AgentImageFor(harness string) string {
+	return m.cfg.AgentImageFor(harness)
 }
 
-// agentImageRef returns the image reference a's container should run: a's
-// own pinned Image when set, else the operator's default for a's harness.
+// agentImageRef returns the image reference a's container should run: a's own
+// pinned Image when set, else the operator's default repository for a's
+// harness at :latest. The explicit :latest is the LEGACY-record path only --
+// every record Create/Update writes carries a concrete Image -- and it is
+// explicit because the config value is now a bare repository (#195), which a
+// daemon would resolve to :latest anyway.
 func (m *Manager) agentImageRef(a store.Agent) string {
-	return firstNonEmpty(a.Image, m.agentImageFor(harnessOf(a)))
+	return firstNonEmpty(a.Image, RepoWithoutTag(m.AgentImageFor(HarnessOf(a)))+":latest")
 }
 
 // configVolumeMount returns where a's per-agent config volume
@@ -35,7 +36,7 @@ func (m *Manager) agentImageRef(a store.Agent) string {
 // opencode XDG data dir for a HarnessOpenCode agent, else the ordinary
 // Claude Code config mount.
 func configVolumeMount(a store.Agent) string {
-	if harnessOf(a) == config.HarnessOpenCode {
+	if HarnessOf(a) == config.HarnessOpenCode {
 		return opencodeDataMount
 	}
 	return configMount
@@ -58,7 +59,7 @@ func autoModeArgs(a store.Agent) []string {
 	if a.AutoMode != config.AutoModeOn {
 		return nil
 	}
-	if harnessOf(a) == config.HarnessOpenCode {
+	if HarnessOf(a) == config.HarnessOpenCode {
 		return []string{"--auto"}
 	}
 	return []string{"--permission-mode", "auto"}
@@ -75,7 +76,7 @@ func autoModeArgs(a store.Agent) []string {
 // safe there even against an empty session store.
 func firstInvocationArgs(a store.Agent, start sessionStart) []string {
 	args := autoModeArgs(a)
-	if harnessOf(a) == config.HarnessOpenCode {
+	if HarnessOf(a) == config.HarnessOpenCode {
 		if start != sessionFresh {
 			args = append(args, "--continue")
 		}

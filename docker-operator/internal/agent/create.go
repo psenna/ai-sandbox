@@ -283,15 +283,16 @@ func (o Options) withDefaults() Options {
 // is the thing being protected.
 type Manager struct {
 	docker dockerclient.Client
-	// registry lists the agent image's published tags for the discovery /
-	// refresh flow. It may be nil (RefreshAgentImageTags then records
-	// "registry client not configured" and keeps the last list); every other
-	// path tolerates a nil registry too.
-	registry registry.Client
-	store    *store.Store
-	cfg      config.Config
-	log      *slog.Logger
-	opts     Options
+	// registries holds one tag-discovery client per harness, keyed by a
+	// config.NormalizeHarness-canonical harness name. A missing or nil entry
+	// disables discovery for THAT harness only (RefreshAgentImageTags then
+	// records "registry client not configured" and keeps the last list); a
+	// nil map disables it for both. Every other path tolerates both.
+	registries map[string]registry.Client
+	store      *store.Store
+	cfg        config.Config
+	log        *slog.Logger
+	opts       Options
 	// files is the centralized per-agent file store. nil when the file
 	// store is disabled (config.FilestoreDir == "") or could not be opened.
 	files *filestore.Store
@@ -299,14 +300,19 @@ type Manager struct {
 
 // NewManager returns a Manager. A nil log falls back to slog.Default.
 //
+// regs is the per-harness agent-image tag-discovery clients, keyed by harness
+// (see config.Harnesses). It may be nil or partial: a harness with no client
+// simply has no discovery -- cmd/docker-operator treats a registry client
+// that cannot be built as a per-harness warning, not a fatal error.
+//
 // When cfg enables the centralized file store (cfg.FilestoreDir != "") the
 // store is opened here; a failure is logged and the manager keeps running
 // without it (agents are then created with no /workspace/store mount).
-func NewManager(docker dockerclient.Client, reg registry.Client, st *store.Store, cfg config.Config, log *slog.Logger, opts Options) *Manager {
+func NewManager(docker dockerclient.Client, regs map[string]registry.Client, st *store.Store, cfg config.Config, log *slog.Logger, opts Options) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	m := &Manager{docker: docker, registry: reg, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
+	m := &Manager{docker: docker, registries: regs, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
 	if cfg.FilestoreDir != "" {
 		fs, err := filestore.New(cfg.FilestoreDir)
 		if err != nil {
@@ -365,10 +371,13 @@ type CreateRequest struct {
 	// environment so it uses Claude Code's built-in default.
 	MaxContextTokens string
 	// ImageTag pins this one agent to a specific tag of the operator's agent
-	// image repository. Empty means the operator's configured AgentImage
-	// verbatim. A non-empty tag is validated (resolveAgentImageRef) but is
-	// NOT required to be one of the discovered tags. The resolved reference is
-	// stamped on the record as store.Agent.Image.
+	// image repository (whichever of the two its harness selects). Empty
+	// means the default tag resolveAgentImageRef works out from the host and
+	// the registry (Manager.defaultImageTagFor): what is already on the
+	// daemon wins over a blind "newest published". A non-empty tag is
+	// validated (resolveAgentImageRef) but is NOT required to be one of the
+	// discovered tags. The resolved reference is stamped on the record as
+	// store.Agent.Image.
 	ImageTag string
 	// AutoMode overrides the operator's DefaultAutoMode for this one agent:
 	// config.AutoModeOn, config.AutoModeOff, or "" to use that default. It is
@@ -406,12 +415,14 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	// caller's mistake and must not consume a slot even briefly. Update shares
 	// resolveSpec (everything but the image ref, which it resolves itself
 	// because a per-agent tag substitution needs the record's own repository).
+	// An empty ImageTag now also makes resolveAgentImageRef query the local
+	// daemon for what it already holds before picking a default tag.
 	rs, err := m.resolveSpec(ctx, req)
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
 
-	imageRef, err := m.resolveAgentImageRef(req.ImageTag, rs.harness)
+	imageRef, err := m.resolveAgentImageRef(ctx, req.ImageTag, rs.harness)
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
@@ -1181,7 +1192,7 @@ func (m *Manager) agentEnv(a store.Agent, rb resolvedBackend) (map[string]string
 		env["AGENT_SHARED_DIR"] = agentSharedMount
 	}
 
-	if harnessOf(a) == config.HarnessOpenCode {
+	if HarnessOf(a) == config.HarnessOpenCode {
 		if err := applyOpencodeEnv(env, rb); err != nil {
 			return nil, err
 		}

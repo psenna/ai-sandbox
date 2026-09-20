@@ -322,7 +322,7 @@ func TestReconcile_DindExitsImmediately_RetriedUntilHealthy(t *testing.T) {
 	f.AddImage(cfg.AgentImageClaudeCode)
 	st := newTestStore(t, 5)
 	wrapped := &flakyContainerStart{Fake: f}
-	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), testOptions())
+	m := NewManager(wrapped, newTestRegistries(), st, cfg, testLogger(), testOptions())
 
 	a := createRunningAgent(t, m)
 	ctx := context.Background()
@@ -376,7 +376,7 @@ func TestReconcile_DindExitsImmediately_ExhaustsRetries_RecoversViaRecreate(t *t
 	st := newTestStore(t, 5)
 	wrapped := &flakyContainerStart{Fake: f}
 	opts := testOptions()
-	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), opts)
+	m := NewManager(wrapped, newTestRegistries(), st, cfg, testLogger(), opts)
 
 	a := createRunningAgent(t, m)
 	ctx := context.Background()
@@ -424,7 +424,7 @@ func TestReconcile_DindExitsImmediately_RecreateAlsoFails_MarksError(t *testing.
 	st := newTestStore(t, 5)
 	wrapped := &flakyContainerStart{Fake: f}
 	opts := testOptions()
-	m := NewManager(wrapped, newTestRegistry(), st, cfg, testLogger(), opts)
+	m := NewManager(wrapped, newTestRegistries(), st, cfg, testLogger(), opts)
 
 	a := createRunningAgent(t, m)
 	ctx := context.Background()
