@@ -158,12 +158,18 @@ services:
       # two an agent actually runs. Bare repository, no tag -- same as
       # AGENT_IMAGE_CLAUDECODE.
       AGENT_IMAGE_OPENCODE: "${AGENT_IMAGE_OPENCODE:-ghcr.io/psenna/ai-sandbox-agent-opencode}"
-      # Agent-image tag discovery: the operator polls the registry for
-      # AGENT_IMAGE_CLAUDECODE's :YYYYMMDD-HHMMSS tags and surfaces them in
-      # the web UI. REFRESH_INTERVAL is a Go duration (floored at 1m);
-      # REGISTRY_URL is empty to derive the root from AGENT_IMAGE_CLAUDECODE's
-      # domain; REGISTRY_TOKEN is only needed for a private agent-image
-      # repository.
+      # Agent-image tag discovery: the operator polls the registry for each
+      # harness's own repository's :YYYYMMDD-HHMMSS tags (AGENT_IMAGE_CLAUDECODE
+      # and AGENT_IMAGE_OPENCODE, independently) and also asks the local
+      # Docker daemon which tags of that repository it already holds -- the
+      # per-harness default tag prefers the host's inventory (newest
+      # :YYYYMMDD-HHMMSS tag it holds, else any other tag it holds) over the
+      # newest published tag, so a create/update needs no pull whenever the
+      # host can already serve one. REFRESH_INTERVAL is a Go duration
+      # (floored at 1m), shared by both harnesses' pollers;
+      # REGISTRY_URL is empty to derive each harness's registry root from its
+      # own repository's domain; REGISTRY_TOKEN is only needed for a private
+      # agent-image repository and is shared by both.
       AGENT_IMAGE_REFRESH_INTERVAL: "${AGENT_IMAGE_REFRESH_INTERVAL:-1h}"
       AGENT_IMAGE_REGISTRY_URL: "${AGENT_IMAGE_REGISTRY_URL:-}"
       AGENT_IMAGE_REGISTRY_TOKEN: "${AGENT_IMAGE_REGISTRY_TOKEN:-}"
