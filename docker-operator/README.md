@@ -239,7 +239,7 @@ anything else on the same Docker host.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` / `default_auto_mode` (so the create form needs no second request). |
+| `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` / `default_auto_mode` (so the create form needs no second request). Each agent record carries `upgrade_available` (the agent's own harness's registry has published a newer tag) and `upgrade_ready` (a newer tag of that same harness is already on this host — an instant, no-pull update); the two are independent, not one a subset of the other, so either alone is worth surfacing. Both are measured only on `:YYYYMMDD-HHMMSS` tags — an agent pinned to `:latest`, to any other non-date-time tag, or with no recorded `image` reports neither. |
 | `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","harness":"claude-code"\|"opencode","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `harness` picks the CLI and defaults to `claude-code` (there is no operator-wide harness default); any other value is `400` (`invalid_param`, field `harness`, `"harness" must be "claude-code" or "opencode"`), and `"opencode"` requires the `ollama` backend — `opencode` against `anthropic`, named explicitly **or** inherited from a `DEFAULT_AGENT_BACKEND` of `anthropic`, is `400` (`invalid_param`, field `harness`, `the "opencode" harness requires the "ollama" backend`). See [Choosing a harness](#choosing-a-harness). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE_CLAUDECODE` — or `AGENT_IMAGE_OPENCODE` for an `opencode` agent, which is also the repository an `image_tag` is resolved against. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
 | `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `harness`, `model`, `fast_model`, `ollama_url`, `repo`, `auto_mode`). `harness` is omitted on records created before the field existed; the operator reads that as `claude-code`. |
 | `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
@@ -254,8 +254,8 @@ anything else on the same Docker host.
 | `GET` | `/ws/agents/{id}/terminal` | WebSocket terminal bridge — binary frames are raw PTY bytes each way, a JSON text frame is `{"type":"resize","cols":N,"rows":N}`. |
 | `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
 | `GET`/`POST`/`DELETE` | `/api/anthropic/login` | Status / start / stop the `claude setup-token` helper container. `POST` returns `{"active":true,"ws":"/ws/anthropic/login/terminal"}`. |
-| `GET` | `/api/agent-image/tags` | The discovered `:YYYYMMDD-HHMMSS` agent-image tags, newest-first: `{"tags":[…],"newest":"…","operator_default":"…","checked_at":"…"\|null,"last_error":"…"}`. Polled on a timer (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`, floored at `1m`). |
-| `POST` | `/api/agent-image/refresh` | Force a registry poll now, then return the same body as `GET /api/agent-image/tags`. A poll failure is **not** fatal — still `200`, with the last-known list kept and `last_error` populated. |
+| `GET` | `/api/agent-image/tags` | One entry per harness: `{"harnesses":{"claude-code":{"repo":"…","default_tag":"…","newest":"…","tags":[{"tag":"…","present":true\|false}],"checked_at":"…"\|null,"last_error":"…"},"opencode":{…}}}`. `newest` is the newest `:YYYYMMDD-HHMMSS` tag that harness's registry poll has seen (registry only — it ignores what the host holds), `checked_at` is `null` until that harness's first poll, and `last_error` is that harness's own, never a global one. `tags` is the offered set — the 5 newest published date-time tags, unioned with every tag already on this host (however old, date-time or not) and with `default_tag` itself, each flagged `present`; anything else is dropped. `default_tag` is the newest date-time tag already on the host, else the lexically greatest *other* tag on the host (a hand-tagged `:dev`, or the `:latest` a local `make agent-image` shadowed), else the newest published date-time tag, else `latest`. Polled on a timer (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`, floored at `1m`), independently per harness — a slow/failing poll of one never delays or blocks the other's. |
+| `POST` | `/api/agent-image/refresh` | Force a registry poll now for every harness, then return the same body as `GET /api/agent-image/tags`. A poll failure for one harness is **not** fatal to the request or to the other harness's poll — still `200`, with that harness's last-known list kept and its own `last_error` populated. |
 | `GET` | `/ws/anthropic/login/terminal` | Terminal bridge into the login helper container (same frame protocol as the agent terminal). |
 
 ### Authenticating the API
@@ -541,31 +541,64 @@ inside a `tmux` session. For an `anthropic` agent, set the shared
 credential first (sidebar **Anthropic account** panel — see [Anthropic
 login](#anthropic-login)).
 
-The agent image repository (`AGENT_IMAGE_CLAUDECODE`, default
-`ghcr.io/psenna/ai-sandbox-agent`; the tag is resolved separately, not baked
-into this setting) is pulled on first use — it is published to GHCR by
+Each harness has its own agent image **repository**, never a baked-in tag —
+which tag actually runs is resolved separately, per the fallback chain below.
+Claude Code's is `AGENT_IMAGE_CLAUDECODE` (default
+`ghcr.io/psenna/ai-sandbox-agent`); opencode's is `AGENT_IMAGE_OPENCODE`
+(default `ghcr.io/psenna/ai-sandbox-agent-opencode`). Both are published to
+GHCR by
 [`.github/workflows/docker-operator-agent-image.yml`](../.github/workflows/docker-operator-agent-image.yml)
-on every `docker-operator/agent/**` change to `main`, tagged with a UTC
-date-time plus `:latest`. Create agents with an explicit `image_tag` for a
-reproducible pin, or run `make agent-image` to build and shadow `:latest`
-locally. An agent whose harness is `opencode` instead runs
-`AGENT_IMAGE_OPENCODE` (default `ghcr.io/psenna/ai-sandbox-agent-opencode`,
-also a bare repository); a per-agent `image_tag` override still applies to
-whichever of the two repositories the agent's harness selects. This opencode
-image is published by the same
-[`docker-operator-agent-image.yml`](../.github/workflows/docker-operator-agent-image.yml)
-workflow's `agent-image-opencode` job, and has its own `make
-agent-image-opencode` / `make agent-image-opencode-smoke` Makefile targets
-(see [Development](#development) below).
+on every push to `main` touching `docker-operator/agent/**`,
+`docker-operator/agent-opencode/**` or one of the shared `claude-code/`
+assets both Dockerfiles bake — the workflow has no per-job path filter, so
+each qualifying push publishes **both** images, each tagged with a UTC
+date-time plus `:latest`. Build either locally with `make agent-image` /
+`make agent-image-opencode` (see [Development](#development) below), which
+tags the result `:latest`, shadowing the published one on this host; a
+per-agent `image_tag` override always applies to whichever of the two
+repositories that agent's harness selects.
 
-The operator polls the registry for those date-time tags
-(`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`; `AGENT_IMAGE_REGISTRY_URL` /
-`AGENT_IMAGE_REGISTRY_TOKEN` override the derived registry root / supply a
-Bearer for a private repo) and surfaces them in the sidebar **Agent image**
-panel and a per-agent dropdown on the create form. Creating an agent with a
-non-default tag stamps the resolved reference on its record (`image`). Create
-agents with an explicit `:YYYYMMDD-HHMMSS` `image_tag` so the per-agent
-upgrade prompts planned in follow-up issues have a known starting point.
+The operator independently polls each harness's registry for its
+`:YYYYMMDD-HHMMSS` tags (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`, shared
+by both pollers; `AGENT_IMAGE_REGISTRY_URL` / `AGENT_IMAGE_REGISTRY_TOKEN`
+override the derived registry root / supply a Bearer for a private repo, also
+shared) — a slow or failing poll of one harness never blocks or delays the
+other's. It also asks the local Docker daemon which tags of that same
+repository the host already holds — every one of them, not just the published
+ones — live on every request that needs it (never cached), so presence
+reflects the host's actual current state even if it changed out of band
+(another `make agent-image`, another agent's pull).
+
+Combining the two determines each harness's **default tag** — the host's
+inventory wins over the registry's, so a create/update needs no pull whenever
+the host can already serve one: the newest `:YYYYMMDD-HHMMSS` tag on the host;
+else the lexically greatest *other* tag on the host (a hand-tagged `:dev`, or
+the `:latest` a local `make agent-image` shadowed); else the newest published
+date-time tag; else `latest` — and its **offered tag list** — the 5 newest
+registry-published date-time tags, unioned with every tag already on the host
+however old (date-time or not) and with the default tag itself, each flagged
+`present`; anything else is dropped rather than left to clutter the picker.
+Both are recomputed on demand, per harness, and drive the sidebar
+**Agent image** panel (one block per harness) and the per-agent tag dropdown
+on the create form, which swaps to the selected harness's own tags with no
+extra request the moment the Harness radio changes.
+
+Each agent record also carries two independent upgrade signals:
+`upgrade_available` — the agent's own harness's registry has published
+something newer than the agent's current tag — and `upgrade_ready` — a newer
+tag of that same harness is already on this host, so updating needs no pull.
+Neither is a subset of the other (the host can hold a build the registry
+snapshot hasn't caught up to yet), so the sidebar's ⬆ marker lights up on
+either and the agent detail's upgrade button appears on either; `upgrade_ready`
+wins the wording (**Upgrade ready**, not **Upgrade available**) and its own
+colour, being the actionable, no-pull case. Both flags are measured on
+date-time tags only: an agent running `:latest` (or any other non-date-time
+tag) never reports an upgrade, so pin an agent to a `:YYYYMMDD-HHMMSS`
+`image_tag` — or leave it on the default tag, which is one whenever the host
+or the registry has one — if you want its upgrade markers to work. Every
+agent's record stamps the fully resolved reference (`image`) — repository
+plus the tag that actually resolved — whether that tag came from `image_tag`
+or from the fallback chain above.
 
 **This step needs `sysbox-runc` installed on the Docker host** (unprivileged
 Docker-in-Docker for the agent's own DinD sidecar; see
