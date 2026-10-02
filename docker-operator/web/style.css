@@ -221,8 +221,13 @@ html, body {
 	white-space: nowrap;
 }
 
-/* Indented to sit under the name, past the status dot + its gap. */
+/* Indented to sit under the name, past the status dot + its gap. Flex (not
+   block) so the backend badge's margin-left:auto right-aligns it under the
+   harness badge above, rather than trailing inline after the activity text. */
 .agent-item__meta {
+	display: flex;
+	align-items: center;
+	gap: 8px;
 	padding-left: 16px;
 	min-height: 1em;
 	font-size: var(--font-xs);
@@ -465,7 +470,11 @@ html, body {
    published-upgrade marker above. */
 .agent-item__upgrade--ready { color: var(--status-running); }
 
-/* --- agent list backend badge --- */
+/* --- agent list badges: harness (name row) and backend (meta row) ---
+   Each is right-aligned in its own flex row by margin-left:auto, so the
+   backend lands directly beneath the harness. One shared recipe, because they
+   are the same kind of marker -- only what they name differs. */
+.agent-item__harness,
 .agent-item__backend {
 	margin-left: auto;
 	font-size: 10px;
@@ -475,18 +484,27 @@ html, body {
 	flex: 0 0 auto;
 }
 
-/* --- Anthropic account panel (sidebar footer) --- */
-.anthropic-panel {
-	border-top: 1px solid var(--border);
-	margin-top: 8px;
-	padding-top: 8px;
+/* --- Settings page (main area) --- */
+.settings-btn { margin: 8px 0; }
+
+.settings-page {
+	max-width: 560px;
+	margin: 24px auto;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.settings-page__title { margin: 0; font-size: var(--font-md); }
+
+.settings-page__section {
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 12px;
 	font-size: 12px;
 }
 
-.anthropic-panel__title {
-	color: var(--fg-dim);
-	margin-bottom: 4px;
-}
+.settings-page__heading { margin: 0 0 8px; color: var(--fg-dim); font-size: var(--font-sm); }
 
 .anthropic-panel__status { display: block; margin-bottom: 6px; }
 .anthropic-panel__status--set { color: var(--status-running); }
@@ -498,18 +516,9 @@ html, body {
 	gap: 4px;
 }
 
-/* --- Agent image panel (sidebar footer) --- */
-.agent-image-panel {
-	border-top: 1px solid var(--border);
-	margin-top: 8px;
-	padding-top: 8px;
-	font-size: 12px;
-}
-
-.agent-image-panel__title {
-	color: var(--fg-dim);
-	margin-bottom: 4px;
-}
+/* Only rendered when a caller does NOT pass opts.noTitle (the Settings page
+   heads the section itself and does). */
+.agent-image-panel__title { color: var(--fg-dim); margin-bottom: 4px; }
 
 .agent-image-panel__harness { margin-bottom: 6px; }
 .agent-image-panel__harness-name { display: block; color: var(--fg); }

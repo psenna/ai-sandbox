@@ -82,16 +82,23 @@
 			activityText = 'Working…';
 		}
 
+		// The harness badge leads (it identifies what the agent IS), the
+		// backend badge trails on the row below (it says what it talks to).
+		// normalizeHarness is load-bearing, not cosmetic: agent.harness is
+		// omitempty, so a record written before the field existed arrives
+		// empty, and harnessLabel('') would render a blank badge rather than
+		// the claude-code default every other layer normalizes to.
 		return (
 			'<li class="agent-item' + selected + (isUnread ? ' agent-item--unread' : '') + '" data-agent-id="' + escapeHTML(agent.id) + '">' +
 				'<div class="agent-item__row">' +
 					'<span class="status-dot ' + dotCls + '" title="' + label.text + '"></span>' +
 					'<span class="agent-item__name">' + name + '</span>' +
 					upgrade +
-					'<span class="agent-item__backend" title="backend">' + escapeHTML(backendLabel(agent.backend)) + '</span>' +
+					'<span class="agent-item__harness" title="harness">' + escapeHTML(harnessLabel(normalizeHarness(agent.harness))) + '</span>' +
 				'</div>' +
 				'<div class="agent-item__meta">' +
 					'<span class="agent-item__activity' + activityCls + '">' + activityDot + activityText + '</span>' +
+					'<span class="agent-item__backend" title="backend">' + escapeHTML(backendLabel(agent.backend)) + '</span>' +
 				'</div>' +
 			'</li>'
 		);
@@ -115,6 +122,30 @@
 	function renderCapacity(agents, maxAgents) {
 		var count = agents ? agents.length : 0;
 		return count + ' of ' + maxAgents + ' agent' + (maxAgents === 1 ? '' : 's');
+	}
+
+	// agentChangePolicy is the sidebar-vs-main-area refresh policy for the two
+	// agent mutations the UI itself initiates. It lives here, pure and
+	// exported, because app.js is a bare IIFE with no exports and so cannot be
+	// unit-tested -- the same reason terminal.js exposes its protocol helpers.
+	//
+	//   'create' never touches the main area: the create form stays on screen
+	//   so its values survive for the next agent, and only the sidebar list
+	//   updates.
+	//
+	//   'delete' resets the main area to the placeholder ONLY when the deleted
+	//   agent is the one currently selected. Deleting some other agent -- or
+	//   deleting while nothing is selected, e.g. from the Settings page, which
+	//   clears the selection -- must leave whatever is on screen alone.
+	//
+	// Anything unrecognised degrades to 'sidebar-only', the harmless
+	// direction: a stale list entry self-heals on the next poll, a torn-down
+	// view does not.
+	function agentChangePolicy(kind, selectedID, changedID) {
+		if (kind === 'delete' && selectedID != null && selectedID === changedID) {
+			return 'reset-main-area';
+		}
+		return 'sidebar-only';
 	}
 
 	// backendLabel maps a backend id (config.BackendOllama /
@@ -281,7 +312,7 @@
 					'<label class="create-form__row">Opus-tier model<input class="create-form__model" type="text" value="' + model + '"></label>' +
 					'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +
 				'</div>' +
-				'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in the sidebar first).</p>' +
+				'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in Settings first).</p>' +
 				'<p class="create-form__opencode-note"' + (opencode ? '' : ' hidden') + '>opencode runs against Ollama only — the Anthropic backend is not available for it.</p>' +
 				'<div class="create-form__actions">' +
 					'<button class="create-form__submit btn btn--primary" type="submit">' + submitLabel + '</button>' +
@@ -393,6 +424,36 @@
 						row('Docker runtime', operator.docker_runtime, '—') +
 					'</dl>' +
 				'</section>' +
+			'</div>'
+		);
+	}
+
+	// SETTINGS_SECTIONS is the Settings page's table of contents: one heading
+	// plus an EMPTY body div per entry, which app.js fills and re-fills via
+	// [data-settings-body]. This list is the extension point -- a future
+	// sandbox setting is one entry here, one body renderer, and its wiring in
+	// app.js; nothing about the page shell changes.
+	var SETTINGS_SECTIONS = [
+		{ id: 'anthropic-account', title: 'Anthropic account' },
+		{ id: 'agent-image', title: 'Agent image' },
+	];
+
+	// renderSettingsPage renders the Settings page shell: a title plus one
+	// bordered section per SETTINGS_SECTIONS entry. The bodies start empty on
+	// purpose -- app.js owns the fetching/wiring and fills each one, so a
+	// section's content never depends on this function re-running.
+	function renderSettingsPage() {
+		return (
+			'<div class="settings-page">' +
+				'<h2 class="settings-page__title">Settings</h2>' +
+				SETTINGS_SECTIONS.map(function (s) {
+					return (
+						'<section class="settings-page__section" data-settings-section="' + escapeHTML(s.id) + '">' +
+							'<h3 class="settings-page__heading">' + escapeHTML(s.title) + '</h3>' +
+							'<div class="settings-page__body" data-settings-body="' + escapeHTML(s.id) + '"></div>' +
+						'</section>'
+					);
+				}).join('') +
 			'</div>'
 		);
 	}
@@ -601,19 +662,23 @@
 		return html + '</select>';
 	}
 
-	// renderAgentImagePanel renders the sidebar "Agent image" panel body from a
+	// renderAgentImagePanel renders the "Agent image" body from a
 	// harnessImageTags map: ONE block per harness (each with its own newest
 	// tag, its own last-checked time and its own error line -- the two
 	// repositories are polled independently, issue #199), under a SINGLE
 	// "Check now" button, since POST /api/agent-image/refresh refreshes every
 	// harness in one call. The raw API body is accepted too, so a caller that
 	// hasn't mapped it yet still renders.
-	function renderAgentImagePanel(byHarness) {
+	//
+	// opts.noTitle suppresses the built-in title, for the caller that already
+	// supplies its own heading -- the Settings page, whose section heading is
+	// "Agent image" and would otherwise be duplicated.
+	function renderAgentImagePanel(byHarness, opts) {
 		var map = (byHarness && byHarness.harnesses) ? harnessImageTags(byHarness) : (byHarness || {});
 		var keys = HARNESSES.filter(function (h) { return Object.prototype.hasOwnProperty.call(map, h); });
 		Object.keys(map).forEach(function (h) { if (keys.indexOf(h) < 0) keys.push(h); });
 
-		var html = '<div class="agent-image-panel__title">Agent image</div>';
+		var html = (opts && opts.noTitle) ? '' : '<div class="agent-image-panel__title">Agent image</div>';
 		keys.forEach(function (h) {
 			var e = imageTagsForHarness(map, h);
 			var newest = e.newest || newestDateTimeTag(imageTagNames(e.tags));
@@ -739,9 +804,11 @@
 		renderAgentListItem: renderAgentListItem,
 		renderAgentList: renderAgentList,
 		renderCapacity: renderCapacity,
+		agentChangePolicy: agentChangePolicy,
 		renderCreateForm: renderCreateForm,
 		renderTemplateBar: renderTemplateBar,
 		renderAgentInfo: renderAgentInfo,
+		renderSettingsPage: renderSettingsPage,
 		renderAnthropicStatus: renderAnthropicStatus,
 		isDateTimeTag: isDateTimeTag,
 		newestDateTimeTag: newestDateTimeTag,

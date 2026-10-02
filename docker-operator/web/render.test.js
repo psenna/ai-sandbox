@@ -154,10 +154,38 @@ test('backendLabel: maps ids to labels, empty falls back to Ollama', () => {
 	assert.equal(Render.backendLabel(undefined), 'Ollama');
 });
 
-test('renderAgentListItem: shows the backend label', () => {
-	assert.match(Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', backend: 'anthropic' }), /Anthropic/);
-	assert.match(Render.renderAgentListItem({ id: 'agt_b', name: 'B', status: 'running', backend: 'ollama' }), /Ollama/);
+test('renderAgentListItem: harness badge on the name row, backend on the meta row', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', backend: 'anthropic', harness: 'opencode' });
+
+	// Harness leads, in the same row as the name; the backend moved to the row
+	// below it.
+	const row = html.slice(html.indexOf('agent-item__row'), html.indexOf('agent-item__meta'));
+	const meta = html.slice(html.indexOf('agent-item__meta'));
+	assert.match(row, /agent-item__harness/);
+	assert.match(row, /opencode/);
+	assert.doesNotMatch(row, /agent-item__backend/);
+	assert.match(meta, /agent-item__backend/);
+	assert.match(meta, /Anthropic/);
 });
+
+test('renderAgentListItem: harness badge falls back to claude-code when the field is absent', () => {
+	// agent.harness is omitempty in the API payload, so a record written before
+	// the field existed arrives empty and must read as claude-code, not blank.
+	for (const a of [
+		{ id: 'agt_a', name: 'A', status: 'running' },
+		{ id: 'agt_b', name: 'B', status: 'running', harness: '' },
+	]) {
+		const row = Render.renderAgentListItem(a).slice(0, Render.renderAgentListItem(a).indexOf('agent-item__meta'));
+		assert.match(row, /agent-item__harness/);
+		assert.match(row, /Claude Code/);
+	}
+});
+
+test('renderAgentListItem: harness badge renders claude-code explicitly', () => {
+	const html = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', harness: 'claude-code' });
+	assert.match(html, /agent-item__harness[^>]*>Claude Code</);
+});
+
 
 test('renderCreateForm: defaults pre-fill the model fields and select the backend', () => {
 	const html = Render.renderCreateForm({ backend: 'ollama', model: 'glm-5.3:cloud', fastModel: 'glm-5.3-flash:cloud' });
@@ -380,12 +408,12 @@ test('upgradeAvailable: true only for a date-time current tag with a strictly ne
 	assert.equal(Render.upgradeAvailable('20260101-120000', ['20251231-000000', 'latest', '20260601-000000']), true);
 });
 
-test('renderAgentListItem: upgrade marker present only when upgrade_available is truthy, and before the backend badge', () => {
+test('renderAgentListItem: upgrade marker present only when upgrade_available is truthy, and before the harness badge', () => {
 	const withUpgrade = Render.renderAgentListItem({ id: 'agt_a', name: 'A', status: 'running', backend: 'ollama', upgrade_available: true });
 	assert.match(withUpgrade, /agent-item__upgrade/);
 	assert.ok(
-		withUpgrade.indexOf('agent-item__upgrade') < withUpgrade.indexOf('agent-item__backend'),
-		'upgrade marker should sit before the backend badge',
+		withUpgrade.indexOf('agent-item__upgrade') < withUpgrade.indexOf('agent-item__harness'),
+		'upgrade marker should sit before the harness badge',
 	);
 
 	assert.doesNotMatch(
@@ -886,4 +914,67 @@ test('renderTemplateBar: a template name containing HTML is escaped', () => {
 test('renderTemplateBar: an unnamed template shows a placeholder label', () => {
 	const html = Render.renderTemplateBar([{ id: 'tpl_x', name: '' }]);
 	assert.match(html, /\(unnamed template\)/);
+});
+
+// --- change #2: the Settings page -------------------------------------------
+
+test('renderSettingsPage: one section per settings entry, each with an empty body', () => {
+	const html = Render.renderSettingsPage();
+	assert.match(html, /settings-page__title[^>]*>Settings</);
+	assert.match(html, /data-settings-section="anthropic-account"/);
+	assert.match(html, /data-settings-section="agent-image"/);
+	// The bodies start empty -- app.js fills them -- so the shell never
+	// depends on a fetch having happened.
+	assert.match(html, /data-settings-body="anthropic-account"><\/div>/);
+	assert.match(html, /data-settings-body="agent-image"><\/div>/);
+});
+
+test('renderSettingsPage: section bodies are addressable by id, and in order', () => {
+	const html = Render.renderSettingsPage();
+	assert.ok(
+		html.indexOf('data-settings-body="anthropic-account"') < html.indexOf('data-settings-body="agent-image"'),
+		'expected the Anthropic section before the Agent image one',
+	);
+});
+
+test('renderAgentImagePanel: opts.noTitle suppresses only the built-in title', () => {
+	const map = { 'claude-code': { repo: 'ghcr.io/x/y', tags: [{ tag: '20260101-000000', present: true }] } };
+	const withTitle = Render.renderAgentImagePanel(map);
+	assert.match(withTitle, /agent-image-panel__title/);
+	assert.match(withTitle, /agent-image-panel__refresh/);
+
+	const noTitle = Render.renderAgentImagePanel(map, { noTitle: true });
+	assert.doesNotMatch(noTitle, /agent-image-panel__title/);
+	// Everything else is unchanged: the per-harness block and the button.
+	assert.match(noTitle, /data-harness="claude-code"/);
+	assert.match(noTitle, /agent-image-panel__refresh/);
+});
+
+// --- change #3: the sidebar-vs-main-area refresh policy ----------------------
+
+test('agentChangePolicy: create never resets the main area', () => {
+	assert.equal(Render.agentChangePolicy('create', null, 'agt_a'), 'sidebar-only');
+	assert.equal(Render.agentChangePolicy('create', 'agt_a', 'agt_a'), 'sidebar-only');
+});
+
+test('agentChangePolicy: delete resets the main area only when that agent is selected', () => {
+	assert.equal(Render.agentChangePolicy('delete', 'agt_a', 'agt_a'), 'reset-main-area');
+	assert.equal(Render.agentChangePolicy('delete', 'agt_a', 'agt_b'), 'sidebar-only');
+	// Deleting while nothing is selected (e.g. from Settings, which clears the
+	// selection) must leave whatever is on screen alone.
+	assert.equal(Render.agentChangePolicy('delete', null, 'agt_a'), 'sidebar-only');
+	assert.equal(Render.agentChangePolicy('delete', undefined, 'agt_a'), 'sidebar-only');
+});
+
+test('agentChangePolicy: an unknown kind degrades to sidebar-only', () => {
+	assert.equal(Render.agentChangePolicy('update', 'agt_a', 'agt_a'), 'sidebar-only');
+	assert.equal(Render.agentChangePolicy('', 'agt_a', 'agt_a'), 'sidebar-only');
+});
+
+// --- change #2: the create form's Anthropic note points at Settings ----------
+
+test('renderCreateForm: the Anthropic note points at Settings, not a sidebar panel', () => {
+	const html = Render.renderCreateForm({ backend: 'anthropic' });
+	assert.match(html, /set it in Settings first/);
+	assert.doesNotMatch(html, /in the sidebar first/);
 });
