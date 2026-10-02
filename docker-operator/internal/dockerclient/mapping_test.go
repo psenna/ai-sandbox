@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func TestEnvSlice(t *testing.T) {
 	}
 	got := envSlice(map[string]string{"B": "2", "A": "1", "C": "3"})
 	want := []string{"A=1", "B=2", "C=3"}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("envSlice = %v, want %v", got, want)
 	}
 }
@@ -126,7 +127,7 @@ func TestKeepRepoTags(t *testing.T) {
 	}
 	got := keepRepoTags("myapp", in)
 	want := []string{"myapp:v1", "myapp:v2"}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("keepRepoTags(myapp) = %v, want %v", got, want)
 	}
 
@@ -134,7 +135,7 @@ func TestKeepRepoTags(t *testing.T) {
 	// dangling "<none>:<none>" form.
 	gotAll := keepRepoTags("", in)
 	wantAll := []string{"myapp:v1", "myapp:v2", "myapp-other:v1", "otherapp:v1", "registry.example.com:5000/myapp:v1"}
-	if !equalStrings(gotAll, wantAll) {
+	if !slices.Equal(gotAll, wantAll) {
 		t.Errorf("keepRepoTags(\"\") = %v, want %v", gotAll, wantAll)
 	}
 
@@ -152,7 +153,7 @@ func TestKeepRepoTags(t *testing.T) {
 		"other:v1",
 	})
 	wantFam := []string{"myorg/agent-image:v1"}
-	if !equalStrings(gotFam, wantFam) {
+	if !slices.Equal(gotFam, wantFam) {
 		t.Errorf("keepRepoTags(FamiliarRepo(docker.io/myorg/agent-image)) = %v, want %v", gotFam, wantFam)
 	}
 }
@@ -442,16 +443,4 @@ func TestIsNotConnectedError(t *testing.T) {
 			}
 		})
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
