@@ -249,6 +249,12 @@ func OfferedImageTags(registryTags, localTags []string, defaultTag string) []Ima
 // localImageTags returns the tags of harness's agent image repository that
 // the daemon holds RIGHT NOW. Never cached. Best-effort: a daemon error
 // degrades to "nothing present" plus a warning, never a failed request.
+//
+// repo is handed to ImageList in the NORMALIZED form (RepoWithoutTag parses
+// through distribution/reference, so "myorg/agent-image" becomes
+// "docker.io/myorg/agent-image"); dockerclient canonicalizes it back to the
+// familiar form the daemon speaks internally (#205), so no caller here has to
+// care which form the daemon wants.
 func (m *Manager) localImageTags(ctx context.Context, harness string) []string {
 	h := config.NormalizeHarness(harness)
 	repo := RepoWithoutTag(m.AgentImageFor(h))

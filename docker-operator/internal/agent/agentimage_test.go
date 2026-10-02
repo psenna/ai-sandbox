@@ -114,6 +114,10 @@ func TestRepoWithoutTag(t *testing.T) {
 		"ghcr.io/psenna/ai-sandbox-agent:latest":          "ghcr.io/psenna/ai-sandbox-agent",
 		"ghcr.io/psenna/ai-sandbox-agent@sha256:" + hex64: "ghcr.io/psenna/ai-sandbox-agent",
 		"host:5000/team/img:v2":                           "host:5000/team/img",
+		// A domain-less reference is NORMALIZED to Docker Hub, which is exactly
+		// the form this repo then hands to ImageList -- the #205 seam.
+		"myorg/agent-image": "docker.io/myorg/agent-image",
+		"busybox":           "docker.io/library/busybox",
 	}
 	for ref, want := range cases {
 		if got := RepoWithoutTag(ref); got != want {
@@ -409,6 +413,30 @@ func TestLocalImageTags(t *testing.T) {
 		sort.Strings(want)
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("localImageTags = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a domain-less repo still finds the host's images (#205)", func(t *testing.T) {
+		cfg := testConfig(5)
+		cfg.AgentImageClaudeCode = "myorg/agent-image"
+		m, f, _ := newTestManagerCfg(t, cfg)
+
+		f.AddImage("myorg/agent-image:20260101-120000")
+		// A decoy from another registry -- a form-blind comparison could
+		// confuse it for the same repository, and it must not leak in.
+		f.AddImage("other.example.com/other-image:20260301-000000")
+
+		got := m.localImageTags(ctx, config.HarnessClaudeCode)
+		want := []string{"20260101-120000"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("localImageTags = %v, want %v", got, want)
+		}
+
+		// The host-present tag must win over the :latest fallback.
+		wantRef := "docker.io/myorg/agent-image:20260101-120000"
+		ref, err := m.resolveAgentImageRef(ctx, "", config.HarnessClaudeCode)
+		if err != nil || ref != wantRef {
+			t.Errorf("resolveAgentImageRef(\"\") = (%q, %v), want (%q, nil)", ref, err, wantRef)
 		}
 	})
 

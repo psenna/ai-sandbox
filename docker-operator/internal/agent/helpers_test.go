@@ -16,12 +16,13 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
-// Domain-qualified deliberately: RepoWithoutTag normalizes a domain-less
-// reference (e.g. "test-agent-image:dev") to "docker.io/library/..." via
-// distribution/reference, which would break every repo-keyed local-image
-// lookup added in #198 -- the fake daemon is seeded with these exact refs
-// (see newTestManagerCfg's f.AddImage calls), and a lookup keyed by the
-// normalized form would never match them.
+// Domain-qualified deliberately, so these stand-in repositories can never
+// collide with a real Docker Hub image name. This is no longer needed to keep
+// repo-keyed local-image lookups working: dockerclient.ImageList canonicalizes
+// both the repo it is given and the daemon's RepoTags to the familiar form
+// (#205), so a domain-less repo would match too. The fake daemon is still
+// seeded with these exact refs (see newTestManagerCfg's f.AddImage calls), and
+// the explicit domain keeps them unmistakably synthetic.
 const testAgentImageClaudeCode = "test.example.com/agent-image:dev"
 const testAgentImageOpenCode = "test.example.com/agent-image-opencode:dev"
 

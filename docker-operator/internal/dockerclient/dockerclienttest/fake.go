@@ -825,15 +825,23 @@ func (f *Fake) ImagePull(ctx context.Context, ref string) error {
 // repository is repo, using the same "a colon with no later slash is the tag
 // separator" rule the real client applies. An empty repo returns every
 // seeded image.
+//
+// Both sides are canonicalized with dockerclient.FamiliarRepo (#205): the repo
+// argument and each seeded ref's repository are reduced to the daemon's
+// familiar form before comparing, so a domain-less repo ("alpine") matches a
+// seeded "alpine:latest" exactly as the real daemon would -- and, since the
+// fake canonicalizes both sides, a seeded ref written in the normalized form
+// ("docker.io/library/alpine:latest") matches too.
 func (f *Fake) ImageList(ctx context.Context, repo string) ([]dockerclient.Image, error) {
 	if err := f.call(OpImageList, repo); err != nil {
 		return nil, err
 	}
+	repo = dockerclient.FamiliarRepo(repo)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []dockerclient.Image
 	for ref := range f.images {
-		if repo != "" && fakeRepoOf(ref) != repo {
+		if repo != "" && dockerclient.FamiliarRepo(fakeRepoOf(ref)) != repo {
 			continue
 		}
 		out = append(out, dockerclient.Image{ID: "sha256:" + ref, RepoTags: []string{ref}})

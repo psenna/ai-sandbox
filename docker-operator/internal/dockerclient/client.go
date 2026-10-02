@@ -11,6 +11,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/distribution/reference"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
@@ -202,10 +203,14 @@ type ImageClient interface {
 	// registry.
 	//
 	// "Repository" means the reference with no tag and no digest, e.g.
-	// "ghcr.io/psenna/ai-sandbox-agent". Entries the daemon returns that
-	// carry no tag inside repo (dangling "<none>:<none>" layers, other
-	// repositories a loose daemon-side filter let through) are dropped, so
-	// every returned Image has at least one RepoTags entry inside repo.
+	// "ghcr.io/psenna/ai-sandbox-agent". repo may be given in EITHER the
+	// normalized form ("docker.io/myorg/agent-image") or the familiar form
+	// ("myorg/agent-image"); it is canonicalized to the familiar form, which
+	// is the form the daemon's images/json API speaks -- see FamiliarRepo.
+	// Entries the daemon returns that carry no tag inside repo (dangling
+	// "<none>:<none>" layers, other repositories a loose daemon-side filter
+	// let through) are dropped, so every returned Image has at least one
+	// RepoTags entry inside repo.
 	ImageList(ctx context.Context, repo string) ([]Image, error)
 }
 
@@ -813,7 +818,13 @@ func (d *Docker) ImagePull(ctx context.Context, ref string) error {
 }
 
 // ImageList returns the images present on the daemon for one repository.
+//
+// repo may be given in either the normalized or the familiar form; it is
+// canonicalized with FamiliarRepo before building the daemon-side filter and
+// before keepRepoTags compares RepoTags against it, because the daemon speaks
+// only the familiar form.
 func (d *Docker) ImageList(ctx context.Context, repo string) ([]Image, error) {
+	repo = FamiliarRepo(repo)
 	res, err := d.api.ImageList(ctx, client.ImageListOptions{Filters: referenceFilter(repo)})
 	if err != nil {
 		return nil, fmt.Errorf("listing images for repository %q: %w", repo, err)
@@ -877,17 +888,43 @@ func labelFilter(labels map[string]string) client.Filters {
 	return f
 }
 
+// FamiliarRepo returns repo in the form the daemon's images/json API speaks:
+// the FAMILIAR name -- no "docker.io/" domain, no "library/" prefix -- e.g.
+// "myorg/agent-image" for both "myorg/agent-image" and
+// "docker.io/myorg/agent-image", and "alpine" for "docker.io/library/alpine".
+// WHY (#205): the daemon matches the images/json "reference" filter and
+// reports RepoTags in the familiar form (verified against a real daemon,
+// Docker 27.5.1 / API 1.47: filters={"reference":["docker.io/library/busybox:*"]}
+// matches nothing while ["busybox:*"] matches busybox:1.36.1), while callers
+// like agent.localImageTags hold repos in the NORMALIZED form
+// (reference.ParseNormalizedNamed, "docker.io/..."). Handing the normalized
+// form to the daemon therefore returns zero images for a Docker-Hub-hosted
+// repository, silently degrading "prefer what's on the host" to "always use
+// the newest published tag". Canonicalizing here -- the only package that
+// talks to the daemon -- means no caller has to remember which form to use.
+// A repo that does not parse is returned unchanged (the same fallback
+// agent.RepoWithoutTag applies), so a malformed input fails visibly by
+// matching nothing rather than being silently rewritten.
+func FamiliarRepo(repo string) string {
+	named, err := reference.ParseNormalizedNamed(repo)
+	if err != nil {
+		return repo
+	}
+	return reference.FamiliarName(reference.TrimNamed(named))
+}
+
 // referenceFilter builds the images/json "reference" filter for one
-// repository. The pattern is "<repo>:*", made explicit even though a bare
-// "<repo>" matches the same set (moby's reference.FamiliarMatch falls back to
-// matching the familiar NAME when the full pattern match fails, so a tagless
-// pattern is not "no tag" -- it's "every tag", same as ":*"). Confirmed by
-// direct experiment that this filter does real work (it also prunes the
-// RepoTags the daemon returns per image, not just which images are listed)
-// but is still not the correctness boundary: keepRepoTags re-checks every
-// entry regardless, so a daemon that ignored this filter entirely would
-// still produce correct results. An empty repo returns no filter, since
-// ImageList(ctx, "") lists every image.
+// repository. repo must be in the familiar form FamiliarRepo produces;
+// Docker.ImageList canonicalizes before calling. The pattern is "<repo>:*",
+// made explicit even though a bare "<repo>" matches the same set (moby's
+// reference.FamiliarMatch falls back to matching the familiar NAME when the
+// full pattern match fails, so a tagless pattern is not "no tag" -- it's
+// "every tag", same as ":*"). Confirmed by direct experiment that this filter
+// does real work (it also prunes the RepoTags the daemon returns per image,
+// not just which images are listed) but is still not the correctness
+// boundary: keepRepoTags re-checks every entry regardless, so a daemon that
+// ignored this filter entirely would still produce correct results. An empty
+// repo returns no filter, since ImageList(ctx, "") lists every image.
 func referenceFilter(repo string) client.Filters {
 	if repo == "" {
 		return nil
@@ -899,7 +936,9 @@ func referenceFilter(repo string) client.Filters {
 
 // keepRepoTags returns the entries of repoTags that name a genuine tag
 // (dropping the dangling "<none>:<none>" form a daemon-side filter can still
-// let through) and, when repo is non-empty, that belong to repo. A colon
+// let through) and, when repo is non-empty, that belong to repo. repo must be
+// in the familiar form FamiliarRepo produces, matching the form the daemon
+// reports RepoTags in; Docker.ImageList canonicalizes before calling. A colon
 // with a later slash is a registry port, not a tag separator, so it is not
 // treated as one.
 func keepRepoTags(repo string, repoTags []string) []string {

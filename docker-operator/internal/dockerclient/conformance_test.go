@@ -2,6 +2,8 @@ package dockerclient_test
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -120,6 +122,18 @@ func containsContainerID(list []dockerclient.Container, id string) bool {
 		}
 	}
 	return false
+}
+
+// sortedRepoTags flattens every entry's RepoTags into one sorted slice, so two
+// ImageList results can be compared as sets of tags regardless of how the
+// daemon grouped them into images.
+func sortedRepoTags(list []dockerclient.Image) []string {
+	var out []string
+	for _, img := range list {
+		out = append(out, img.RepoTags...)
+	}
+	sort.Strings(out)
+	return out
 }
 
 type conformanceCase struct {
@@ -494,6 +508,57 @@ var conformanceCases = []conformanceCase{
 		}
 		if len(none) != 0 {
 			t.Errorf("ImageList(unknown repo) = %v, want empty", none)
+		}
+	}},
+
+	// ImageListAcceptsEitherRepoForm is the #205 regression: a Docker-Hub-hosted
+	// repository looked up in its NORMALIZED form ("docker.io/library/alpine",
+	// the form agent.RepoWithoutTag produces) must return the same images as the
+	// familiar form ("alpine"). Before the fix this returned NOTHING against a
+	// real daemon -- the daemon matches the images/json "reference" filter on the
+	// familiar name and reports RepoTags that way, so handing it "docker.io/..."
+	// excluded the image before the client ever saw a RepoTag, silently degrading
+	// "prefer what's on the host" to "always use the newest published tag".
+	{name: "ImageListAcceptsEitherRepoForm", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+
+		// Make sure alpine:latest is present. If inspect misses, try a pull and
+		// skip (never fail) when even that is unavailable -- the suite's other
+		// cases already tolerate a host without alpine.
+		if _, err := c.ImageInspect(ctx, "alpine:latest"); err != nil {
+			if perr := c.ImagePull(ctx, "alpine:latest"); perr != nil {
+				t.Skipf("alpine:latest not present and could not be pulled: inspect: %v; pull: %v", err, perr)
+			}
+		}
+
+		familiar, err := c.ImageList(ctx, "alpine")
+		if err != nil {
+			t.Fatalf("ImageList(%q): %v", "alpine", err)
+		}
+		if len(familiar) == 0 {
+			t.Fatalf("ImageList(%q) = empty, want at least one entry", "alpine")
+		}
+		for _, img := range familiar {
+			if len(img.RepoTags) == 0 {
+				t.Errorf("ImageList(%q) entry %+v has no RepoTags", "alpine", img)
+			}
+			for _, tag := range img.RepoTags {
+				if !strings.HasPrefix(tag, "alpine:") {
+					t.Errorf("ImageList(%q) entry tag = %q, want prefix %q", "alpine", tag, "alpine:")
+				}
+			}
+		}
+
+		normalized, err := c.ImageList(ctx, "docker.io/library/alpine")
+		if err != nil {
+			t.Fatalf("ImageList(%q): %v", "docker.io/library/alpine", err)
+		}
+		if len(normalized) == 0 {
+			t.Fatalf("ImageList(%q) = empty, want the same images as ImageList(%q) (#205)", "docker.io/library/alpine", "alpine")
+		}
+		if got, want := sortedRepoTags(normalized), sortedRepoTags(familiar); !slices.Equal(got, want) {
+			t.Errorf("ImageList(%q) RepoTags = %v, want the same set as ImageList(%q) = %v",
+				"docker.io/library/alpine", got, "alpine", want)
 		}
 	}},
 }
