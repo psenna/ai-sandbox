@@ -605,12 +605,31 @@ func (d *Docker) NetworkDisconnect(ctx context.Context, networkName, containerID
 // Verified against a real daemon (moby API 1.47): the daemon answers this
 // case with a 500, which the SDK maps to cerrdefs.ErrInternal rather than a
 // 404/409 -- indistinguishable from a genuine internal error by class alone,
-// so this checks the daemon's message text instead. If the daemon's wording
-// ever changes, the worst case is NetworkDisconnect stops being idempotent
-// again, not a false "success" on a real failure (the message is specific
-// enough that no other error is expected to contain it).
+// so this checks the daemon's message text instead.
+//
+// The daemon words this condition TWO ways, and which one comes back depends
+// on whether the network itself still exists -- so both must be matched:
+//
+//	container X is not connected to network Y      -- network exists, container
+//	                                                  is simply not attached to it
+//	container X is not connected to the network Y  -- the network is GONE
+//
+// The second wording is the dangerous one. It is the case teardown hits when
+// an agent's dinernet has already been removed out from under a half-finished
+// delete, and it is a 500 like the first -- NOT the 404 a missing network earns
+// on most other routes (NetworkRemove, for one), so cerrdefs.IsNotFound does
+// not catch it. Matching only the first wording left NetworkDisconnect failing
+// there, which is not the benign "stops being idempotent" the old comment here
+// assumed: teardown is what both Delete and Reconcile run before they remove
+// the agent record, so the failure wedged the record in StatusDeleting
+// permanently -- every retry and every operator restart failed identically,
+// with the containers and volumes already gone (teardown collects errors and
+// keeps going) and so nothing left on the daemon for a human to clean up by
+// hand. See the DisconnectMissingNetwork conformance case.
 func isNotConnectedError(err error) bool {
-	return strings.Contains(err.Error(), "is not connected to network")
+	msg := err.Error()
+	return strings.Contains(msg, "is not connected to network") ||
+		strings.Contains(msg, "is not connected to the network")
 }
 
 // ContainerCreate creates a container and returns its ID.

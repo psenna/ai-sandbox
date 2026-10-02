@@ -342,6 +342,55 @@ func TestWrapErr(t *testing.T) {
 	}
 }
 
+// TestIsNotConnectedError pins BOTH wordings the daemon uses for "this
+// container is not on that network", verbatim as captured from a real daemon
+// (moby API 1.47, Docker 27.5.1). Matching only the first one is what wedged
+// an agent record in StatusDeleting forever: teardown disconnects from the
+// dinernet before removing it, so when the dinernet is already gone -- the
+// second wording -- the disconnect looked like a real failure and neither
+// Delete nor Reconcile would go on to remove the record.
+//
+// These are unit-testable only here, as literals: the fake client answers
+// NetworkDisconnect from its own model of the network and can never reproduce
+// the daemon's wording. The DisconnectMissingNetwork conformance case covers
+// the real client against a real daemon.
+func TestIsNotConnectedError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "network exists, container not attached",
+			err:  errors.New(`Error response from daemon: container 902e59fd95d9ad06105b846b5f6199d852a93851e8e84252dbe78aeb5d714da7 is not connected to network probe-dc-9191`),
+			want: true,
+		},
+		{
+			name: "network itself is gone",
+			err:  errors.New(`Error response from daemon: container f84f592978563a200ebd7ed6a91fc796464bbcdcca8e38b3da54d1c98dc95f55 is not connected to the network docker-operator-agent-agt_e1d84b5b-dinernet`),
+			want: true,
+		},
+		{
+			name: "a genuine failure is not swallowed",
+			err:  errors.New(`Error response from daemon: network mynet not found`),
+			want: false,
+		},
+		{
+			name: "a genuine internal error is not swallowed",
+			err:  errors.New(`Error response from daemon: failed to disconnect container from network: i/o timeout`),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNotConnectedError(tt.err); got != tt.want {
+				t.Errorf("isNotConnectedError(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
