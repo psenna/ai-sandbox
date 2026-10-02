@@ -59,6 +59,37 @@ func TestLabelFilter(t *testing.T) {
 	}
 }
 
+// TestFamiliarRepo pins the canonicalization #205 relies on: a repo in either
+// the normalized or the familiar form comes back as the FAMILIAR form the
+// daemon's images/json API matches and reports. A repo that does not parse
+// comes back unchanged (matching agent.RepoWithoutTag's fallback), so a
+// malformed input fails visibly by matching nothing.
+func TestFamiliarRepo(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare Docker Hub official name", "alpine", "alpine"},
+		{"library-namespaced", "library/alpine", "alpine"},
+		{"normalized Docker Hub official name", "docker.io/library/alpine", "alpine"},
+		{"familiar org image", "myorg/agent-image", "myorg/agent-image"},
+		{"normalized org image", "docker.io/myorg/agent-image", "myorg/agent-image"},
+		{"third-party registry is already familiar", "ghcr.io/psenna/ai-sandbox-agent", "ghcr.io/psenna/ai-sandbox-agent"},
+		{"registry with a port", "host:5000/team/img", "host:5000/team/img"},
+		{"tag is stripped", "ghcr.io/psenna/x:tag", "ghcr.io/psenna/x"},
+		{"unparseable is returned unchanged", "not a ref!!", "not a ref!!"},
+		{"empty stays empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FamiliarRepo(tc.in); got != tc.want {
+				t.Errorf("FamiliarRepo(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReferenceFilter(t *testing.T) {
 	if f := referenceFilter(""); f != nil {
 		t.Errorf("referenceFilter(\"\") = %#v, want nil", f)
@@ -69,6 +100,14 @@ func TestReferenceFilter(t *testing.T) {
 	}
 	if !f["reference"]["myapp:*"] {
 		t.Errorf("reference terms = %v, want to contain myapp:*", f["reference"])
+	}
+
+	// A NORMALIZED repo canonicalized through FamiliarRepo produces the filter
+	// the daemon actually matches (#205): the daemon matches on the familiar
+	// name, so "docker.io/myorg/agent-image:*" would match nothing.
+	fNorm := referenceFilter(FamiliarRepo("docker.io/myorg/agent-image"))
+	if fNorm == nil || !fNorm["reference"]["myorg/agent-image:*"] {
+		t.Errorf("referenceFilter(FamiliarRepo(docker.io/myorg/agent-image)) = %#v, want to contain myorg/agent-image:*", fNorm)
 	}
 }
 
@@ -101,6 +140,20 @@ func TestKeepRepoTags(t *testing.T) {
 
 	if got := keepRepoTags("unknown/repo", in); got != nil {
 		t.Errorf("keepRepoTags(unknown repo) = %v, want nil", got)
+	}
+
+	// A NORMALIZED repo, canonicalized through FamiliarRepo first, keeps only
+	// the familiar-form entry: the daemon reports RepoTags in the familiar form
+	// (#205), so the normalized "docker.io/myorg/agent-image:v2" is a different
+	// repository and must be excluded.
+	gotFam := keepRepoTags(FamiliarRepo("docker.io/myorg/agent-image"), []string{
+		"myorg/agent-image:v1",
+		"docker.io/myorg/agent-image:v2",
+		"other:v1",
+	})
+	wantFam := []string{"myorg/agent-image:v1"}
+	if !equalStrings(gotFam, wantFam) {
+		t.Errorf("keepRepoTags(FamiliarRepo(docker.io/myorg/agent-image)) = %v, want %v", gotFam, wantFam)
 	}
 }
 
