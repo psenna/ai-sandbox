@@ -1,7 +1,7 @@
 // app.js -- DOM wiring for the sidebar shell and the "New Agent" flow:
 // fetches /api/agents, renders the list via render.js's pure functions,
-// drives the create form (backend + model pickers), and the sidebar's
-// Anthropic-account panel.
+// drives the create form (backend + model pickers), and the main-area
+// Settings page (the Anthropic-account and Agent-image panels).
 //
 // The agent detail view (terminal, rename, delete) and the Anthropic login
 // terminal are wired in by terminal.js, which app.js calls into via
@@ -41,9 +41,8 @@
 	var capacityEl = document.getElementById('agent-capacity');
 	var newAgentBtn = document.getElementById('new-agent-btn');
 	var filesBtn = document.getElementById('files-btn');
+	var settingsBtn = document.getElementById('settings-btn');
 	var mainArea = document.getElementById('main-area');
-	var anthropicPanel = document.getElementById('anthropic-panel');
-	var agentImagePanel = document.getElementById('agent-image-panel');
 	var sidebarEl = document.getElementById('sidebar');
 	var sidebarToggle = document.getElementById('sidebar-toggle');
 
@@ -254,8 +253,16 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body),
 			})
-				.then(function (agent) {
-					return refreshAgents().then(function () { selectAgent(agent.id); });
+				.then(function () {
+					// agentChangePolicy('create', ...) is 'sidebar-only': the
+					// form stays on screen so its values survive for the next
+					// agent, and only the list updates. The button was disabled
+					// above on the assumption the view was about to be replaced
+					// -- re-enable it, or a second agent can never be created.
+					// A failed list refresh is not surfaced here: the 3s poll
+					// picks the new agent up on its next tick.
+					submitBtn.disabled = false;
+					refreshAgents().catch(function () { /* the 3s poll heals it */ });
 				})
 				.catch(function (e) {
 					submitBtn.disabled = false;
@@ -420,6 +427,14 @@
 	}
 
 	function showCreateForm() {
+		// Release whatever the slot held first, like showPlaceholder and the
+		// Files button already do. This was previously implicit: the create
+		// SUCCESS path navigated to the new agent, and that re-render tore the
+		// old view down. Now that create leaves the form on screen
+		// (agentChangePolicy), nothing else would -- so an agent left open
+		// behind the form would keep its WebSocket and xterm alive on a
+		// detached node for as long as the form stays up.
+		if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
 		mainArea.innerHTML = window.Render.renderTemplateBar(state.templates) + window.Render.renderCreateForm(buildFormDefaults());
 		wireCreateForm(currentForm());
 		wireTemplateBar();
@@ -445,22 +460,53 @@
 		mainArea.innerHTML = '<p class="placeholder">Select an agent, or create a new one.</p>';
 	}
 
-	// --- Anthropic account panel -------------------------------------------
+	// showSettings opens the sandbox Settings page in the main area, the same
+	// way the Files button claims it: release the current view, drop the agent
+	// selection, then render. The page owns no WebSocket or xterm, so it does
+	// not register a teardown of its own -- the next claim (selectAgent,
+	// showPlaceholder, showCreateForm, Files) releases the slot wholesale.
+	//
+	// Both sections are refreshed on open: the Anthropic status has no other
+	// refresh path, and the image section repaints from state.agentImage (kept
+	// fresh by the 3s poll) rather than waiting for a fetch.
+	function showSettings() {
+		if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
+		state.selectedID = null;
+		renderSidebar();
+		mainArea.innerHTML = window.Render.renderSettingsPage();
+		refreshAnthropicPanel();
+		refreshAgentImagePanel();
+	}
+
+	// --- Settings page: the Anthropic-account and Agent-image sections -------
+	//
+	// Both sections live in the main area, built from render.js's
+	// renderSettingsPage() shell (one [data-settings-body] div per section) and
+	// filled from here. Nothing is rendered when the page is not open, so every
+	// continuation re-queries its body and bails if it is gone -- the same
+	// "navigated away while the fetch was in flight" guard as currentForm()
+	// below and refreshTemplateBar.
+
+	function settingsBody(id) {
+		return mainArea.querySelector('[data-settings-body="' + id + '"]');
+	}
 
 	function refreshAnthropicPanel() {
 		return fetchJSON('/api/anthropic/auth')
 			.then(renderAnthropicPanel)
 			.catch(function (e) {
-				anthropicPanel.innerHTML =
-					'<div class="anthropic-panel__title">Anthropic account</div>' +
+				var body = settingsBody('anthropic-account');
+				if (!body) return; // Settings isn't open
+				body.innerHTML =
 					'<span class="anthropic-panel__status anthropic-panel__status--unset">' +
 					window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
 			});
 	}
 
 	function renderAnthropicPanel(status) {
-		anthropicPanel.innerHTML =
-			'<div class="anthropic-panel__title">Anthropic account</div>' +
+		var body = settingsBody('anthropic-account');
+		if (!body) return;
+		body.innerHTML =
 			window.Render.renderAnthropicStatus(status) +
 			'<div class="anthropic-panel__actions">' +
 				'<button class="anthropic-panel__apikey btn btn--ghost btn--sm" type="button">Set API key</button>' +
@@ -468,13 +514,13 @@
 				(status && status.configured ? '<button class="anthropic-panel__remove btn btn--danger btn--sm" type="button">Remove</button>' : '') +
 			'</div>';
 
-		anthropicPanel.querySelector('.anthropic-panel__apikey').addEventListener('click', function () {
+		body.querySelector('.anthropic-panel__apikey').addEventListener('click', function () {
 			var key = window.prompt('Paste your Anthropic API key (starts with sk-ant-):');
 			if (!key) return;
 			putAnthropicAuth({ kind: 'api_key', value: key.trim() });
 		});
-		anthropicPanel.querySelector('.anthropic-panel__login').addEventListener('click', startAnthropicLogin);
-		var removeBtn = anthropicPanel.querySelector('.anthropic-panel__remove');
+		body.querySelector('.anthropic-panel__login').addEventListener('click', startAnthropicLogin);
+		var removeBtn = body.querySelector('.anthropic-panel__remove');
 		if (removeBtn) {
 			removeBtn.addEventListener('click', function () {
 				window.OperatorConfirm.show(
@@ -494,9 +540,16 @@
 		state.agentImage = window.Render.harnessImageTags(data);
 	}
 
+	// renderAgentImagePanelNow writes the section body, and only when Settings
+	// is open. state.agentImage is fed separately (refreshAgentImagePanel
+	// below) precisely so the create/update forms' image-tag picker keeps
+	// working whether or not this page was ever opened.
 	function renderAgentImagePanelNow() {
-		agentImagePanel.innerHTML = window.Render.renderAgentImagePanel(state.agentImage);
-		var btn = agentImagePanel.querySelector('.agent-image-panel__refresh');
+		var body = settingsBody('agent-image');
+		if (!body) return;
+		// noTitle: the section heading already says "Agent image".
+		body.innerHTML = window.Render.renderAgentImagePanel(state.agentImage, { noTitle: true });
+		var btn = body.querySelector('.agent-image-panel__refresh');
 		if (btn) {
 			btn.addEventListener('click', function () {
 				btn.disabled = true;
@@ -506,8 +559,9 @@
 						renderAgentImagePanelNow();
 					})
 					.catch(function (e) {
-						agentImagePanel.innerHTML =
-							'<div class="agent-image-panel__title">Agent image</div>' +
+						var b = settingsBody('agent-image');
+						if (!b) return;
+						b.innerHTML =
 							'<span class="agent-image-panel__status--unavailable">' +
 							window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
 					});
@@ -515,6 +569,10 @@
 		}
 	}
 
+	// refreshAgentImagePanel ALWAYS updates state.agentImage, and only then
+	// repaints the section body if it is on screen. The 3s poll drives this
+	// for the tag picker's benefit as much as the panel's, so the state feed
+	// must not become conditional on the Settings page being open.
 	function refreshAgentImagePanel() {
 		return fetchJSON('/api/agent-image/tags')
 			.then(function (data) {
@@ -522,8 +580,9 @@
 				renderAgentImagePanelNow();
 			})
 			.catch(function (e) {
-				agentImagePanel.innerHTML =
-					'<div class="agent-image-panel__title">Agent image</div>' +
+				var body = settingsBody('agent-image');
+				if (!body) return;
+				body.innerHTML =
 					'<span class="agent-image-panel__status--unavailable">' +
 					window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
 			});
@@ -549,7 +608,10 @@
 						},
 						onClose: function () {
 							fetchJSON('/api/anthropic/login', { method: 'DELETE' }).catch(function () { /* best effort */ });
-							showPlaceholder();
+							// Back to Settings, where the login was started --
+							// it shows the freshly-set credential, unlike the
+							// bare placeholder.
+							showSettings();
 						},
 					});
 				}
@@ -613,10 +675,19 @@
 		});
 	}
 
-	// onAgentDeleted is called by terminal.js after a successful DELETE.
+	if (settingsBtn) settingsBtn.addEventListener('click', showSettings);
+
+	// onAgentDeleted is called by terminal.js after a successful DELETE. The
+	// main area is reset only when the deleted agent is the one on screen
+	// (agentChangePolicy); deleting any other agent just updates the list, so
+	// a view that has nothing to do with it -- Settings, Files, another
+	// agent's terminal -- is left alone.
 	window.onAgentDeleted = function (id) {
-		if (state.selectedID === id) state.selectedID = null;
-		refreshAgents().then(showPlaceholder).catch(function () {});
+		var resetMain = window.Render.agentChangePolicy('delete', state.selectedID, id) === 'reset-main-area';
+		if (resetMain) state.selectedID = null;
+		refreshAgents()
+			.then(function () { if (resetMain) showPlaceholder(); })
+			.catch(function () { /* matches today: a failed refresh shows no placeholder */ });
 	};
 
 	// onAgentUpdated is called by terminal.js after a successful in-place
@@ -635,7 +706,10 @@
 		sidebarList.innerHTML =
 			'<li class="agent-list__error">Failed to load agents: ' + window.Render.escapeHTML(e.message) + '</li>';
 	});
-	refreshAnthropicPanel();
+	// Only the image tags are fetched at load time: the 3s poll below feeds
+	// state.agentImage for the create/update tag pickers, whether or not
+	// Settings is ever opened. The Anthropic status is fetched on open
+	// (showSettings) -- there is no sidebar panel holding it any more.
 	refreshAgentImagePanel();
 
 	// Poll for status changes (creating -> running, an unexpected stop, etc.)
