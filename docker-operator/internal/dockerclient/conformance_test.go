@@ -356,6 +356,48 @@ var conformanceCases = []conformanceCase{
 		}
 	}},
 
+	// DisconnectMissingNetwork is the case the double-disconnect above does
+	// NOT cover, and the one that actually wedged a record: the network itself
+	// is already gone by the time the disconnect is attempted. The daemon
+	// words this differently from "already detached" ("... is not connected to
+	// the network X" rather than "... is not connected to network X") and it
+	// comes back as a 500, not the 404 a missing network earns on routes like
+	// NetworkRemove -- so it takes a real daemon to catch. This is the exact
+	// shape teardown hits when an agent's dinernet was removed out from under a
+	// half-finished delete; failing here is what stopped Delete and Reconcile
+	// from ever removing the agent's record.
+	{name: "DisconnectMissingNetwork", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+		netName := uniqueName(f, t) + "-net"
+		ctrName := uniqueName(f, t) + "-ctr"
+
+		if _, err := c.NetworkCreate(ctx, dockerclient.NetworkSpec{Name: netName}); err != nil {
+			t.Fatalf("NetworkCreate: %v", err)
+		}
+
+		id, err := c.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: ctrName, Image: "alpine:latest", Cmd: []string{"sleep", "300"}})
+		if err != nil {
+			if isImageNotFoundErr(err) {
+				t.Skipf("alpine:latest not available -- run `docker pull alpine:latest` first: %v", err)
+			}
+			t.Fatalf("ContainerCreate: %v", err)
+		}
+		t.Cleanup(func() { _ = c.ContainerRemove(context.Background(), id) })
+		if err := c.ContainerStart(ctx, id); err != nil {
+			t.Fatalf("ContainerStart: %v", err)
+		}
+
+		// The network goes first, leaving a running container behind with
+		// nothing to detach from.
+		if err := c.NetworkRemove(ctx, netName); err != nil {
+			t.Fatalf("NetworkRemove: %v", err)
+		}
+
+		if err := c.NetworkDisconnect(ctx, netName, id); err != nil {
+			t.Errorf("NetworkDisconnect on an already-removed network = %v, want nil", err)
+		}
+	}},
+
 	{name: "ConnectStoppedContainerFails", run: func(t *testing.T, f factory, c dockerclient.Client) {
 		ctx := context.Background()
 		netName := uniqueName(f, t) + "-net"
