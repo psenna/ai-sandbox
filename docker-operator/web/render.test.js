@@ -608,7 +608,7 @@ test('renderImageTagSelect: an empty list with no default still renders a submit
 		'<select class="create-form__image-tag"><option value="" selected>(operator default)</option></select>');
 });
 
-test('renderAgentImagePanel: one block per harness, claude-code first, under a single Check now button', () => {
+test('renderAgentImagePanel: one column per harness, claude-code first, with three action buttons', () => {
 	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
 		harnesses: {
 			'claude-code': { newest: '20260101-120000', tags: [{ tag: '20260101-120000', present: true }], checked_at: new Date().toISOString() },
@@ -618,16 +618,75 @@ test('renderAgentImagePanel: one block per harness, claude-code first, under a s
 	assert.match(html, /data-harness="claude-code"/);
 	assert.match(html, /data-harness="opencode"/);
 	assert.match(html, /Claude Code/);
-	assert.match(html, /Newest tag: 20260101-120000/);
-	assert.match(html, /Newest tag: 20260202-020202/);
+	assert.match(html, /Newest published: 20260101-120000/);
+	assert.match(html, /Newest published: 20260202-020202/);
 	assert.ok(html.indexOf('data-harness="claude-code"') < html.indexOf('data-harness="opencode"'),
-		'claude-code block should come first: ' + html);
-	// One shared refresh button: POST /api/agent-image/refresh refreshes every
-	// harness in a single call.
-	assert.equal(html.match(/agent-image-panel__refresh/g).length, 1);
-	assert.ok(html.lastIndexOf('data-harness=') < html.indexOf('agent-image-panel__refresh'),
-		'the Check now button sits after every harness block');
+		'claude-code column should come first: ' + html);
+	// One shared actions row: all three actions cover every harness in a
+	// single call each.
+	assert.match(html, /agent-image-panel__harnesses/);
+	for (const cls of ['refresh', 'cleanup', 'pull']) {
+		assert.equal(html.match(new RegExp('agent-image-panel__' + cls, 'g')).length, 1,
+			'exactly one ' + cls + ' button');
+	}
+	assert.ok(html.indexOf('agent-image-panel__refresh') < html.indexOf('agent-image-panel__cleanup'),
+		'buttons in order: Check now, Cleanup, Pull latest');
+	assert.ok(html.indexOf('agent-image-panel__cleanup') < html.indexOf('agent-image-panel__pull'),
+		'buttons in order: Check now, Cleanup, Pull latest');
+	// The actions row precedes the columns.
+	assert.ok(html.indexOf('agent-image-panel__actions') < html.indexOf('agent-image-panel__harnesses'),
+		'the actions row sits above the harness columns');
 	assert.equal((html.match(/checked just now/g) || []).length, 2);
+});
+
+test('renderAgentImagePanel: only PRESENT tags get a delete button, and each carries its harness and tag', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: {
+			'claude-code': {
+				default_tag: '20260101-120000',
+				newest: '20260101-120000',
+				tags: [
+					{ tag: '20260101-120000', present: true },
+					{ tag: '20251231-090000', present: true },
+					{ tag: '20260303-030303', present: false },
+				],
+			},
+		},
+	}));
+	assert.equal((html.match(/agent-image-panel__delete/g) || []).length, 2,
+		'one Delete per present tag; a not-yet-pulled published tag gets none');
+	assert.match(html, /data-harness="claude-code" data-tag="20260101-120000"/);
+	assert.match(html, /data-tag="20251231-090000"/);
+	assert.doesNotMatch(html, /data-tag="20260303-030303"/);
+	// The badges: the newest, and the operator default.
+	assert.match(html, /20260101-120000 <span class="agent-image-panel__tag-note">\(newest, default\)<\/span>/);
+	assert.doesNotMatch(html, /20251231-090000 <span/);
+});
+
+test('renderAgentImagePanel: a harness with nothing on the server says so, with no table', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: { 'claude-code': { newest: '20260202-020202', tags: [{ tag: '20260202-020202', present: false }] } },
+	}));
+	assert.match(html, /No image tags on the server/);
+	assert.doesNotMatch(html, /agent-image-panel__tags/);
+});
+
+test('renderAgentImagePanel: opts.busy disables every button and paints the label', () => {
+	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
+		harnesses: { 'claude-code': { tags: [{ tag: '20260101-120000', present: true }] } },
+	}), { busy: { label: 'Pulling…' } });
+	assert.match(html, /agent-image-panel__busy">Pulling…</);
+	// Every action button AND every per-tag delete: none must be clickable
+	// while an action is in flight.
+	assert.equal((html.match(/type="button" disabled/g) || []).length, 4);
+});
+
+test('renderAgentImagePanel: opts.error and opts.note paint their lines', () => {
+	const base = Render.harnessImageTags({ harnesses: {} });
+	const withErr = Render.renderAgentImagePanel(base, { error: 'boom' });
+	assert.match(withErr, /agent-image-panel__error">boom</);
+	const withNote = Render.renderAgentImagePanel(base, { note: 'Removed 2 tags' });
+	assert.match(withNote, /agent-image-panel__note">Removed 2 tags</);
 });
 
 test('renderAgentImagePanel: each harness reports its own newest tag and its own checked-at', () => {
@@ -641,7 +700,7 @@ test('renderAgentImagePanel: each harness reports its own newest tag and its own
 	assert.equal((html.match(/never checked/g) || []).length, 1);
 });
 
-test('renderAgentImagePanel: a per-harness last error renders inside that harness\'s block only', () => {
+test('renderAgentImagePanel: a per-harness last error renders inside that harness\'s column only', () => {
 	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
 		harnesses: {
 			'claude-code': { tags: [{ tag: '20260101-120000', present: true }] },
@@ -656,7 +715,7 @@ test('renderAgentImagePanel: falls back to the newest date-time tag when the ser
 	const html = Render.renderAgentImagePanel(Render.harnessImageTags({
 		harnesses: { 'claude-code': { tags: [{ tag: '20251231-090000', present: true }, { tag: '20260101-120000', present: false }] } },
 	}));
-	assert.match(html, /Newest tag: 20260101-120000/);
+	assert.match(html, /Newest published: 20260101-120000/);
 });
 
 test('renderAgentImagePanel: accepts the raw API body as well as an already-mapped map', () => {
@@ -664,14 +723,50 @@ test('renderAgentImagePanel: accepts the raw API body as well as an already-mapp
 	assert.equal(Render.renderAgentImagePanel(raw), Render.renderAgentImagePanel(Render.harnessImageTags(raw)));
 });
 
-test('renderAgentImagePanel: missing input does not throw and still renders the Check now button', () => {
+test('renderAgentImagePanel: missing input does not throw and still renders the three buttons', () => {
 	assert.doesNotThrow(() => Render.renderAgentImagePanel());
-	assert.match(Render.renderAgentImagePanel(), /agent-image-panel__refresh/);
+	const html = Render.renderAgentImagePanel();
+	for (const cls of ['refresh', 'cleanup', 'pull']) {
+		assert.match(html, new RegExp('agent-image-panel__' + cls));
+	}
 });
 
-test('renderAgentImagePanel: a harness key containing HTML is escaped', () => {
-	const html = Render.renderAgentImagePanel({ '"><img src=x>': { tags: [] } });
+test('renderAgentImagePanel: a harness key and a tag containing HTML are escaped', () => {
+	const html = Render.renderAgentImagePanel({ '"><img src=x>': { tags: [{ tag: '"><script>', present: true }] } });
 	assert.doesNotMatch(html, /<img src=x>/);
+	assert.doesNotMatch(html, /<script>/);
+});
+
+// --- agentImageReportNote: the one-line summary of an action's report ------
+
+test('agentImageReportNote: summarizes a cleanup report by removed count', () => {
+	const note = Render.agentImageReportNote({ report: [
+		{ harness: 'claude-code', removed: ['20260101-000000', 'latest'] },
+		{ harness: 'opencode', removed: ['20260102-000000'] },
+	] });
+	assert.equal(note, 'Removed 3 tags');
+});
+
+test('agentImageReportNote: summarizes a pull report by harness', () => {
+	const note = Render.agentImageReportNote({ report: [
+		{ harness: 'claude-code', tag: '20260101-000000' },
+		{ harness: 'opencode', tag: '20260102-000000' },
+	] });
+	assert.equal(note, 'Claude Code pulled 20260101-000000 · opencode pulled 20260102-000000');
+});
+
+test('agentImageReportNote: a failing harness rides alongside the successes', () => {
+	const note = Render.agentImageReportNote({ report: [
+		{ harness: 'claude-code', removed: ['20260101-000000'] },
+		{ harness: 'opencode', error: 'registry is unreachable' },
+	] });
+	assert.equal(note, 'Removed 1 tag · opencode: registry is unreachable');
+});
+
+test('agentImageReportNote: no report (refresh, single delete) yields null', () => {
+	assert.equal(Render.agentImageReportNote({ harnesses: {} }), null);
+	assert.equal(Render.agentImageReportNote(null), null);
+	assert.equal(Render.agentImageReportNote({ report: [] }), null);
 });
 
 // --- renderCreateForm: opts + image-tag row -----------------------------

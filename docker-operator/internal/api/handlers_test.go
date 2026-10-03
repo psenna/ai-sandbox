@@ -70,6 +70,18 @@ type fakeManager struct {
 	refreshCalls map[string]int
 	defaultRefs  map[string]string
 
+	// deleteTagCalls is keyed harness+"|"+tag so a test can assert both what
+	// was asked for and how often. A successful delete ALSO removes the tag
+	// from imageInv, so the read-back response the handler returns is
+	// assertable.
+	deleteTagCalls map[string]int
+	deleteTagErr   map[string]error
+	cleanupCalls   map[string]int
+	cleanupErr     map[string]error
+	cleanupReports map[string]agent.AgentImageCleanupReport
+	pullCalls      map[string]int
+	pullReports    map[string]agent.AgentImagePullReport
+
 	templates map[string]store.Template
 
 	nextTemplateID int
@@ -99,6 +111,14 @@ func newFakeManager(maxAgents int) *fakeManager {
 		refreshErr:       map[string]error{},
 		refreshCalls:     map[string]int{},
 		defaultRefs:      map[string]string{},
+
+		deleteTagCalls: map[string]int{},
+		deleteTagErr:   map[string]error{},
+		cleanupCalls:   map[string]int{},
+		cleanupErr:     map[string]error{},
+		cleanupReports: map[string]agent.AgentImageCleanupReport{},
+		pullCalls:      map[string]int{},
+		pullReports:    map[string]agent.AgentImagePullReport{},
 	}
 }
 
@@ -280,6 +300,64 @@ func (f *fakeManager) RefreshAgentImageTags(_ context.Context, harness string) e
 	h := config.NormalizeHarness(harness)
 	f.refreshCalls[h]++
 	return f.refreshErr[h]
+}
+
+func (f *fakeManager) DeleteAgentImageTag(_ context.Context, harness, tag string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := config.NormalizeHarness(harness)
+	f.deleteTagCalls[h+"|"+tag]++
+	if err := f.deleteTagErr[h+"|"+tag]; err != nil {
+		return err
+	}
+	// A successful delete really removes the tag from the inventory, so the
+	// read-back response the handler returns after it is assertable -- the
+	// whole point of returning the refreshed map from the action.
+	if inv, ok := f.imageInv[h]; ok {
+		opts := make([]agent.ImageTagOption, 0, len(inv.Options))
+		for _, o := range inv.Options {
+			if o.Tag != tag {
+				opts = append(opts, o)
+			}
+		}
+		local := make([]string, 0, len(inv.LocalTags))
+		for _, t := range inv.LocalTags {
+			if t != tag {
+				local = append(local, t)
+			}
+		}
+		inv.Options, inv.LocalTags = opts, local
+		if inv.DefaultTag == tag {
+			inv.DefaultTag = ""
+		}
+		f.imageInv[h] = inv
+	}
+	return nil
+}
+
+func (f *fakeManager) CleanupAgentImages(_ context.Context, harness string) (agent.AgentImageCleanupReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := config.NormalizeHarness(harness)
+	f.cleanupCalls[h]++
+	if rep, ok := f.cleanupReports[h]; ok {
+		return rep, nil
+	}
+	if err := f.cleanupErr[h]; err != nil {
+		return agent.AgentImageCleanupReport{Harness: h}, err
+	}
+	return agent.AgentImageCleanupReport{Harness: h}, nil
+}
+
+func (f *fakeManager) PullLatestAgentImage(_ context.Context, harness string) agent.AgentImagePullReport {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := config.NormalizeHarness(harness)
+	f.pullCalls[h]++
+	if rep, ok := f.pullReports[h]; ok {
+		return rep
+	}
+	return agent.AgentImagePullReport{Harness: h}
 }
 
 func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {

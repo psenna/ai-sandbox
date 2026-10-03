@@ -52,6 +52,12 @@ const (
 	// CodeDuplicateName is returned (409) by POST /api/templates and
 	// PUT /api/templates/{id} when another template already has that name.
 	CodeDuplicateName = "duplicate_name"
+
+	// CodeImageTagInUse is returned (409) by DELETE
+	// /api/agent-image/tags/{harness}/{tag} when some agent record still
+	// references the tag -- by its image reference or by the image ID its
+	// container last started from.
+	CodeImageTagInUse = "image_tag_in_use"
 )
 
 // writeJSON writes body as status with a JSON content type. Encode errors

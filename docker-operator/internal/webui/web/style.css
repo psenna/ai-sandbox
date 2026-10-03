@@ -631,18 +631,45 @@ html, body {
    heads the section itself and does). */
 .agent-image-panel__title { color: var(--fg-dim); margin-bottom: 4px; }
 
-.agent-image-panel__harness { margin-bottom: 6px; }
+.agent-image-panel__harness { margin-bottom: 0; }
 .agent-image-panel__harness-name { display: block; color: var(--fg); }
 
 .agent-image-panel__newest { display: block; }
-.agent-image-panel__checked { display: block; color: var(--fg-dim); margin-bottom: 6px; }
+.agent-image-panel__checked { display: block; color: var(--fg-dim); margin-bottom: var(--space-3); }
 .agent-image-panel__status--unavailable { display: block; color: var(--fg-dim); font-style: italic; }
-.agent-image-panel__error { margin: 4px 0 6px; color: var(--status-error); }
+.agent-image-panel__error { margin: var(--space-1) 0 var(--space-3); color: var(--status-error); }
+.agent-image-panel__busy { margin: var(--space-1) 0 var(--space-3); color: var(--fg-dim); font-style: italic; }
+.agent-image-panel__note { margin: var(--space-1) 0 var(--space-3); color: var(--status-running); }
+.agent-image-panel__none { margin: 0; color: var(--fg-dim); font-style: italic; }
+
+/* One column per harness side by side; a future third harness wraps to a
+   second row instead of squeezing. 240px is the least that fits a
+   :YYYYMMDD-HHMMSS tag plus its Delete button; auto-fit means the Settings
+   overlay's ~520px content pane holds both today's harnesses in one row. */
+.agent-image-panel__harnesses {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	gap: var(--space-5);
+	margin-top: var(--space-3);
+}
+
+.agent-image-panel__tags { width: 100%; border-collapse: collapse; }
+.agent-image-panel__tag-row td { padding: 2px 0; }
+.agent-image-panel__tag-row td:last-child { text-align: right; }
+.agent-image-panel__tag {
+	max-width: 180px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: var(--font-sm);
+}
+.agent-image-panel__tag-note { color: var(--fg-dim); font-size: var(--font-xs); }
 
 .agent-image-panel__actions {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 4px;
+	gap: var(--space-2);
 }
 
 /* --- create form ----------------------------------------------------------

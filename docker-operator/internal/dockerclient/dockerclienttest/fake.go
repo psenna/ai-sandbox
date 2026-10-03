@@ -60,6 +60,7 @@ const (
 	OpImageInspect      Op = "ImageInspect"
 	OpImagePull         Op = "ImagePull"
 	OpImageList         Op = "ImageList"
+	OpImageRemove       Op = "ImageRemove"
 )
 
 // Call is one recorded invocation of a Fake method. Target is the object the
@@ -157,6 +158,10 @@ type Fake struct {
 	execs      map[string]*execRecord
 	execSpecs  []dockerclient.ExecSpec
 	images     map[string]struct{}
+	// imageIDs overrides the synthetic "sha256:"+ref an image would otherwise
+	// report, for the refs seeded through AddImageWithID. An absent entry
+	// keeps the synthetic default, so AddImage behaviour is unchanged.
+	imageIDs map[string]string
 
 	calls []Call
 
@@ -199,6 +204,7 @@ func New() *Fake {
 		containers: map[string]*containerRecord{},
 		execs:      map[string]*execRecord{},
 		images:     map[string]struct{}{},
+		imageIDs:   map[string]string{},
 		ExecOutput: map[string][]byte{},
 		ExecExit:   map[string]int{},
 	}
@@ -300,6 +306,20 @@ func (f *Fake) AddImage(ref string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.images[ref] = struct{}{}
+}
+
+// AddImageWithID seeds ref as present with an EXPLICIT image ID, so a test
+// can model what a real daemon does routinely: several repo:tag refs sharing
+// one image (one sha256). Without it every ref gets its own synthetic ID and
+// "two tags, one image" -- the alias case any in-use guard must catch --
+// cannot be expressed. AddImage(ref) is AddImageWithID(ref, "sha256:"+ref).
+func (f *Fake) AddImageWithID(ref, id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.images[ref] = struct{}{}
+	if id != "" {
+		f.imageIDs[ref] = id
+	}
 }
 
 // SetHealth forces the health status of an existing container, found by ID
@@ -805,7 +825,7 @@ func (f *Fake) ImageInspect(ctx context.Context, ref string) (dockerclient.Image
 	if _, ok := f.images[ref]; !ok {
 		return dockerclient.Image{}, fmt.Errorf("image %q: %w", ref, dockerclient.ErrNotFound)
 	}
-	return dockerclient.Image{ID: "sha256:" + ref, RepoTags: []string{ref}}, nil
+	return dockerclient.Image{ID: fakeImageID(f, ref), RepoTags: []string{ref}}, nil
 }
 
 // ImagePull seeds ref as present on the daemon, matching the real client's
@@ -844,10 +864,33 @@ func (f *Fake) ImageList(ctx context.Context, repo string) ([]dockerclient.Image
 		if repo != "" && dockerclient.FamiliarRepo(fakeRepoOf(ref)) != repo {
 			continue
 		}
-		out = append(out, dockerclient.Image{ID: "sha256:" + ref, RepoTags: []string{ref}})
+		out = append(out, dockerclient.Image{ID: fakeImageID(f, ref), RepoTags: []string{ref}})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RepoTags[0] < out[j].RepoTags[0] })
 	return out, nil
+}
+
+// ImageRemove deletes ref from the seeded set, ignoring one already gone --
+// the same idempotency contract every Remove in the real client has.
+func (f *Fake) ImageRemove(ctx context.Context, ref string) error {
+	if err := f.call(OpImageRemove, ref); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.images, ref)
+	delete(f.imageIDs, ref)
+	return nil
+}
+
+// fakeImageID is the ID a seeded ref reports: an explicit AddImageWithID
+// override when one exists, else the synthetic default. The caller holds
+// f.mu.
+func fakeImageID(f *Fake, ref string) string {
+	if id, ok := f.imageIDs[ref]; ok {
+		return id
+	}
+	return "sha256:" + ref
 }
 
 // fakeRepoOf returns the repository part of a seeded image reference (the

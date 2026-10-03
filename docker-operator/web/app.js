@@ -600,6 +600,19 @@
 		state.agentImage = window.Render.harnessImageTags(data);
 	}
 
+	// agentImageAction is the tag-manager action currently in flight, or
+	// null: {kind, label}. It lives HERE and not as a `disabled` attr on a
+	// button because the 3s poll repaints the section on every tick -- an
+	// attr dies with the button it sat on, but every render (the poll's
+	// included) reads this, so a minutes-long Pull latest keeps its busy
+	// line across repaints and cannot be double-fired.
+	var agentImageAction = null;
+	// agentImageError / agentImageNote likewise persist ACROSS poll
+	// repaints -- a failure the user has not read yet must not be wiped by
+	// the next tick. Both clear when the next action starts.
+	var agentImageError = null;
+	var agentImageNote = null;
+
 	// renderAgentImagePanelNow writes the section body, and only when Settings
 	// is open. state.agentImage is fed separately (refreshAgentImagePanel
 	// below) precisely so the create/update forms' image-tag picker keeps
@@ -608,25 +621,96 @@
 		var body = settingsBody('agent-image');
 		if (!body) return;
 		// noTitle: the section heading already says "Agent image".
-		body.innerHTML = window.Render.renderAgentImagePanel(state.agentImage, { noTitle: true });
-		var btn = body.querySelector('.agent-image-panel__refresh');
-		if (btn) {
-			btn.addEventListener('click', function () {
-				btn.disabled = true;
-				fetchJSON('/api/agent-image/refresh', { method: 'POST' })
-					.then(function (data) {
-						mapAgentImage(data);
-						renderAgentImagePanelNow();
-					})
-					.catch(function (e) {
-						var b = settingsBody('agent-image');
-						if (!b) return;
-						b.innerHTML =
-							'<span class="agent-image-panel__status--unavailable">' +
-							window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
-					});
+		body.innerHTML = window.Render.renderAgentImagePanel(state.agentImage, {
+			noTitle: true,
+			busy: agentImageAction,
+			error: agentImageError,
+			note: agentImageNote,
+		});
+		wireAgentImagePanel();
+	}
+
+	// wireAgentImagePanel attaches the three action buttons and every
+	// per-tag Delete. Called by renderAgentImagePanelNow against whatever
+	// nodes exist right now -- the poll repaint replaces them wholesale, so
+	// no captured node is safe across a tick; that is why the busy state is
+	// the module-level agentImageAction instead.
+	function wireAgentImagePanel() {
+		var body = settingsBody('agent-image');
+		if (!body) return;
+
+		var refreshBtn = body.querySelector('.agent-image-panel__refresh');
+		if (refreshBtn) refreshBtn.addEventListener('click', function () {
+			startAgentImageAction('refresh', 'Checking for new tags…', function () {
+				return fetchJSON('/api/agent-image/refresh', { method: 'POST' });
 			});
-		}
+		});
+
+		var cleanupBtn = body.querySelector('.agent-image-panel__cleanup');
+		if (cleanupBtn) cleanupBtn.addEventListener('click', function () {
+			window.OperatorConfirm.show(
+				'Removes every agent image tag that no agent references, except each harness\'s newest. Tags an agent still uses are never removed; a locally built image cannot be pulled again.',
+				{ title: 'Clean up unused image tags?', confirmLabel: 'Clean up', danger: true }
+			).then(function (confirmed) {
+				if (!confirmed) return;
+				startAgentImageAction('cleanup', 'Removing unused image tags…', function () {
+					return fetchJSON('/api/agent-image/cleanup', { method: 'POST' });
+				});
+			});
+		});
+
+		var pullBtn = body.querySelector('.agent-image-panel__pull');
+		if (pullBtn) pullBtn.addEventListener('click', function () {
+			// No confirm: pulling is additive, never destructive.
+			startAgentImageAction('pull', 'Pulling the newest published image — this can take a few minutes…', function () {
+				return fetchJSON('/api/agent-image/pull-latest', { method: 'POST' });
+			});
+		});
+
+		body.querySelectorAll('.agent-image-panel__delete').forEach(function (btn) {
+			btn.addEventListener('click', function () {
+				var h = btn.getAttribute('data-harness');
+				var tag = btn.getAttribute('data-tag');
+				window.OperatorConfirm.show(
+					'Remove the image tag "' + tag + '"? It can always be pulled again — unless it was built locally.',
+					{ title: 'Remove image tag "' + tag + '"?', confirmLabel: 'Remove', danger: true }
+				).then(function (confirmed) {
+					if (!confirmed) return;
+					startAgentImageAction('delete', 'Removing ' + tag + '…', function () {
+						return fetchJSON(
+							'/api/agent-image/tags/' + encodeURIComponent(h) + '/' + encodeURIComponent(tag),
+							{ method: 'DELETE' }
+						);
+					});
+				});
+			});
+		});
+	}
+
+	// startAgentImageAction runs one tag-manager action to completion, with
+	// the busy/error/note lifecycle around it. Exactly one action runs at a
+	// time (the render disables every button while one is in flight, and
+	// this guard is the backstop); every action response carries the
+	// refreshed {harnesses} map, and cleanup/pull add a `report` the note
+	// summarizes. The confirm dialogs open BEFORE this runs, so the section
+	// can still repaint underneath a dialog without breaking it -- a dialog
+	// lives on document.body, not inside the section.
+	function startAgentImageAction(kind, label, run) {
+		if (agentImageAction) return;
+		agentImageAction = { kind: kind, label: label };
+		agentImageError = null;
+		agentImageNote = null;
+		renderAgentImagePanelNow();
+		run().then(function (data) {
+			mapAgentImage(data);
+			agentImageNote = window.Render.agentImageReportNote(data);
+			agentImageAction = null;
+			renderAgentImagePanelNow();
+		}, function (e) {
+			agentImageAction = null;
+			agentImageError = e.message;
+			renderAgentImagePanelNow();
+		});
 	}
 
 	// refreshAgentImagePanel ALWAYS updates state.agentImage, and only then

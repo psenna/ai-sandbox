@@ -180,9 +180,10 @@ type ExecClient interface {
 	ExecInspect(ctx context.Context, execID string) (ExecStatus, error)
 }
 
-// ImageClient ensures the images agent containers are built from are present
-// on the daemon. It is deliberately minimal: the operator never builds, tags,
-// lists or removes images.
+// ImageClient manages the images agent containers are built from: ensuring
+// they are present, discovering which tags the daemon holds, and removing
+// tags the operator no longer needs. It deliberately does not build, tag,
+// push, or prune the whole image store.
 type ImageClient interface {
 	// ImageInspect returns one image by reference (name:tag or ID), or an
 	// error satisfying IsNotFound when the daemon holds no such image. It
@@ -212,6 +213,17 @@ type ImageClient interface {
 	// let through) are dropped, so every returned Image has at least one
 	// RepoTags entry inside repo.
 	ImageList(ctx context.Context, repo string) ([]Image, error)
+
+	// ImageRemove removes ref from the daemon. When ref is a repo:tag whose
+	// image carries other tags, only the TAG is removed (the daemon
+	// "untags") and the image stays; when it is the image's last tag, the
+	// image and its now-unreferenced parent layers go too. Removing an image
+	// that is already gone is success, like every Remove method here.
+	//
+	// It never forces: the daemon refuses to remove an image a container
+	// still references, and that refusal is a real signal that the caller
+	// removed things out of order -- the same stance as VolumeRemove.
+	ImageRemove(ctx context.Context, ref string) error
 }
 
 // Image is an image present on the daemon.
@@ -839,6 +851,27 @@ func (d *Docker) ImageList(ctx context.Context, repo string) ([]Image, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RepoTags[0] < out[j].RepoTags[0] })
 	return out, nil
+}
+
+// ImageRemove removes image ref from the daemon: untagging when the image
+// carries other tags, deleting the image and pruning its now-unreferenced
+// parent layers when it does not. Removing an image that is already gone is
+// success, and it never forces -- see the interface comment.
+//
+// PruneChildren must be passed explicitly: the SDK maps the zero value to
+// noprune=1, which would untag and leave every layer on disk -- and
+// reclaiming that disk is the whole reason the operator removes images at
+// all. The result items (which tags were untaged vs deleted) are discarded,
+// the same way ImagePull discards its progress stream.
+func (d *Docker) ImageRemove(ctx context.Context, ref string) error {
+	_, err := d.api.ImageRemove(ctx, ref, client.ImageRemoveOptions{PruneChildren: true})
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("removing image %q: %w", ref, err)
+	}
+	return nil
 }
 
 // DemuxStream copies a non-TTY exec stream from src, writing the process's

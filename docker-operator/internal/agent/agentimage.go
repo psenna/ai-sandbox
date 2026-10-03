@@ -11,6 +11,7 @@ import (
 	"github.com/distribution/reference"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/registry"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
@@ -23,6 +24,23 @@ var ErrInvalidImageTag = errors.New("invalid agent image tag")
 // IsInvalidImageTag reports whether err was caused by a malformed per-agent
 // image tag.
 func IsInvalidImageTag(err error) bool { return errors.Is(err, ErrInvalidImageTag) }
+
+// ErrImageTagInUse is returned by DeleteAgentImageTag (and reported per tag
+// by CleanupAgentImages) for a tag some agent record still references --
+// either by its Image reference or by the image ID the record's ImageID
+// names. internal/api maps it to a 409.
+var ErrImageTagInUse = errors.New("agent image tag is in use")
+
+// IsImageTagInUse reports whether err was caused by an in-use image tag.
+func IsImageTagInUse(err error) bool { return errors.Is(err, ErrImageTagInUse) }
+
+// ErrImageTagMissing is returned by DeleteAgentImageTag for a tag of the
+// harness's agent image repository the daemon does not hold. internal/api maps
+// it to a 404.
+var ErrImageTagMissing = errors.New("agent image tag is not present on the daemon")
+
+// IsImageTagMissing reports whether err was caused by an absent image tag.
+func IsImageTagMissing(err error) bool { return errors.Is(err, ErrImageTagMissing) }
 
 // dateTimeTagRE matches the immutable :YYYYMMDD-HHMMSS tag the agent-image CI
 // workflow publishes on every push. Lexical order over this format is
@@ -410,4 +428,267 @@ func (m *Manager) AgentImageInventory(ctx context.Context, harness string) (Imag
 		CheckedAt:    snap.CheckedAt,
 		LastError:    snap.LastError,
 	}, nil
+}
+
+// agentImageUsage is what one harness's agent RECORDS pin: the tags they were
+// created against and the image IDs their containers last started from. It is
+// the "in use" half of every removal decision below.
+type agentImageUsage struct {
+	// tags are the tags some record's Image (repo:tag) names.
+	tags map[string]struct{}
+	// ids are the image IDs some record's ImageID matches.
+	ids map[string]struct{}
+}
+
+// agentImageUsage reads every agent record -- any status: a stopped or errored
+// agent's image is still its image, and a record mid-create or mid-delete can
+// be holding a slot and an image -- and buckets, per harness, the tags and
+// image IDs they reference. A record's Image counts only when it names THIS
+// harness's repository (a stale record from a different repo protects
+// nothing here); ImageID counts regardless of repo, because a content digest
+// is not tied to the repository it was pulled through.
+func (m *Manager) agentImageUsage(ctx context.Context) (map[string]agentImageUsage, error) {
+	agents, err := m.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading the agent records to decide which image tags are in use: %w", err)
+	}
+	out := make(map[string]agentImageUsage, len(config.Harnesses()))
+	for _, h := range config.Harnesses() {
+		out[h] = agentImageUsage{tags: map[string]struct{}{}, ids: map[string]struct{}{}}
+	}
+	for _, a := range agents {
+		h := HarnessOf(a)
+		u, ok := out[h]
+		if !ok {
+			u = agentImageUsage{tags: map[string]struct{}{}, ids: map[string]struct{}{}}
+			out[h] = u
+		}
+		// RepoWithoutTag normalizes both sides, so a hand-configured bare repo
+		// and the operator's fully-qualified default compare consistently.
+		if a.Image != "" && RepoWithoutTag(a.Image) == RepoWithoutTag(m.AgentImageFor(h)) {
+			if tag := ImageTagOf(a.Image); tag != "" {
+				u.tags[tag] = struct{}{}
+			}
+		}
+		if a.ImageID != "" {
+			u.ids[a.ImageID] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
+// imageTagID resolves the image ID a repo:tag ref currently points at, from
+// an ImageList result (one entry per image, each carrying every tag it has).
+// "" when the tag is not among the entries.
+func imageTagID(images []dockerclient.Image, tag string) string {
+	for _, img := range images {
+		for _, rt := range img.RepoTags {
+			if ImageTagOf(rt) == tag {
+				return img.ID
+			}
+		}
+	}
+	return ""
+}
+
+// DeleteAgentImageTag removes ONE tag of harness's agent image repository from
+// the daemon -- the manual scalpel. It refuses, without removing anything:
+//
+//   - ErrInvalidImageTag  -- tag is not a syntactically valid Docker tag;
+//   - ErrImageTagMissing  -- the daemon holds no such tag of that repository;
+//   - ErrImageTagInUse    -- some agent record's Image names the tag, or the
+//     tag points at an image ID some record's ImageID matches.
+//
+// Everything else is deletable ON PURPOSE, including the literal ":latest" and
+// the harness's newest date-time tag: this is the user overriding; the bulk
+// CleanupAgentImages below is the action that carries the extra protections.
+func (m *Manager) DeleteAgentImageTag(ctx context.Context, harness, tag string) error {
+	h := config.NormalizeHarness(harness)
+	if !imageTagRE.MatchString(tag) {
+		return fmt.Errorf("%w: %q", ErrInvalidImageTag, tag)
+	}
+	repo := RepoWithoutTag(m.AgentImageFor(h))
+
+	// Both guards before the remove, and a failure to read either is a
+	// failure to remove: a cleanup that cannot see what is in use must not
+	// delete anything.
+	usage, err := m.agentImageUsage(ctx)
+	if err != nil {
+		return err
+	}
+	images, err := m.docker.ImageList(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("listing the images of %q: %w", repo, err)
+	}
+	u := usage[h]
+
+	var id string
+	present := false
+	for _, img := range images {
+		for _, rt := range img.RepoTags {
+			if ImageTagOf(rt) == tag {
+				present, id = true, img.ID
+			}
+		}
+	}
+	if !present {
+		return fmt.Errorf("%w: %q of %q", ErrImageTagMissing, tag, repo)
+	}
+	if _, named := u.tags[tag]; named {
+		return fmt.Errorf("%w: an agent record was created against %q", ErrImageTagInUse, repo+":"+tag)
+	}
+	if id != "" {
+		if _, pinned := u.ids[id]; pinned {
+			return fmt.Errorf("%w: the image %q points at is one an agent record runs", ErrImageTagInUse, repo+":"+tag)
+		}
+	}
+
+	return m.docker.ImageRemove(ctx, repo+":"+tag)
+}
+
+// AgentImageCleanupReport is what CleanupAgentImages did for ONE harness.
+//
+// Removed lists the tags it removed -- an entry counts when the TAG is gone,
+// even if the image survives through another tag (the daemon "untags"), so the
+// count is tags, not reclaimed bytes. Failed carries per-tag daemon refusals
+// (an image a leaked container still references, say); the rest were still
+// attempted. Error is set only when NOTHING was attempted: the store read or
+// the daemon image list failed, and a cleanup that cannot see what is in use
+// must not delete anything.
+type AgentImageCleanupReport struct {
+	Harness string            `json:"harness"`
+	Removed []string          `json:"removed"`
+	Failed  map[string]string `json:"failed,omitempty"`
+	Error   string            `json:"error,omitempty"`
+}
+
+// CleanupAgentImages removes every tag of harness's agent image repository
+// that (1) no agent record references -- neither by Image (see
+// agentImageUsage) nor by the image ID its ImageID names -- and (2) is not the
+// harness's newest LOCAL date-time tag. That second protection is what keeps
+// the offline fallback defaultImageTagFrom hands new agents; the newest LOCAL
+// tag is kept even when the registry has published a newer one, because the
+// local one is what serves a create when the registry is unreachable. The
+// literal ":latest" and any other non-date-time tag get no blanket protection
+// -- only usage decides for them.
+//
+// A per-tag removal failure does not stop the rest; it is recorded in
+// Failed and the call still reports success.
+func (m *Manager) CleanupAgentImages(ctx context.Context, harness string) (AgentImageCleanupReport, error) {
+	h := config.NormalizeHarness(harness)
+	repo := RepoWithoutTag(m.AgentImageFor(h))
+	report := AgentImageCleanupReport{Harness: h}
+
+	usage, err := m.agentImageUsage(ctx)
+	if err != nil {
+		return report, err
+	}
+	images, err := m.docker.ImageList(ctx, repo)
+	if err != nil {
+		return report, fmt.Errorf("listing the images of %q: %w", repo, err)
+	}
+	u := usage[h]
+
+	// The local tags ARE the ImageList result's RepoTags; collect them once,
+	// sorted so the walk (and so the report, and so a test's "the rest were
+	// still attempted" assertion) is deterministic regardless of the daemon's
+	// or the fake's listing order.
+	localTags := make([]string, 0, len(images))
+	for _, img := range images {
+		for _, rt := range img.RepoTags {
+			localTags = append(localTags, ImageTagOf(rt))
+		}
+	}
+	sort.Strings(localTags)
+	newest := NewestDateTimeTag(localTags)
+
+	for _, tag := range localTags {
+		if _, named := u.tags[tag]; named {
+			continue
+		}
+		// imageTagID finds the ID even though it appears in a multi-tag
+		// entry, so an aliased tag is protected through whichever tag the
+		// record named.
+		if id := imageTagID(images, tag); id != "" {
+			if _, pinned := u.ids[id]; pinned {
+				continue
+			}
+		}
+		if tag == newest {
+			continue
+		}
+		if err := m.docker.ImageRemove(ctx, repo+":"+tag); err != nil {
+			if report.Failed == nil {
+				report.Failed = map[string]string{}
+			}
+			report.Failed[tag] = err.Error()
+			continue
+		}
+		report.Removed = append(report.Removed, tag)
+	}
+	return report, nil
+}
+
+// AgentImagePullReport is the outcome of PullLatestAgentImage for ONE
+// harness: Tag is the tag that was pulled, empty when Error is set.
+type AgentImagePullReport struct {
+	Harness string `json:"harness"`
+	Tag     string `json:"tag,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// agentImagePullTimeout bounds one harness's blocking pull. A large agent
+// image over a slow link takes minutes; the API server sets no WriteTimeout
+// (only ReadHeaderTimeout), so this is the only bound on the request the
+// handler holds open.
+const agentImagePullTimeout = 10 * time.Minute
+
+// PullLatestAgentImage pulls the newest PUBLISHED :YYYYMMDD-HHMMSS tag of
+// harness's agent image and blocks until the pull has finished.
+//
+// The stored registry snapshot is refreshed FIRST, best-effort
+// (RefreshAgentImageTags's own policy keeps the last-known list on a failure):
+// pulling from a stale snapshot would install yesterday's image while the panel
+// advertises today's. The pull is unconditional -- no inspect-first -- because
+// date-time tags are immutable per the CI that publishes them, so an
+// already-present tag means the daemon no-ops the pull, and "pull latest" must
+// mean a real registry round-trip regardless.
+//
+// Outcomes the UI must word -- no registry client configured, nothing
+// published yet -- are Error fields on the report, not returned errors.
+func (m *Manager) PullLatestAgentImage(ctx context.Context, harness string) AgentImagePullReport {
+	h := config.NormalizeHarness(harness)
+	report := AgentImagePullReport{Harness: h}
+
+	if m.registryFor(h) == nil {
+		report.Error = "no registry client is configured for this harness's agent image repository"
+		return report
+	}
+	if err := m.RefreshAgentImageTags(ctx, h); err != nil {
+		// Keep going on the stale snapshot rather than refusing: it is the
+		// newest thing we know, and it may be exactly what the user wants
+		// offline.
+		m.log.WarnContext(ctx, "refreshing the agent image tag snapshot before a pull failed; pulling from the last-known list",
+			"harness", h, "error", err)
+	}
+	snap, _, err := m.AgentImageTags(ctx, h)
+	if err != nil {
+		report.Error = "reading the agent image tag snapshot failed: " + err.Error()
+		return report
+	}
+	tag := NewestDateTimeTag(snap.Tags)
+	if tag == "" {
+		report.Error = "no published date-time tag is known for this harness yet -- press Check now"
+		return report
+	}
+
+	pullCtx, cancel := context.WithTimeout(ctx, agentImagePullTimeout)
+	defer cancel()
+	ref := RepoWithoutTag(m.AgentImageFor(h)) + ":" + tag
+	if err := m.docker.ImagePull(pullCtx, ref); err != nil {
+		report.Error = "pulling " + ref + " failed: " + err.Error()
+		return report
+	}
+	report.Tag = tag
+	return report
 }

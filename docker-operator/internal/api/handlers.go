@@ -88,6 +88,18 @@ type AgentManager interface {
 	AgentImageInventory(ctx context.Context, harness string) (agent.ImageInventory, error)
 	RefreshAgentImageTags(ctx context.Context, harness string) error
 
+	// The image tag manager. DeleteAgentImageTag removes ONE tag and refuses
+	// what an agent record still references -- agent.ErrImageTagInUse (409),
+	// agent.ErrImageTagMissing (404), agent.ErrInvalidImageTag (400).
+	// CleanupAgentImages removes every unreferenced tag except the harness's
+	// newest local date-time tag, one report per call; a non-nil error means
+	// nothing was attempted. PullLatestAgentImage pulls the newest published
+	// date-time tag, blocking; per-harness outcomes (errors included) are
+	// report fields, not returned errors.
+	DeleteAgentImageTag(ctx context.Context, harness, tag string) error
+	CleanupAgentImages(ctx context.Context, harness string) (agent.AgentImageCleanupReport, error)
+	PullLatestAgentImage(ctx context.Context, harness string) agent.AgentImagePullReport
+
 	// AnthropicAuthStatus reports whether a shared Anthropic credential is
 	// configured, its kind and when it was last set -- never its value.
 	// SetAnthropicAuth stores (replacing) it; ClearAnthropicAuth removes it
@@ -165,6 +177,9 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 
 	mux.HandleFunc("GET /api/agent-image/tags", h.handleAgentImageTags)
 	mux.HandleFunc("POST /api/agent-image/refresh", h.handleAgentImageRefresh)
+	mux.HandleFunc("POST /api/agent-image/cleanup", h.handleAgentImageCleanup)
+	mux.HandleFunc("POST /api/agent-image/pull-latest", h.handleAgentImagePullLatest)
+	mux.HandleFunc("DELETE /api/agent-image/tags/{harness}/{tag}", h.handleAgentImageTagDelete)
 
 	mux.HandleFunc("GET /api/templates", h.handleListTemplates)
 	mux.HandleFunc("POST /api/templates", h.handleCreateTemplate)
@@ -194,6 +209,9 @@ func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filesto
 	mux.HandleFunc("/api/agents/{id}/info", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/tags", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/refresh", methodNotAllowed)
+	mux.HandleFunc("/api/agent-image/cleanup", methodNotAllowed)
+	mux.HandleFunc("/api/agent-image/pull-latest", methodNotAllowed)
+	mux.HandleFunc("/api/agent-image/tags/{harness}/{tag}", methodNotAllowed)
 	mux.HandleFunc("/api/templates", methodNotAllowed)
 	mux.HandleFunc("/api/templates/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
@@ -593,22 +611,30 @@ func agentImageHarnessBody(inv agent.ImageInventory) agentImageHarness {
 	return body
 }
 
-func (h *Handler) agentImageTagsBody(ctx context.Context) agentImageTagsResponse {
+// agentImageHarnesses is the by-harness map every agent-image response
+// shares: one entry per config.Harnesses(), a per-harness read failure
+// surfaced as that entry's own last_error (never a missing entry), and the
+// body built AFTER an action so it reflects what the action just did.
+func (h *Handler) agentImageHarnesses(ctx context.Context) map[string]agentImageHarness {
 	harnesses := config.Harnesses()
-	resp := agentImageTagsResponse{Harnesses: make(map[string]agentImageHarness, len(harnesses))}
+	out := make(map[string]agentImageHarness, len(harnesses))
 	for _, harness := range harnesses {
 		inv, err := h.mgr.AgentImageInventory(ctx, harness)
 		if err != nil {
 			h.log.Warn("could not read the agent image inventory", "harness", harness, "error", err)
-			resp.Harnesses[harness] = agentImageHarness{
+			out[harness] = agentImageHarness{
 				Tags:      []agentImageTagOption{},
 				LastError: err.Error(),
 			}
 			continue
 		}
-		resp.Harnesses[harness] = agentImageHarnessBody(inv)
+		out[harness] = agentImageHarnessBody(inv)
 	}
-	return resp
+	return out
+}
+
+func (h *Handler) agentImageTagsBody(ctx context.Context) agentImageTagsResponse {
+	return agentImageTagsResponse{Harnesses: h.agentImageHarnesses(ctx)}
 }
 
 func (h *Handler) handleAgentImageTags(w http.ResponseWriter, r *http.Request) {
@@ -622,6 +648,86 @@ func (h *Handler) handleAgentImageRefresh(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeJSON(w, http.StatusOK, h.agentImageTagsBody(r.Context()))
+}
+
+// handleAgentImageTagDelete removes one tag. The refreshed by-harness map IS
+// the report -- the vanished tag is the outcome -- so no per-action field is
+// added to the response.
+func (h *Handler) handleAgentImageTagDelete(w http.ResponseWriter, r *http.Request) {
+	err := h.mgr.DeleteAgentImageTag(r.Context(), r.PathValue("harness"), r.PathValue("tag"))
+	switch {
+	case err == nil:
+	case agent.IsImageTagInUse(err):
+		writeError(w, http.StatusConflict, CodeImageTagInUse, err.Error(), "tag")
+		return
+	case agent.IsImageTagMissing(err):
+		writeError(w, http.StatusNotFound, CodeNotFound, err.Error(), "")
+		return
+	case agent.IsInvalidImageTag(err):
+		writeError(w, http.StatusBadRequest, CodeInvalidParam, err.Error(), "tag")
+		return
+	default:
+		h.internalError(w, "removing the agent image tag", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, agentImageTagsResponse{Harnesses: h.agentImageHarnesses(r.Context())})
+}
+
+// agentImageCleanupResponse is Cleanup's outcome: the refreshed by-harness
+// map plus one report entry per harness. Removed counts TAGS, not reclaimed
+// bytes -- an untag counts even when the image survives through another tag.
+type agentImageCleanupResponse struct {
+	Harnesses map[string]agentImageHarness    `json:"harnesses"`
+	Report    []agent.AgentImageCleanupReport `json:"report"`
+}
+
+// handleAgentImageCleanup removes every unreferenced tag (except each
+// harness's newest local date-time tag) for BOTH harnesses in one call. One
+// harness failing to even attempt its cleanup never skips the other -- the
+// same per-harness tolerance the refresh handler has, surfaced in the report
+// instead of last_error because the action's outcome is the point here.
+func (h *Handler) handleAgentImageCleanup(w http.ResponseWriter, r *http.Request) {
+	report := make([]agent.AgentImageCleanupReport, 0, len(config.Harnesses()))
+	for _, harness := range config.Harnesses() {
+		rep, err := h.mgr.CleanupAgentImages(r.Context(), harness)
+		if err != nil {
+			h.log.Warn("agent image cleanup could not be attempted", "harness", harness, "error", err)
+			rep.Error = "nothing was removed: " + err.Error()
+		}
+		report = append(report, rep)
+	}
+	writeJSON(w, http.StatusOK, agentImageCleanupResponse{
+		Harnesses: h.agentImageHarnesses(r.Context()),
+		Report:    report,
+	})
+}
+
+// agentImagePullResponse is Pull-latest's outcome: the refreshed by-harness
+// map plus one report entry per harness.
+type agentImagePullResponse struct {
+	Harnesses map[string]agentImageHarness `json:"harnesses"`
+	Report    []agent.AgentImagePullReport `json:"report"`
+}
+
+// handleAgentImagePullLatest pulls the newest published date-time tag for
+// BOTH harnesses in one call and blocks until both pulls finish -- a large
+// image over a slow link takes minutes, which is why the pull carries its own
+// timeout and the UI holds a persistent busy state. Per-harness failures
+// (including "no registry client", "nothing published") are report fields;
+// the request is still 200 so the other harness's outcome is delivered.
+func (h *Handler) handleAgentImagePullLatest(w http.ResponseWriter, r *http.Request) {
+	report := make([]agent.AgentImagePullReport, 0, len(config.Harnesses()))
+	for _, harness := range config.Harnesses() {
+		rep := h.mgr.PullLatestAgentImage(r.Context(), harness)
+		if rep.Error != "" {
+			h.log.Warn("pulling the newest agent image failed", "harness", harness, "error", rep.Error)
+		}
+		report = append(report, rep)
+	}
+	writeJSON(w, http.StatusOK, agentImagePullResponse{
+		Harnesses: h.agentImageHarnesses(r.Context()),
+		Report:    report,
+	})
 }
 
 func (h *Handler) handleAnthropicAuthGet(w http.ResponseWriter, r *http.Request) {

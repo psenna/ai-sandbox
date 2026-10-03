@@ -770,38 +770,107 @@
 		return html + '</select>';
 	}
 
-	// renderAgentImagePanel renders the "Agent image" body from a
-	// harnessImageTags map: ONE block per harness (each with its own newest
-	// tag, its own last-checked time and its own error line -- the two
-	// repositories are polled independently, issue #199), under a SINGLE
-	// "Check now" button, since POST /api/agent-image/refresh refreshes every
-	// harness in one call. The raw API body is accepted too, so a caller that
-	// hasn't mapped it yet still renders.
+	// renderAgentImagePanel renders the tag-manager body from a
+	// harnessImageTags map: an actions row (Check now / Cleanup / Pull
+	// latest), then one column per harness under a single grid -- each with
+	// its own newest-tag header and the list of the tags PRESENT on the
+	// server, one Delete button each. Only present tags get rows: the list
+	// is the host inventory, and the not-yet-pulled published tags stay in
+	// the create/update tag picker where they belong.
 	//
-	// opts.noTitle suppresses the built-in title, for the caller that already
-	// supplies its own heading -- the Settings page, whose section heading is
-	// "Agent image" and would otherwise be duplicated.
+	// There is deliberately NO client-side "in use" marking. Which tags
+	// agent records reference is a server-side fact (it reads the store);
+	// duplicating it in JS from /api/agents would drift, and the 409 the
+	// delete route returns carries a message that lands in the error line.
+	//
+	// opts:
+	//   noTitle suppresses the built-in title, for the caller that already
+	//          supplies its own heading (the Settings overlay's section).
+	//   busy   an {label} while one of the three actions is in flight:
+	//          every button disables and the label paints, so the state
+	//          survives the section being repainted (app.js re-renders on
+	//          every 3s poll, which would resurrect a plain disabled attr).
+	//   error  a failure line from the most recent action (cleared when the
+	//          next one starts, not by the poll).
+	//   note   a success line from the most recent action (see
+	//          agentImageReportNote).
 	function renderAgentImagePanel(byHarness, opts) {
+		opts = opts || {};
 		var map = (byHarness && byHarness.harnesses) ? harnessImageTags(byHarness) : (byHarness || {});
 		var keys = HARNESSES.filter(function (h) { return Object.prototype.hasOwnProperty.call(map, h); });
 		Object.keys(map).forEach(function (h) { if (keys.indexOf(h) < 0) keys.push(h); });
 
-		var html = (opts && opts.noTitle) ? '' : '<div class="agent-image-panel__title">Agent image</div>';
+		var dis = opts.busy ? ' disabled' : '';
+		var html = (opts.noTitle ? '' : '<div class="agent-image-panel__title">Agent image</div>') +
+			'<div class="agent-image-panel__actions">' +
+				'<button class="agent-image-panel__refresh btn btn--ghost btn--sm" type="button"' + dis + '>Check now</button>' +
+				'<button class="agent-image-panel__cleanup btn btn--ghost btn--sm" type="button"' + dis + '>Cleanup</button>' +
+				'<button class="agent-image-panel__pull btn btn--ghost btn--sm" type="button"' + dis + '>Pull latest</button>' +
+			'</div>';
+		if (opts.busy) html += '<p class="agent-image-panel__busy">' + escapeHTML(opts.busy.label) + '</p>';
+		if (opts.error) html += '<p class="agent-image-panel__error">' + escapeHTML(opts.error) + '</p>';
+		if (opts.note) html += '<p class="agent-image-panel__note">' + escapeHTML(opts.note) + '</p>';
+
+		html += '<div class="agent-image-panel__harnesses">';
 		keys.forEach(function (h) {
 			var e = imageTagsForHarness(map, h);
 			var newest = e.newest || newestDateTimeTag(imageTagNames(e.tags));
 			html +=
 				'<div class="agent-image-panel__harness" data-harness="' + escapeHTML(h) + '">' +
 					'<span class="agent-image-panel__harness-name">' + escapeHTML(harnessLabel(h)) + '</span>' +
-					'<span class="agent-image-panel__newest">Newest tag: ' + (newest ? escapeHTML(newest) : 'none discovered') + '</span>' +
+					'<span class="agent-image-panel__newest">Newest published: ' + (newest ? escapeHTML(newest) : 'none discovered') + '</span>' +
 					'<span class="agent-image-panel__checked">' + escapeHTML(formatCheckedAgo(e.checkedAt)) + '</span>' +
-					(e.lastError ? '<p class="agent-image-panel__error">' + escapeHTML(e.lastError) + '</p>' : '') +
-				'</div>';
+					(e.lastError ? '<p class="agent-image-panel__error">' + escapeHTML(e.lastError) + '</p>' : '');
+			var present = e.tags.filter(function (t) { return t.present; });
+			if (present.length === 0) {
+				html += '<p class="agent-image-panel__none">No image tags on the server</p></div>';
+				return;
+			}
+			html += '<table class="agent-image-panel__tags"><tbody>';
+			present.forEach(function (t) {
+				var notes = [];
+				if (t.tag === newest) notes.push('newest');
+				if (t.tag === e.defaultTag) notes.push('default');
+				html +=
+					'<tr class="agent-image-panel__tag-row">' +
+						'<td class="agent-image-panel__tag">' + escapeHTML(t.tag) +
+							(notes.length ? ' <span class="agent-image-panel__tag-note">(' + escapeHTML(notes.join(', ')) + ')</span>' : '') +
+						'</td>' +
+						'<td>' +
+							'<button class="agent-image-panel__delete btn btn--danger btn--sm" data-harness="' + escapeHTML(h) +
+								'" data-tag="' + escapeHTML(t.tag) + '" type="button"' + dis + '>Delete</button>' +
+						'</td>' +
+					'</tr>';
+			});
+			html += '</tbody></table></div>';
 		});
-		html += '<div class="agent-image-panel__actions">' +
-			'<button class="agent-image-panel__refresh btn btn--ghost btn--sm" type="button">Check now</button>' +
-			'</div>';
-		return html;
+		return html + '</div>';
+	}
+
+	// agentImageReportNote summarizes an action response's `report` into one
+	// success line, or returns null when there is nothing to say (the
+	// refresh and single-tag delete responses carry no report -- the state
+	// itself is the outcome there). Pure so it is testable like everything
+	// else in this file; app.js keeps the line until the NEXT action
+	// starts, because the 3s poll repaint cannot be trusted to let the
+	// user read it.
+	function agentImageReportNote(data) {
+		var report = data && data.report;
+		if (!report || !report.length) return null;
+		var cleaned = [];
+		var removed = 0;
+		for (var i = 0; i < report.length; i++) {
+			var rep = report[i] || {};
+			if (rep.error) {
+				cleaned.push(harnessLabel(normalizeHarness(rep.harness)) + ': ' + rep.error);
+			} else if (rep.removed) {
+				removed += rep.removed.length;
+			} else if (rep.tag) {
+				cleaned.push(harnessLabel(normalizeHarness(rep.harness)) + ' pulled ' + rep.tag);
+			}
+		}
+		if (removed > 0) cleaned.unshift('Removed ' + removed + ' tag' + (removed === 1 ? '' : 's'));
+		return cleaned.length ? cleaned.join(' · ') : null;
 	}
 
 	// formatBytes renders a byte count as a short human string. A negative or
@@ -929,6 +998,7 @@
 		imageTagNames: imageTagNames,
 		renderImageTagSelect: renderImageTagSelect,
 		renderAgentImagePanel: renderAgentImagePanel,
+		agentImageReportNote: agentImageReportNote,
 		formatBytes: formatBytes,
 		formatModTime: formatModTime,
 		renderBreadcrumb: renderBreadcrumb,
