@@ -205,6 +205,15 @@ func defaultImageTagFrom(localTags, registryTags []string) string {
 // the offeredImageTagLimit newest PUBLISHED date-time tags, plus EVERY tag
 // the host already holds, plus defaultTag itself. Anything in none of those
 // three sets is dropped. Pure: no Manager, no Docker, no registry.
+//
+// The RESULT is one flat list ordered by tag name, newest first (descending
+// lexical order, which is chronological for :YYYYMMDD-HHMMSS). It is
+// deliberately NOT grouped by provenance: which set a tag came from decides
+// only whether it is offered, never where it sorts. An earlier version did
+// group them -- published, then host-held -- which meant a tag the host
+// already had, and that was NEWER than a published one, still appeared below
+// it; on a repository whose tags are all dates the chooser then read as
+// almost-sorted, which is worse than either extreme.
 func OfferedImageTags(registryTags, localTags []string, defaultTag string) []ImageTagOption {
 	local := make(map[string]struct{}, len(localTags))
 	for _, t := range localTags {
@@ -214,18 +223,11 @@ func OfferedImageTags(registryTags, localTags []string, defaultTag string) []Ima
 		local[t] = struct{}{}
 	}
 
-	out := make([]ImageTagOption, 0, offeredImageTagLimit+len(local)+1)
-	seen := make(map[string]struct{}, offeredImageTagLimit+len(local)+1)
+	offered := make(map[string]struct{}, offeredImageTagLimit+len(local)+1)
 	add := func(tag string) {
-		if tag == "" {
-			return
+		if tag != "" {
+			offered[tag] = struct{}{}
 		}
-		if _, dup := seen[tag]; dup {
-			return
-		}
-		seen[tag] = struct{}{}
-		_, present := local[tag]
-		out = append(out, ImageTagOption{Tag: tag, Present: present})
 	}
 
 	published := SortTagsNewestFirst(FilterDateTimeTags(registryTags))
@@ -235,14 +237,21 @@ func OfferedImageTags(registryTags, localTags []string, defaultTag string) []Ima
 	for _, t := range published {
 		add(t)
 	}
-	for _, t := range SortTagsNewestFirst(FilterDateTimeTags(localTags)) {
-		add(t)
-	}
-	for _, t := range SortTagsNewestFirst(nonDateTimeTags(localTags)) {
+	for _, t := range localTags {
 		add(t)
 	}
 	add(defaultTag)
 
+	tags := make([]string, 0, len(offered))
+	for t := range offered {
+		tags = append(tags, t)
+	}
+
+	out := make([]ImageTagOption, 0, len(tags))
+	for _, t := range SortTagsNewestFirst(tags) {
+		_, present := local[t]
+		out = append(out, ImageTagOption{Tag: t, Present: present})
+	}
 	return out
 }
 

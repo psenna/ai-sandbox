@@ -292,6 +292,34 @@ func TestDefaultImageTagFrom(t *testing.T) {
 	}
 }
 
+// TestOfferedImageTagsAreFlatNewestFirst is its own function rather than a
+// subtest of TestOfferedImageTags so that function stays under the gocyclo
+// limit -- what it asserts is also a different axis (ordering) from that
+// one's (membership and Present).
+func TestOfferedImageTagsAreFlatNewestFirst(t *testing.T) {
+	// The host holds a NEWER tag than anything published. Ordering by
+	// provenance -- published first, then local -- would sort the 20251201
+	// published tag above the host's 20260101 one, so the chooser read as
+	// almost-sorted. The whole result must be ordered by tag name alone.
+	got := OfferedImageTags(
+		[]string{"20250901-000000", "20251201-000000"},
+		[]string{"20260101-000000", "latest"},
+		"",
+	)
+	want := []string{"latest", "20260101-000000", "20251201-000000", "20250901-000000"}
+	if len(got) != len(want) {
+		t.Fatalf("Options = %+v, want %d entries", got, len(want))
+	}
+	for i, tag := range want {
+		if got[i].Tag != tag {
+			t.Errorf("Options[%d].Tag = %q, want %q (full: %+v)", i, got[i].Tag, tag, got)
+		}
+	}
+	if !got[1].Present || got[2].Present {
+		t.Errorf("Present flags = %+v, want only the host-held tag true", got)
+	}
+}
+
 func TestOfferedImageTags(t *testing.T) {
 	t.Run("only the newest offeredImageTagLimit published tags survive", func(t *testing.T) {
 		var registryTags []string

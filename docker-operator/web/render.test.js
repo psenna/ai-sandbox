@@ -528,20 +528,31 @@ test('imageTagOffered: true only for a tag that harness actually offers', () => 
 	assert.equal(Render.imageTagOffered(entry.tags, 'latest'), true);
 });
 
-test('renderImageTagSelect: keeps the server\'s order, de-dupes, and labels the default in place', () => {
+test('renderImageTagSelect: orders by tag name newest-first, de-dupes, and labels the default in place', () => {
 	const html = Render.renderImageTagSelect('c', [
-		{ tag: '20260101-120000', present: false },
 		{ tag: '20251231-090000', present: true },
+		{ tag: '20260101-120000', present: false },
 		{ tag: '20251231-090000', present: true },
 		{ tag: 'latest', present: true },
 	], 'latest', '');
 	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
 	assert.equal(opts.length, 3, 'no repeats: ' + html);
-	// Server order is preserved: internal/agent.OfferedImageTags already put
-	// the newest published tags first and appended the default last.
-	assert.equal(opts[0], '<option value="20260101-120000" data-pull-required="true">20260101-120000 (pull required)</option>');
-	assert.equal(opts[1], '<option value="20251231-090000">20251231-090000</option>');
-	assert.equal(opts[2], '<option value="latest" selected>latest (default)</option>');
+	// Descending by tag name, whatever order they arrived in. For the
+	// :YYYYMMDD-HHMMSS tags this repo uses that is newest-first. The default
+	// is labelled in place rather than hoisted -- "latest" simply sorts first
+	// here because letters sort above digits.
+	assert.equal(opts[0], '<option value="latest" selected>latest (default)</option>');
+	assert.equal(opts[1], '<option value="20260101-120000" data-pull-required="true">20260101-120000 (pull required)</option>');
+	assert.equal(opts[2], '<option value="20251231-090000">20251231-090000</option>');
+});
+
+test('renderImageTagSelect: a default the harness does not offer still sorts into place', () => {
+	// The appended default/selected entries are by definition not in the
+	// server's list; they must not sink to the bottom just for that.
+	const html = Render.renderImageTagSelect('c', ['20260101-120000'], '20260909-090909', '');
+	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
+	assert.equal(opts[0], '<option value="20260909-090909" selected data-pull-required="true">20260909-090909 (default, pull required)</option>');
+	assert.equal(opts[1], '<option value="20260101-120000">20260101-120000</option>');
 });
 
 test('renderImageTagSelect: a tag the host does not hold is labelled "pull required", a present one is not', () => {
@@ -742,7 +753,9 @@ test('renderCreateForm: opts.values.harness = "opencode" selects the opencode ra
 
 test('renderCreateForm: harness=opencode hides and disables the Anthropic backend option', () => {
 	const html = Render.renderCreateForm({}, { values: { harness: 'opencode' } });
-	assert.match(html, /class="create-form__backend-anthropic"[^>]*hidden/);
+	// The card's class list now starts with choice-card, so the hidden
+	// attribute is anchored by the class NAME, not by the whole attribute.
+	assert.match(html, /create-form__backend-anthropic"[^>]*hidden/);
 	assert.match(html, /name="backend" value="anthropic"[^>]*disabled/);
 });
 
@@ -759,7 +772,10 @@ test('renderCreateForm: harness=opencode forces backend=ollama even when values 
 
 test('renderCreateForm: claude-code keeps the Anthropic backend available', () => {
 	const html = Render.renderCreateForm();
-	assert.doesNotMatch(html, /class="create-form__backend-anthropic"[^>]*hidden/);
+	// Anchored by class NAME: the card's own attribute now begins with
+	// choice-card, and anchoring on class="create-form__backend-anthropic"
+	// would match nothing and pass vacuously.
+	assert.doesNotMatch(html, /create-form__backend-anthropic"[^>]*hidden/);
 	assert.doesNotMatch(html, /name="backend" value="anthropic"[^>]*disabled/);
 	assert.match(html, /class="create-form__opencode-note"[^>]*hidden/);
 });
@@ -916,24 +932,42 @@ test('renderTemplateBar: an unnamed template shows a placeholder label', () => {
 	assert.match(html, /\(unnamed template\)/);
 });
 
-// --- change #2: the Settings page -------------------------------------------
+// --- the Settings overlay ---------------------------------------------------
 
-test('renderSettingsPage: one section per settings entry, each with an empty body', () => {
-	const html = Render.renderSettingsPage();
-	assert.match(html, /settings-page__title[^>]*>Settings</);
-	assert.match(html, /data-settings-section="anthropic-account"/);
-	assert.match(html, /data-settings-section="agent-image"/);
-	// The bodies start empty -- app.js fills them -- so the shell never
-	// depends on a fetch having happened.
+test('renderSettingsOverlay: a dialog panel with one nav item and one section per entry', () => {
+	const html = Render.renderSettingsOverlay();
+	assert.match(html, /settings-overlay__panel" role="dialog" aria-modal="true"/);
+	assert.match(html, /settings-overlay__title[^>]*>Settings</);
+	assert.match(html, /class="settings-overlay__close btn btn--ghost btn--sm" type="button">Close</);
+	assert.equal((html.match(/data-settings-nav="/g) || []).length, 2);
+	assert.equal((html.match(/data-settings-section="/g) || []).length, 2);
+	// The bodies start empty -- app.js fills them -- so the panel never depends
+	// on a fetch having happened.
 	assert.match(html, /data-settings-body="anthropic-account"><\/div>/);
 	assert.match(html, /data-settings-body="agent-image"><\/div>/);
 });
 
-test('renderSettingsPage: section bodies are addressable by id, and in order', () => {
-	const html = Render.renderSettingsPage();
+test('renderSettingsOverlay: the first section is shown and the rest hidden, with the nav in step', () => {
+	const html = Render.renderSettingsOverlay();
+	// Every section is rendered, inactive ones hidden: the poll-driven
+	// refreshes look their body up by id, so a section that only existed once
+	// its nav item was clicked would silently go stale.
+	assert.match(html, /<section class="settings-overlay__section" data-settings-section="anthropic-account">/);
+	assert.match(html, /<section class="settings-overlay__section" hidden data-settings-section="agent-image">/);
+	assert.match(html, /data-settings-nav="anthropic-account" aria-current="true"/);
+	assert.match(html, /data-settings-nav="agent-image" aria-current="false"/);
+	assert.match(html, /settings-overlay__nav-item settings-overlay__nav-item--active"[^>]*data-settings-nav="anthropic-account"/);
+});
+
+test('renderSettingsOverlay: nav items and section bodies stay addressable in order', () => {
+	const html = Render.renderSettingsOverlay();
 	assert.ok(
 		html.indexOf('data-settings-body="anthropic-account"') < html.indexOf('data-settings-body="agent-image"'),
 		'expected the Anthropic section before the Agent image one',
+	);
+	assert.ok(
+		html.indexOf('data-settings-nav="anthropic-account"') < html.indexOf('data-settings-nav="agent-image"'),
+		'expected the nav in the same order as the sections',
 	);
 });
 
@@ -977,4 +1011,79 @@ test('renderCreateForm: the Anthropic note points at Settings, not a sidebar pan
 	const html = Render.renderCreateForm({ backend: 'anthropic' });
 	assert.match(html, /set it in Settings first/);
 	assert.doesNotMatch(html, /in the sidebar first/);
+});
+
+// --- form restructure: decision order, choice cards, Advanced --------------
+
+test('renderCreateForm: harness and backend render as two cards each, with descriptions', () => {
+	const html = Render.renderCreateForm();
+	// The card LABELS specifically -- `class="choice-card"` or
+	// `class="choice-card <modifier>"`, never `class="choice-card__body"`.
+	assert.equal((html.match(/class="choice-card[" ]/g) || []).length, 4);
+	assert.match(html, /choice-grid/);
+	assert.match(html, /choice-card__title">Claude Code</);
+	assert.match(html, /choice-card__desc">Anthropic · Ollama</);
+	assert.match(html, /choice-card__title">opencode</);
+	assert.match(html, /choice-card__desc">Ollama only</);
+	assert.match(html, /choice-card__title">Ollama</);
+	assert.match(html, /choice-card__title">Anthropic account</);
+});
+
+// The card's selected state is painted by `input:checked + .choice-card__body`,
+// a SIBLING selector. If the body ever stops being the input's immediate next
+// sibling the card silently renders unselected forever -- worth its own test.
+test('renderCreateForm: every card body is the immediate sibling of its radio', () => {
+	const html = Render.renderCreateForm();
+	for (const [name, value] of [
+		['harness', 'claude-code'],
+		['harness', 'opencode'],
+		['backend', 'ollama'],
+		['backend', 'anthropic'],
+	]) {
+		const re = new RegExp(`<input type="radio" name="${name}" value="${value}"[^>]*><span class="choice-card__body">`);
+		assert.match(html, re, `${name}=${value} card body must follow its input directly`);
+	}
+});
+
+test('renderCreateForm: fields render in decision order, harness first', () => {
+	const html = Render.renderCreateForm();
+	const at = (s) => html.indexOf(s);
+	assert.ok(at('create-form__harness') < at('create-form__name'), 'harness must precede name');
+	assert.ok(at('create-form__name') < at('name="backend"'), 'identity must precede the backend choice');
+	assert.ok(at('name="backend"') < at('create-form__advanced'), 'backend must precede Advanced');
+	assert.ok(at('create-form__advanced') < at('create-form__actions'), 'Advanced must precede the action bar');
+});
+
+test('renderCreateForm: Identity and Model render as titled sections', () => {
+	const html = Render.renderCreateForm();
+	assert.match(html, /create-form__section-heading">Identity</);
+	assert.match(html, /create-form__section-heading">Model</);
+});
+
+// The invariant that keeps infraFieldsFromForm and both submit paths working:
+// a closed <details> still contains its fields in a parsed-as-HTML sense only
+// for real DOM, but the MARKUP must always carry them -- they are read with
+// unguarded .value reads, so conditionally omitting them would throw.
+test('renderCreateForm: Advanced starts closed but still renders every advanced field', () => {
+	const html = Render.renderCreateForm();
+	assert.match(html, /<details class="create-form__advanced">/);
+	for (const cls of ['create-form__image-tag', 'create-form__auto-compact', 'create-form__max-context-tokens', 'create-form__auto-mode']) {
+		assert.match(html, new RegExp(cls), `${cls} must be present even while Advanced is closed`);
+	}
+});
+
+test('renderCreateForm: opts.advancedOpen opens the disclosure', () => {
+	assert.match(Render.renderCreateForm({}, { advancedOpen: true }), /<details class="create-form__advanced" open>/);
+});
+
+test('renderCreateForm: sentence help lives in help lines, not placeholders', () => {
+	const html = Render.renderCreateForm();
+	assert.match(html, /create-form__help">owner\/repo\.git — blank for a bare terminal</);
+	assert.doesNotMatch(html, /placeholder="Claude Code/);
+	assert.doesNotMatch(html, /placeholder="owner\/repo\.git/);
+});
+
+test('renderCreateForm: the error line renders above the action bar', () => {
+	const html = Render.renderCreateForm();
+	assert.ok(html.indexOf('create-form__error') < html.indexOf('create-form__actions'));
 });

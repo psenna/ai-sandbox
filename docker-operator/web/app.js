@@ -1,7 +1,7 @@
 // app.js -- DOM wiring for the sidebar shell and the "New Agent" flow:
 // fetches /api/agents, renders the list via render.js's pure functions,
-// drives the create form (backend + model pickers), and the main-area
-// Settings page (the Anthropic-account and Agent-image panels).
+// drives the create form (backend + model pickers), and the Settings modal
+// overlay (the Anthropic-account and Agent-image sections).
 //
 // The agent detail view (terminal, rename, delete) and the Anthropic login
 // terminal are wired in by terminal.js, which app.js calls into via
@@ -314,6 +314,12 @@
 	// typed for the agent.
 	function applyTemplateToForm(t) {
 		var form = currentForm();
+		// The re-render below replaces the WHOLE form, so the Advanced
+		// disclosure's open/closed state -- which lives on the <details>
+		// element and nowhere else -- has to be captured and handed back, or
+		// applying a template silently collapses a section the user had open.
+		// Every field VALUE travels through `values`; this is UI state only.
+		var advanced = form.querySelector('.create-form__advanced');
 		var values = {
 			name: form.querySelector('.create-form__name').value,
 			description: form.querySelector('.create-form__description').value,
@@ -331,7 +337,10 @@
 			image_tag: t.image_tag,
 			auto_mode: t.auto_mode,
 		};
-		form.outerHTML = window.Render.renderCreateForm(buildFormDefaults(), { values: values });
+		form.outerHTML = window.Render.renderCreateForm(buildFormDefaults(), {
+			values: values,
+			advancedOpen: !!(advanced && advanced.open),
+		});
 		wireCreateForm(currentForm());
 	}
 
@@ -460,35 +469,86 @@
 		mainArea.innerHTML = '<p class="placeholder">Select an agent, or create a new one.</p>';
 	}
 
-	// showSettings opens the sandbox Settings page in the main area, the same
-	// way the Files button claims it: release the current view, drop the agent
-	// selection, then render. The page owns no WebSocket or xterm, so it does
-	// not register a teardown of its own -- the next claim (selectAgent,
-	// showPlaceholder, showCreateForm, Files) releases the slot wholesale.
+	// --- Settings overlay -----------------------------------------------------
 	//
-	// Both sections are refreshed on open: the Anthropic status has no other
-	// refresh path, and the image section repaints from state.agentImage (kept
-	// fresh by the 3s poll) rather than waiting for a fetch.
-	function showSettings() {
-		if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
-		state.selectedID = null;
-		renderSidebar();
-		mainArea.innerHTML = window.Render.renderSettingsPage();
-		refreshAnthropicPanel();
-		refreshAgentImagePanel();
+	// Settings is a MODAL on document.body, not a main-area page: opening it
+	// claims nothing, so whatever view is behind the scrim survives, and
+	// window.teardownActiveView (terminal.js's own teardown) never touches it.
+	// That is confirm.js's ownership model -- a private module-level handle,
+	// close-before-open, and an Escape listener scoped to its own lifetime.
+
+	// settingsOverlay is { root, onKey } while open, null otherwise.
+	var settingsOverlay = null;
+
+	function closeSettings() {
+		if (!settingsOverlay) return;
+		document.removeEventListener('keydown', settingsOverlay.onKey);
+		if (settingsOverlay.root.parentNode) settingsOverlay.root.parentNode.removeChild(settingsOverlay.root);
+		settingsOverlay = null;
 	}
 
-	// --- Settings page: the Anthropic-account and Agent-image sections -------
+	function openSettings() {
+		closeSettings(); // close-before-open, like confirm.js's show()
+
+		var root = document.createElement('div');
+		root.className = 'settings-overlay';
+		root.innerHTML = window.Render.renderSettingsOverlay();
+		document.body.appendChild(root);
+
+		// The nav swaps which section is shown; every section stays in the DOM
+		// (render.js renders them all, inactive ones hidden) so the poll-driven
+		// refreshes keep filling them whichever page is on screen.
+		var navItems = root.querySelectorAll('.settings-overlay__nav-item');
+		function activate(id) {
+			navItems.forEach(function (btn) {
+				var on = btn.getAttribute('data-settings-nav') === id;
+				btn.classList.toggle('settings-overlay__nav-item--active', on);
+				btn.setAttribute('aria-current', on ? 'true' : 'false');
+			});
+			root.querySelectorAll('[data-settings-section]').forEach(function (sec) {
+				sec.hidden = sec.getAttribute('data-settings-section') !== id;
+			});
+		}
+		navItems.forEach(function (btn) {
+			btn.addEventListener('click', function () { activate(btn.getAttribute('data-settings-nav')); });
+		});
+
+		function onKey(ev) {
+			if (ev.key !== 'Escape') return;
+			// A confirm dialog stacked on top of this overlay -- the credential
+			// Remove button opens one -- owns Escape first. confirm.js is a
+			// sibling on document.body and has no idea this overlay is
+			// underneath, so without this guard one press dismisses both.
+			if (document.querySelector('.confirm-overlay')) return;
+			closeSettings();
+		}
+		document.addEventListener('keydown', onKey);
+		root.querySelector('.settings-overlay__close').addEventListener('click', closeSettings);
+		root.addEventListener('mousedown', function (ev) {
+			if (ev.target === root) closeSettings();
+		});
+		settingsOverlay = { root: root, onKey: onKey };
+
+		// Both sections refresh on open. The Anthropic status has no other
+		// refresh path; the image section repaints from state.agentImage, which
+		// the 3s poll keeps fresh whether or not this overlay was ever opened.
+		refreshAnthropicPanel();
+		refreshAgentImagePanel();
+		root.querySelector('.settings-overlay__nav-item').focus();
+	}
+
+	// --- Settings sections: Anthropic account and Agent image -----------------
 	//
-	// Both sections live in the main area, built from render.js's
-	// renderSettingsPage() shell (one [data-settings-body] div per section) and
-	// filled from here. Nothing is rendered when the page is not open, so every
-	// continuation re-queries its body and bails if it is gone -- the same
-	// "navigated away while the fetch was in flight" guard as currentForm()
+	// Both live inside the overlay's sections, built from render.js's
+	// renderSettingsOverlay() (one [data-settings-body] div per section) and
+	// filled from here. Nothing is rendered while the overlay is closed, so
+	// every continuation re-queries its body and bails if it is gone -- the
+	// same "navigated away while the fetch was in flight" guard as currentForm()
 	// below and refreshTemplateBar.
 
 	function settingsBody(id) {
-		return mainArea.querySelector('[data-settings-body="' + id + '"]');
+		if (!settingsOverlay) return null;
+		return settingsOverlay.root.querySelector('[data-settings-body="' + id + '"]');
 	}
 
 	function refreshAnthropicPanel() {
@@ -602,6 +662,10 @@
 		fetchJSON('/api/anthropic/login', { method: 'POST' })
 			.then(function () {
 				if (typeof window.renderAnthropicLogin === 'function') {
+					// The login terminal claims the main area, so the Settings
+					// modal has to come down first -- otherwise its scrim sits
+					// over the very terminal the user is meant to type into.
+					closeSettings();
 					window.renderAnthropicLogin(mainArea, {
 						submitToken: function (token) {
 							return putAnthropicAuth({ kind: 'oauth', value: token });
@@ -611,7 +675,7 @@
 							// Back to Settings, where the login was started --
 							// it shows the freshly-set credential, unlike the
 							// bare placeholder.
-							showSettings();
+							openSettings();
 						},
 					});
 				}
@@ -675,7 +739,7 @@
 		});
 	}
 
-	if (settingsBtn) settingsBtn.addEventListener('click', showSettings);
+	if (settingsBtn) settingsBtn.addEventListener('click', openSettings);
 
 	// onAgentDeleted is called by terminal.js after a successful DELETE. The
 	// main area is reset only when the deleted agent is the one on screen
@@ -709,7 +773,7 @@
 	// Only the image tags are fetched at load time: the 3s poll below feeds
 	// state.agentImage for the create/update tag pickers, whether or not
 	// Settings is ever opened. The Anthropic status is fetched on open
-	// (showSettings) -- there is no sidebar panel holding it any more.
+	// (openSettings) -- there is no sidebar panel holding it any more.
 	refreshAgentImagePanel();
 
 	// Poll for status changes (creating -> running, an unexpected stop, etc.)

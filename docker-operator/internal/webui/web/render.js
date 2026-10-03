@@ -135,8 +135,9 @@
 	//
 	//   'delete' resets the main area to the placeholder ONLY when the deleted
 	//   agent is the one currently selected. Deleting some other agent -- or
-	//   deleting while nothing is selected, e.g. from the Settings page, which
-	//   clears the selection -- must leave whatever is on screen alone.
+	//   deleting while nothing is selected, e.g. from the Files view or the
+	//   Settings overlay, neither of which selects an agent -- must leave
+	//   whatever is on screen alone.
 	//
 	// Anything unrecognised degrades to 'sidebar-only', the harmless
 	// direction: a stale list entry self-heals on the next poll, a torn-down
@@ -219,6 +220,17 @@
 	// internal/agent's Update never changes a persisted agent's harness) and
 	// appends "(set at create time)" to the legend, without hiding or omitting
 	// the fieldset.
+	//
+	// The fields are ordered by DECISION rather than by type -- Harness (the
+	// choice everything else depends on), Identity, Model, then a collapsed
+	// Advanced disclosure -- because twelve equal-weight rows in one column
+	// give the eye nowhere to start. Harness and Backend are rendered as
+	// choice cards, but each card merely WRAPS the same radio input, so every
+	// selector and every :checked read elsewhere is untouched. opts.advancedOpen
+	// opens the disclosure (the update form does, so an edit flow's current
+	// values are not hidden behind a collapsed section); the fields inside it
+	// are always rendered, closed or not, because the submit paths read them
+	// with unguarded .value reads.
 	function renderCreateForm(defaults, opts) {
 		defaults = defaults || {};
 		opts = opts || {};
@@ -266,59 +278,125 @@
 		var ollamaHidden = backend === 'ollama' ? '' : ' hidden';
 		var nameValue = escapeHTML(values.name || '');
 		var descriptionValue = escapeHTML(values.description || '');
+		var harnessLocked = !!opts.harnessLocked;
+		// The cards keep the radios as REAL inputs, just wrapped: the input is
+		// the focus/click target and every consumer (app.js's currentHarnessOf
+		// / currentBackendOf, terminal.js's syncBackend, harnessLocked's
+		// disabled state) reads it exactly as before. The visible body is the
+		// input's next sibling, which is what lets CSS paint the checked card
+		// with a plain sibling selector -- no :has() needed.
+		var harnessCard = function (value, label, desc, checked) {
+			return (
+				'<label class="choice-card">' +
+					'<input type="radio" name="harness" value="' + value + '"' +
+						(checked ? ' checked' : '') + (harnessLocked ? ' disabled' : '') + '>' +
+					'<span class="choice-card__body">' +
+						'<span class="choice-card__title">' + label + '</span>' +
+						'<span class="choice-card__desc">' + desc + '</span>' +
+					'</span>' +
+				'</label>'
+			);
+		};
+		// harnessLocked applies to the harness only; the backend cards are
+		// never disabled by it.
+		var backendCard = function (value, label, desc, checked, disabled, hidden) {
+			return (
+				'<label class="choice-card' + (value === 'anthropic' ? ' create-form__backend-anthropic' : '') + '"' + (hidden ? ' hidden' : '') + '>' +
+					'<input type="radio" name="backend" value="' + value + '"' +
+						(checked ? ' checked' : '') + (disabled ? ' disabled' : '') + '>' +
+					'<span class="choice-card__body">' +
+						'<span class="choice-card__title">' + label + '</span>' +
+						'<span class="choice-card__desc">' + desc + '</span>' +
+					'</span>' +
+				'</label>'
+			);
+		};
 		return (
 			'<form class="create-form">' +
 				'<h2 class="create-form__title">' + title + '</h2>' +
-				'<label class="create-form__row">Name<input class="create-form__name" type="text" value="' + nameValue + '" placeholder="(optional)"></label>' +
-				'<label class="create-form__row">Description<input class="create-form__description" type="text" value="' + descriptionValue + '" placeholder="(optional)"></label>' +
-				'<label class="create-form__row">Repository' +
-					'<input class="create-form__repo" type="text" value="' + repo + '" placeholder="owner/repo.git — blank for a bare terminal">' +
-				'</label>' +
-				'<label class="create-form__row">Agent image' +
-					renderImageTagSelect('create-form__image-tag', imageInfo.tags, imageInfo.defaultTag, selectedImageTag) +
-				'</label>' +
-				'<label class="create-form__row">Auto-compact threshold' +
-					'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '" placeholder="Claude Code auto-compact threshold — blank to use the built-in default">' +
-				'</label>' +
-				'<label class="create-form__row">Max-context tokens' +
-					'<input class="create-form__max-context-tokens" type="text" value="' + maxContextTokens + '" placeholder="Claude Code max-context tokens — blank to use the built-in default">' +
-				'</label>' +
-				'<label class="create-form__row">Auto mode' +
-					'<select class="create-form__auto-mode">' +
-						'<option value=""' + (autoModeValue === '' ? ' selected' : '') + '>Operator default (' + operatorAutoModeLabel + ')</option>' +
-						'<option value="on"' + (autoModeValue === 'on' ? ' selected' : '') + '>On</option>' +
-						'<option value="off"' + (autoModeValue === 'off' ? ' selected' : '') + '>Off</option>' +
-					'</select>' +
-				'</label>' +
+
+				// 1. Harness first: it is the decision everything below depends
+				// on -- which backend is legal, which image repository applies,
+				// which fields mean anything. The descriptions carry those
+				// constraints at the moment of choosing, which is why the old
+				// "opencode runs against Ollama only" paragraph is gone.
 				'<fieldset class="create-form__row create-form__harness">' +
-					'<legend>Harness' + (opts.harnessLocked ? ' (set at create time)' : '') + '</legend>' +
-					'<label><input type="radio" name="harness" value="claude-code"' +
-						(harness === 'claude-code' ? ' checked' : '') + (opts.harnessLocked ? ' disabled' : '') + '> Claude Code</label>' +
-					'<label><input type="radio" name="harness" value="opencode"' +
-						(opencode ? ' checked' : '') + (opts.harnessLocked ? ' disabled' : '') + '> opencode</label>' +
+					'<legend>Harness' + (harnessLocked ? ' (set at create time)' : '') + '</legend>' +
+					'<div class="choice-grid">' +
+						harnessCard('claude-code', 'Claude Code', 'Anthropic · Ollama', harness === 'claude-code') +
+						harnessCard('opencode', 'opencode', 'Ollama only', opencode) +
+					'</div>' +
 				'</fieldset>' +
-				'<fieldset class="create-form__row create-form__backend">' +
-					'<legend>Backend</legend>' +
-					'<label><input type="radio" name="backend" value="ollama"' + (backend === 'ollama' ? ' checked' : '') + '> Ollama</label>' +
-					'<label class="create-form__backend-anthropic"' + (opencode ? ' hidden' : '') + '>' +
-						'<input type="radio" name="backend" value="anthropic"' +
-						(backend === 'anthropic' ? ' checked' : '') + (opencode ? ' disabled' : '') +
-						'> Anthropic account</label>' +
-				'</fieldset>' +
-				'<div class="create-form__ollama"' + ollamaHidden + '>' +
-					'<label class="create-form__row">Ollama server' +
-						'<input class="create-form__ollama-url" type="text"' + ollamaURLAttr + ' placeholder="' + (ollamaURL || 'operator default') + '">' +
+
+				// 2. Identity.
+				'<section class="create-form__section">' +
+					'<h3 class="create-form__section-heading">Identity</h3>' +
+					'<label class="create-form__row">Name<input class="create-form__name" type="text" value="' + nameValue + '" placeholder="(optional)"></label>' +
+					'<label class="create-form__row">Description<input class="create-form__description" type="text" value="' + descriptionValue + '" placeholder="(optional)"></label>' +
+					'<label class="create-form__row">Repository' +
+						'<input class="create-form__repo" type="text" value="' + repo + '">' +
+						'<span class="create-form__help">owner/repo.git — blank for a bare terminal</span>' +
 					'</label>' +
-					'<label class="create-form__row">Opus-tier model<input class="create-form__model" type="text" value="' + model + '"></label>' +
-					'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +
-				'</div>' +
-				'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in Settings first).</p>' +
-				'<p class="create-form__opencode-note"' + (opencode ? '' : ' hidden') + '>opencode runs against Ollama only — the Anthropic backend is not available for it.</p>' +
+				'</section>' +
+
+				// 3. Model.
+				'<section class="create-form__section">' +
+					'<h3 class="create-form__section-heading">Model</h3>' +
+					'<fieldset class="create-form__row create-form__backend">' +
+						'<legend>Backend</legend>' +
+						'<div class="choice-grid">' +
+							backendCard('ollama', 'Ollama', 'Local models on the operator’s server', backend === 'ollama', false, false) +
+							backendCard('anthropic', 'Anthropic account', 'Claude models via the shared login', backend === 'anthropic', opencode, opencode) +
+						'</div>' +
+					'</fieldset>' +
+					'<p class="create-form__opencode-note"' + (opencode ? '' : ' hidden') + '>opencode runs against Ollama only — the Anthropic backend is not available for it.</p>' +
+					'<div class="create-form__ollama"' + ollamaHidden + '>' +
+						// The ollama-url placeholder CARRIES the operator's
+						// default value, so unlike the fields below it stays a
+						// placeholder -- it is data, not a help sentence.
+						'<label class="create-form__row">Ollama server' +
+							'<input class="create-form__ollama-url" type="text"' + ollamaURLAttr + ' placeholder="' + (ollamaURL || 'operator default') + '">' +
+						'</label>' +
+						'<label class="create-form__row">Opus-tier model<input class="create-form__model" type="text" value="' + model + '"></label>' +
+						'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +
+					'</div>' +
+					'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in Settings first).</p>' +
+				'</section>' +
+
+				// 4. Advanced: collapsed, but every field stays in the DOM even
+				// while closed -- infraFieldsFromForm and both submit paths read
+				// them with unguarded .value reads.
+				'<details class="create-form__advanced"' + (opts.advancedOpen ? ' open' : '') + '>' +
+					'<summary class="create-form__advanced-summary">Advanced</summary>' +
+					'<div class="create-form__advanced-body">' +
+						'<label class="create-form__row">Agent image' +
+							renderImageTagSelect('create-form__image-tag', imageInfo.tags, imageInfo.defaultTag, selectedImageTag) +
+						'</label>' +
+						'<label class="create-form__row">Auto-compact threshold' +
+							'<input class="create-form__auto-compact" type="text" value="' + autoCompact + '">' +
+							'<span class="create-form__help">Blank to use the built-in default</span>' +
+						'</label>' +
+						'<label class="create-form__row">Max-context tokens' +
+							'<input class="create-form__max-context-tokens" type="text" value="' + maxContextTokens + '">' +
+							'<span class="create-form__help">Blank to use the built-in default</span>' +
+						'</label>' +
+						'<label class="create-form__row">Auto mode' +
+							'<select class="create-form__auto-mode">' +
+								'<option value=""' + (autoModeValue === '' ? ' selected' : '') + '>Operator default (' + operatorAutoModeLabel + ')</option>' +
+								'<option value="on"' + (autoModeValue === 'on' ? ' selected' : '') + '>On</option>' +
+								'<option value="off"' + (autoModeValue === 'off' ? ' selected' : '') + '>Off</option>' +
+							'</select>' +
+						'</label>' +
+					'</div>' +
+				'</details>' +
+
+				// The error line sits ABOVE the bar so the sticky action bar can
+				// never cover it.
+				'<p class="create-form__error" role="alert" hidden></p>' +
 				'<div class="create-form__actions">' +
 					'<button class="create-form__submit btn btn--primary" type="submit">' + submitLabel + '</button>' +
 					'<button class="create-form__cancel btn btn--ghost" type="button">Cancel</button>' +
 				'</div>' +
-				'<p class="create-form__error" role="alert" hidden></p>' +
 			'</form>'
 		);
 	}
@@ -428,32 +506,54 @@
 		);
 	}
 
-	// SETTINGS_SECTIONS is the Settings page's table of contents: one heading
-	// plus an EMPTY body div per entry, which app.js fills and re-fills via
-	// [data-settings-body]. This list is the extension point -- a future
-	// sandbox setting is one entry here, one body renderer, and its wiring in
-	// app.js; nothing about the page shell changes.
+	// SETTINGS_SECTIONS is the Settings overlay's table of contents: one nav
+	// button plus one section (heading + an EMPTY body div app.js fills and
+	// re-fills via [data-settings-body]) per entry. This list is the extension
+	// point -- a future sandbox setting is one entry here, one body renderer,
+	// and its wiring in app.js; nothing about the shell changes.
 	var SETTINGS_SECTIONS = [
 		{ id: 'anthropic-account', title: 'Anthropic account' },
 		{ id: 'agent-image', title: 'Agent image' },
 	];
 
-	// renderSettingsPage renders the Settings page shell: a title plus one
-	// bordered section per SETTINGS_SECTIONS entry. The bodies start empty on
-	// purpose -- app.js owns the fetching/wiring and fills each one, so a
-	// section's content never depends on this function re-running.
-	function renderSettingsPage() {
+	// renderSettingsOverlay renders the Settings PANEL -- the modal's inner
+	// div, not a scrim. app.js builds the scrim around it exactly like
+	// confirm.js and terminal.js's own overlays do.
+	//
+	// Every section is rendered, with the inactive ones `hidden`: the nav only
+	// chooses which is shown. That matters because app.js's section refresh
+	// helpers look their body up by id and bail when it is missing, and they
+	// are driven by the 3s poll as well as by opening the overlay -- so a
+	// section that did not exist in the DOM until its nav item was clicked
+	// would go stale.
+	//
+	// The bodies start empty on purpose: app.js owns the fetching and wiring,
+	// so a section's content never depends on this function re-running.
+	function renderSettingsOverlay() {
+		var nav = SETTINGS_SECTIONS.map(function (s, i) {
+			return '<button class="settings-overlay__nav-item' + (i === 0 ? ' settings-overlay__nav-item--active' : '') +
+				'" type="button" data-settings-nav="' + escapeHTML(s.id) +
+				'" aria-current="' + (i === 0 ? 'true' : 'false') + '">' + escapeHTML(s.title) + '</button>';
+		}).join('');
+		var sections = SETTINGS_SECTIONS.map(function (s, i) {
+			return (
+				'<section class="settings-overlay__section"' + (i === 0 ? '' : ' hidden') +
+					' data-settings-section="' + escapeHTML(s.id) + '">' +
+					'<h3 class="settings-overlay__heading">' + escapeHTML(s.title) + '</h3>' +
+					'<div class="settings-overlay__section-body" data-settings-body="' + escapeHTML(s.id) + '"></div>' +
+				'</section>'
+			);
+		}).join('');
 		return (
-			'<div class="settings-page">' +
-				'<h2 class="settings-page__title">Settings</h2>' +
-				SETTINGS_SECTIONS.map(function (s) {
-					return (
-						'<section class="settings-page__section" data-settings-section="' + escapeHTML(s.id) + '">' +
-							'<h3 class="settings-page__heading">' + escapeHTML(s.title) + '</h3>' +
-							'<div class="settings-page__body" data-settings-body="' + escapeHTML(s.id) + '"></div>' +
-						'</section>'
-					);
-				}).join('') +
+			'<div class="settings-overlay__panel" role="dialog" aria-modal="true" aria-labelledby="settings-overlay-title">' +
+				'<div class="settings-overlay__bar">' +
+					'<strong class="settings-overlay__title" id="settings-overlay-title">Settings</strong>' +
+					'<button class="settings-overlay__close btn btn--ghost btn--sm" type="button">Close</button>' +
+				'</div>' +
+				'<div class="settings-overlay__body">' +
+					'<nav class="settings-overlay__nav" aria-label="Settings sections">' + nav + '</nav>' +
+					'<div class="settings-overlay__content">' + sections + '</div>' +
+				'</div>' +
 			'</div>'
 		);
 	}
@@ -534,11 +634,9 @@
 	// tolerates a plain ["tag", ...] array, which carries no presence
 	// information -- those count as present, so an old-shaped payload never
 	// labels every option "pull required"), drops blanks and de-duplicates by
-	// tag KEEPING THE SERVER'S ORDER: internal/agent.OfferedImageTags already
-	// orders the list (newest published date-time tags first, then every tag
-	// the host holds, then the default), and that ordering is the product
-	// decision -- re-sorting it here would float a hand-built local tag above
-	// the newest published one.
+	// tag, keeping the order it was given. The FINAL order the chooser shows
+	// is settled by renderImageTagSelect below, which sorts by tag name --
+	// see the note there.
 	function normalizeImageTagOptions(tags) {
 		var seen = {};
 		var out = [];
@@ -618,12 +716,20 @@
 	}
 
 	// renderImageTagSelect renders a <select> over one harness's offered tags
-	// (GET /api/agent-image/tags' [{tag, present}] list for that harness), IN
-	// THE SERVER'S ORDER, plus defaultTag and selectedTag appended if the
-	// harness does not offer them. A tag the host does not already hold is
-	// labelled "pull required" (and carries data-pull-required="true") so the
-	// user knows choosing it makes the update wait on a registry pull; the
-	// operator default is labelled "(default)" in place, never hoisted.
+	// (GET /api/agent-image/tags' [{tag, present}] list for that harness), plus
+	// defaultTag and selectedTag appended if the harness does not offer them.
+	// A tag the host does not already hold is labelled "pull required" (and
+	// carries data-pull-required="true") so the user knows choosing it makes
+	// the update wait on a registry pull; the operator default is labelled
+	// "(default)" in place, never hoisted.
+	//
+	// The options are ordered by TAG NAME, descending -- newest first, since
+	// these are :YYYYMMDD-HHMMSS tags. That is the same order
+	// internal/agent.OfferedImageTags already returns; sorting again here is
+	// what keeps it true for the two entries appended below, which by
+	// definition are NOT in that list and would otherwise always sink to the
+	// bottom regardless of how new they are.
+	//
 	// selectedTag (else defaultTag, else "") is the selected option, and every
 	// value is escaped.
 	function renderImageTagSelect(cls, tags, defaultTag, selectedTag) {
@@ -639,6 +745,8 @@
 		// an old tag must keep seeing the tag it is actually on.
 		if (def && !seen[def]) { seen[def] = true; ordered.push({ tag: def, present: false }); }
 		if (selected && !seen[selected]) { seen[selected] = true; ordered.push({ tag: selected, present: false }); }
+
+		ordered.sort(function (a, b) { return a.tag < b.tag ? 1 : a.tag > b.tag ? -1 : 0; });
 
 		var matched = selected || def;
 
@@ -808,7 +916,7 @@
 		renderCreateForm: renderCreateForm,
 		renderTemplateBar: renderTemplateBar,
 		renderAgentInfo: renderAgentInfo,
-		renderSettingsPage: renderSettingsPage,
+		renderSettingsOverlay: renderSettingsOverlay,
 		renderAnthropicStatus: renderAnthropicStatus,
 		isDateTimeTag: isDateTimeTag,
 		newestDateTimeTag: newestDateTimeTag,
