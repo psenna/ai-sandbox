@@ -82,7 +82,7 @@ func TestLoad_DefaultsWithOnlyRequiredEnv(t *testing.T) {
 		AnthropicAuthToken:        Secret("ollama"),
 		AnthropicAPIKey:           Secret(""),
 		AgentModel:                "glm-5.3:cloud",
-		AgentFastModel:            "glm-5.3-flash:cloud",
+		AgentFastModel:            "deepseek-v4.1-flash:cloud",
 		DependaproxyContainer:     "docker-operator-dependaproxy",
 		DefaultAutoMode:           true,
 		FilestoreDir:              "/var/lib/docker-operator/filestore",

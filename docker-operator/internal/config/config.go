@@ -45,7 +45,7 @@ const (
 	defaultOllamaURL             = "http://ollama:11434"
 	defaultAnthropicAuth         = "ollama" // NOT defaultAnthropicAuthToken -- gosec G101 pattern-matches "token" in identifier names
 	defaultAgentModel            = "glm-5.3:cloud"
-	defaultAgentFastModel        = "glm-5.3-flash:cloud"
+	defaultAgentFastModel        = "deepseek-v4.1-flash:cloud"
 	defaultDependaproxyContainer = "docker-operator-dependaproxy"
 
 	defaultAgentBackend = BackendOllama

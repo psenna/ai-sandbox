@@ -287,7 +287,7 @@ form:
   operator's `OLLAMA_URL` shown as its placeholder — leave it blank to use
   that default, or point one agent at a different server (any `http(s)` URL).
   It also pre-fills two model names from the operator's `OLLAMA_MODEL` /
-  `OLLAMA_FAST_MODEL` (`glm-5.3:cloud` / `glm-5.3-flash:cloud` by default)
+  `OLLAMA_FAST_MODEL` (`glm-5.3:cloud` / `deepseek-v4.1-flash:cloud` by default)
   for the default/"opus" tier and the "sonnet"+"haiku" tiers; edit them per
   agent. The shared daemon authenticates `:cloud` models to ollama.com with
   the SSH keypair in `../.ollama` — no per-agent key.

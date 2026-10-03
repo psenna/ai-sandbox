@@ -614,6 +614,11 @@
 				// why the Anthropic backend option disappears for an opencode
 				// agent).
 				harnessLocked: true,
+				// Unlike the create form, the update form opens Advanced:
+				// those fields hold the agent's CURRENT values, and an edit
+				// flow that hides what it is about to submit invites blind
+				// submits.
+				advancedOpen: true,
 			});
 			var form = mainArea.querySelector('.create-form');
 			var errorEl = form.querySelector('.create-form__error');
