@@ -205,3 +205,226 @@ func TestHandleCreate_InvalidImageTag(t *testing.T) {
 		t.Errorf("error = %+v, want invalid_param on field \"image_tag\"", env.Error)
 	}
 }
+
+// --- image tag manager -------------------------------------------------------
+
+func TestHandleAgentImageTagDelete_OK(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.setInventory(config.HarnessClaudeCode,
+		fakeInventory(config.HarnessClaudeCode, []string{"20260910-070000"}, []string{"20260910-070000", "20260909-120000"}))
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "DELETE", "/api/agent-image/tags/claude-code/20260909-120000", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	if mgr.deleteTagCalls["claude-code|20260909-120000"] != 1 {
+		t.Errorf("deleteTagCalls = %v, want exactly one call", mgr.deleteTagCalls)
+	}
+	// The read-back map is the report: the deleted tag must be gone from it.
+	var resp agentImageTagsResponse
+	decode(t, rec.Body.Bytes(), &resp)
+	for _, o := range resp.Harnesses[config.HarnessClaudeCode].Tags {
+		if o.Tag == "20260909-120000" {
+			t.Errorf("read-back tags still contain the deleted tag: %+v", resp.Harnesses[config.HarnessClaudeCode].Tags)
+		}
+	}
+}
+
+func TestHandleAgentImageTagDelete_InUse(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.deleteTagErr["claude-code|20260910-070000"] = agent.ErrImageTagInUse
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "DELETE", "/api/agent-image/tags/claude-code/20260910-070000", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rec.Code, rec.Body)
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code != CodeImageTagInUse {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeImageTagInUse)
+	}
+}
+
+func TestHandleAgentImageTagDelete_Missing(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.deleteTagErr["claude-code|nope"] = agent.ErrImageTagMissing
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "DELETE", "/api/agent-image/tags/claude-code/nope", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body)
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code != CodeNotFound {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeNotFound)
+	}
+}
+
+func TestHandleAgentImageTagDelete_InvalidTag(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.deleteTagErr["claude-code|bad tag!"] = agent.ErrInvalidImageTag
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "DELETE", "/api/agent-image/tags/claude-code/bad%20tag!", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestHandleAgentImageTagDelete_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "GET", "/api/agent-image/tags/claude-code/20260910-070000", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET on the tag path status = %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAgentImageCleanup_BothHarnesses(t *testing.T) {
+	mgr := newFakeManager(5)
+	for _, harness := range config.Harnesses() {
+		mgr.cleanupReports[harness] = agent.AgentImageCleanupReport{
+			Harness: harness, Removed: []string{"20260909-120000"},
+		}
+		mgr.setInventory(harness, fakeInventory(harness, []string{"20260910-070000"}, nil))
+	}
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "POST", "/api/agent-image/cleanup", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp agentImageCleanupResponse
+	decode(t, rec.Body.Bytes(), &resp)
+	if len(resp.Report) != len(config.Harnesses()) {
+		t.Fatalf("report = %+v, want one entry per harness", resp.Report)
+	}
+	for _, rep := range resp.Report {
+		if mgr.cleanupCalls[rep.Harness] != 1 {
+			t.Errorf("cleanupCalls[%q] = %d, want 1", rep.Harness, mgr.cleanupCalls[rep.Harness])
+		}
+		if len(resp.Harnesses[rep.Harness].Tags) == 0 {
+			t.Errorf("harnesses[%q] = empty, want the refreshed map alongside the report", rep.Harness)
+		}
+	}
+}
+
+func TestHandleAgentImageCleanup_OneHarnessFailsOtherStillCleans(t *testing.T) {
+	// Run the failure on each harness in turn, so a give-up-on-first-error
+	// loop cannot pass: both harnesses must always be attempted.
+	for _, failing := range config.Harnesses() {
+		t.Run(failing, func(t *testing.T) {
+			mgr := newFakeManager(5)
+			mgr.cleanupErr[failing] = errors.New("store is closed")
+			for _, harness := range config.Harnesses() {
+				mgr.setInventory(harness, fakeInventory(harness, []string{"20260910-070000"}, nil))
+			}
+
+			h := newTestHandler(mgr, dockerclienttest.New())
+			rec := doJSON(t, h, "POST", "/api/agent-image/cleanup", nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 -- one harness's failure must not fail the request; body: %s", rec.Code, rec.Body)
+			}
+			var resp agentImageCleanupResponse
+			decode(t, rec.Body.Bytes(), &resp)
+			for _, rep := range resp.Report {
+				if rep.Harness == failing {
+					if rep.Error == "" {
+						t.Errorf("harness %q report.Error = \"\", want the failure surfaced in the report", failing)
+					}
+				} else if rep.Error != "" {
+					t.Errorf("harness %q report.Error = %q, want empty -- the failure belongs to %q alone", rep.Harness, rep.Error, failing)
+				}
+			}
+			for _, harness := range config.Harnesses() {
+				if mgr.cleanupCalls[harness] != 1 {
+					t.Errorf("cleanupCalls[%q] = %d, want 1: %q's failure must not skip the other harness",
+						harness, mgr.cleanupCalls[harness], failing)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleAgentImageCleanup_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "GET", "/api/agent-image/cleanup", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/agent-image/cleanup status = %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAgentImagePullLatest_BothHarnesses(t *testing.T) {
+	mgr := newFakeManager(5)
+	for _, harness := range config.Harnesses() {
+		mgr.pullReports[harness] = agent.AgentImagePullReport{Harness: harness, Tag: "20260910-070000"}
+	}
+
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "POST", "/api/agent-image/pull-latest", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp agentImagePullResponse
+	decode(t, rec.Body.Bytes(), &resp)
+	if len(resp.Report) != len(config.Harnesses()) {
+		t.Fatalf("report = %+v, want one entry per harness", resp.Report)
+	}
+	for _, rep := range resp.Report {
+		if rep.Tag != "20260910-070000" {
+			t.Errorf("harness %q tag = %q, want the pulled tag", rep.Harness, rep.Tag)
+		}
+		if mgr.pullCalls[rep.Harness] != 1 {
+			t.Errorf("pullCalls[%q] = %d, want 1", rep.Harness, mgr.pullCalls[rep.Harness])
+		}
+	}
+}
+
+func TestHandleAgentImagePullLatest_OneHarnessFailsOtherStillPulls(t *testing.T) {
+	// Same each-harness-in-turn shape as the cleanup test above: the pull
+	// report carries errors, so a failing harness must still answer 200 and
+	// never skip the other.
+	for _, failing := range config.Harnesses() {
+		t.Run(failing, func(t *testing.T) {
+			mgr := newFakeManager(5)
+			mgr.pullReports[failing] = agent.AgentImagePullReport{
+				Harness: failing, Error: "registry is unreachable",
+			}
+			for _, harness := range config.Harnesses() {
+				mgr.setInventory(harness, fakeInventory(harness, []string{"20260910-070000"}, nil))
+			}
+
+			h := newTestHandler(mgr, dockerclienttest.New())
+			rec := doJSON(t, h, "POST", "/api/agent-image/pull-latest", nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+			}
+			var resp agentImagePullResponse
+			decode(t, rec.Body.Bytes(), &resp)
+			for _, rep := range resp.Report {
+				if rep.Harness == failing {
+					if rep.Error == "" || rep.Tag != "" {
+						t.Errorf("harness %q report = %+v, want the error and no tag", failing, rep)
+					}
+				} else if rep.Error != "" {
+					t.Errorf("harness %q report.Error = %q, want empty -- the failure belongs to %q alone", rep.Harness, rep.Error, failing)
+				}
+			}
+			for _, harness := range config.Harnesses() {
+				if mgr.pullCalls[harness] != 1 {
+					t.Errorf("pullCalls[%q] = %d, want 1: %q's failure must not skip the other harness",
+						harness, mgr.pullCalls[harness], failing)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleAgentImagePullLatest_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+	rec := doJSON(t, h, "GET", "/api/agent-image/pull-latest", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /api/agent-image/pull-latest status = %d, want 405", rec.Code)
+	}
+}

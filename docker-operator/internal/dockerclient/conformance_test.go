@@ -561,4 +561,37 @@ var conformanceCases = []conformanceCase{
 				"docker.io/library/alpine", got, "alpine", want)
 		}
 	}},
+
+	// ImageRemoveLifecycle removes a DEDICATED tag (alpine:3), never
+	// alpine:latest -- the suite's container-lifecycle cases depend on
+	// alpine:latest being present and would skip or fail without it.
+	{name: "ImageRemoveLifecycle", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+
+		// Seed BOTH tags first: the fake starts every case empty, and this
+		// case's final assertion is that removing one tag leaves the other
+		// alone.
+		for _, ref := range []string{"alpine:3", "alpine:latest"} {
+			if _, err := c.ImageInspect(ctx, ref); err != nil {
+				if perr := c.ImagePull(ctx, ref); perr != nil {
+					t.Skipf("%s not present and could not be pulled: inspect: %v; pull: %v", ref, err, perr)
+				}
+			}
+		}
+
+		if err := c.ImageRemove(ctx, "alpine:3"); err != nil {
+			t.Fatalf("ImageRemove(alpine:3): %v", err)
+		}
+		if _, err := c.ImageInspect(ctx, "alpine:3"); !dockerclient.IsNotFound(err) {
+			t.Errorf("ImageInspect(alpine:3) after remove = %v, want IsNotFound", err)
+		}
+		// Removing an image that is already gone is success -- the same
+		// idempotency every other Remove here documents.
+		if err := c.ImageRemove(ctx, "alpine:3"); err != nil {
+			t.Errorf("ImageRemove(alpine:3) a second time = %v, want nil", err)
+		}
+		if _, err := c.ImageInspect(ctx, "alpine:latest"); err != nil {
+			t.Errorf("ImageInspect(alpine:latest) after removing alpine:3 = %v, want it untouched", err)
+		}
+	}},
 }

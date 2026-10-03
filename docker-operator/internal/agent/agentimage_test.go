@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/registry"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/registry/registrytest"
@@ -645,4 +646,303 @@ func TestRefreshAgentImageTags_PerHarnessIsolation(t *testing.T) {
 			t.Errorf("claude-code snapshot Tags = %v, want untouched %v", ccGot.Tags, seed.Tags)
 		}
 	})
+}
+
+// --- image tag manager: delete, cleanup, pull (#the tag manager) -----------
+
+// newTagManager builds a Manager against a fresh Fake and store with the
+// registries supplied by the caller, so a pull test can seed a registry with
+// published tags. Everything else mirrors newTestManagerCfg.
+func newTagManager(t *testing.T, regs map[string]registry.Client) (*Manager, *dockerclienttest.Fake, *store.Store) {
+	t.Helper()
+	cfg := testConfig(5)
+	f := dockerclienttest.New()
+	f.AutoHealthy = true
+	newDependaproxy(t, f, cfg.DependaproxyContainer)
+	f.AddImage(dindImage)
+	st := newTestStore(t, cfg.MaxAgents)
+	m := NewManager(f, regs, st, cfg, testLogger(), testOptions())
+	return m, f, st
+}
+
+// seedTagManagerImages seeds the claude-code test repository with a tag set
+// that exercises every removal rule at once:
+//
+//	20260101-000000  named by agt_a's Image        -> in use by reference
+//	20260102-000000  alias of agt_a's image ID     -> in use by ID
+//	20260103-000000  the newest local date-time tag -> cleanup's always-kept
+//	latest           unreferenced                 -> deletable
+//
+// and returns the repo.
+func seedTagManagerImages(f *dockerclienttest.Fake) string {
+	const repo = "test.example.com/agent-image"
+	f.AddImageWithID(repo+":20260101-000000", "sha256:shared")
+	f.AddImageWithID(repo+":20260102-000000", "sha256:shared")
+	f.AddImageWithID(repo+":20260103-000000", "sha256:20260103")
+	f.AddImage(repo + ":latest")
+	return repo
+}
+
+// seedTagManagerAgent inserts a record whose Image names the 20260101 tag and
+// whose container last started from the image both date-time tags share.
+func seedTagManagerAgent(t *testing.T, st *store.Store, repo string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.Create(ctx, store.CreateSpec{ID: "agt_tagmgr", Harness: config.HarnessClaudeCode}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := st.Update(ctx, "agt_tagmgr", func(a *store.Agent) error {
+		a.Image = repo + ":20260101-000000"
+		a.ImageID = "sha256:shared"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+}
+
+func TestDeleteAgentImageTag(t *testing.T) {
+	t.Run("refuses a tag an agent record was created against", func(t *testing.T) {
+		m, f, st := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f)
+		seedTagManagerAgent(t, st, repo)
+
+		err := m.DeleteAgentImageTag(context.Background(), config.HarnessClaudeCode, "20260101-000000")
+		if !IsImageTagInUse(err) {
+			t.Fatalf("DeleteAgentImageTag(named tag) = %v, want IsImageTagInUse", err)
+		}
+		if containsOp(f.Calls(), dockerclienttest.OpImageRemove) {
+			t.Errorf("an in-use tag must not be removed; calls: %+v", f.Calls())
+		}
+	})
+
+	t.Run("refuses a tag aliasing an image an agent runs", func(t *testing.T) {
+		m, f, st := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f)
+		seedTagManagerAgent(t, st, repo)
+
+		// 20260102 is not named by any record, but points at the same image
+		// (sha256:shared) the record's ImageID names.
+		err := m.DeleteAgentImageTag(context.Background(), config.HarnessClaudeCode, "20260102-000000")
+		if !IsImageTagInUse(err) {
+			t.Fatalf("DeleteAgentImageTag(aliased tag) = %v, want IsImageTagInUse", err)
+		}
+		if containsOp(f.Calls(), dockerclienttest.OpImageRemove) {
+			t.Errorf("an aliased in-use tag must not be removed; calls: %+v", f.Calls())
+		}
+	})
+
+	t.Run("removes an unreferenced tag, including the newest and :latest", func(t *testing.T) {
+		m, f, _ := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f)
+
+		// The manual delete is the scalpel: no newest-date-time protection,
+		// only the in-use one. Both tags here are unreferenced.
+		for _, tag := range []string{"20260103-000000", "latest"} {
+			if err := m.DeleteAgentImageTag(context.Background(), config.HarnessClaudeCode, tag); err != nil {
+				t.Fatalf("DeleteAgentImageTag(%q) = %v, want nil", tag, err)
+			}
+		}
+		if _, err := f.ImageInspect(context.Background(), repo+":latest"); !dockerclient.IsNotFound(err) {
+			t.Errorf("ImageInspect(%s:latest) after delete = %v, want not found", repo, err)
+		}
+	})
+
+	t.Run("a tag the daemon does not hold is ErrImageTagMissing", func(t *testing.T) {
+		m, f, _ := newTagManager(t, newTestRegistries())
+		seedTagManagerImages(f)
+
+		err := m.DeleteAgentImageTag(context.Background(), config.HarnessClaudeCode, "20260909-000000")
+		if !IsImageTagMissing(err) {
+			t.Fatalf("DeleteAgentImageTag(absent tag) = %v, want IsImageTagMissing", err)
+		}
+	})
+
+	t.Run("a syntactically invalid tag is ErrInvalidImageTag", func(t *testing.T) {
+		m, _, _ := newTagManager(t, newTestRegistries())
+
+		err := m.DeleteAgentImageTag(context.Background(), config.HarnessClaudeCode, "not a tag!")
+		if !IsInvalidImageTag(err) {
+			t.Fatalf("DeleteAgentImageTag(invalid tag) = %v, want IsInvalidImageTag", err)
+		}
+	})
+
+	t.Run("a failed store read refuses to remove anything", func(t *testing.T) {
+		m, f, st := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f)
+		_ = repo
+		if err := st.Close(); err != nil {
+			t.Fatalf("closing the store: %v", err)
+		}
+
+		err := m.DeleteAgentImageTag(context.Background(), config.HarnessClaudeCode, "latest")
+		if err == nil {
+			t.Fatal("DeleteAgentImageTag with an unreadable store = nil, want an error -- fail closed")
+		}
+		if containsOp(f.Calls(), dockerclienttest.OpImageRemove) {
+			t.Errorf("a failed usage read must not remove anything; calls: %+v", f.Calls())
+		}
+	})
+}
+
+func TestCleanupAgentImages(t *testing.T) {
+	t.Run("removes only the unreferenced tags, keeping in-use and newest", func(t *testing.T) {
+		m, f, st := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f)
+		seedTagManagerAgent(t, st, repo)
+
+		report, err := m.CleanupAgentImages(context.Background(), config.HarnessClaudeCode)
+		if err != nil {
+			t.Fatalf("CleanupAgentImages: %v", err)
+		}
+		// latest is the only unreferenced, non-newest tag in the seed set.
+		if !reflect.DeepEqual(report.Removed, []string{"latest"}) {
+			t.Errorf("Removed = %v, want [latest]", report.Removed)
+		}
+		for _, tag := range []string{"20260101-000000", "20260102-000000", "20260103-000000"} {
+			if _, err := f.ImageInspect(context.Background(), repo+":"+tag); err != nil {
+				t.Errorf("ImageInspect(%s:%s) after cleanup = %v, want kept", repo, tag, err)
+			}
+		}
+	})
+
+	t.Run("with no agent records everything but the newest local tag goes", func(t *testing.T) {
+		m, f, _ := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f)
+
+		report, err := m.CleanupAgentImages(context.Background(), config.HarnessClaudeCode)
+		if err != nil {
+			t.Fatalf("CleanupAgentImages: %v", err)
+		}
+		// Sorted walk: latest < 20260101 < 20260102 < 20260103(newest, kept).
+		if !reflect.DeepEqual(report.Removed, []string{"20260101-000000", "20260102-000000", "latest"}) {
+			t.Errorf("Removed = %v, want the three unreferenced tags", report.Removed)
+		}
+		if _, err := f.ImageInspect(context.Background(), repo+":20260103-000000"); err != nil {
+			t.Errorf("ImageInspect(newest) after cleanup = %v, want kept", err)
+		}
+	})
+
+	t.Run("a per-tag daemon refusal is recorded and the rest still removed", func(t *testing.T) {
+		m, f, _ := newTagManager(t, newTestRegistries())
+		const repo = "test.example.com/agent-image"
+		// Two unreferenced non-date-time tags; the walk is sorted, so the
+		// FIRST removal (aaa) is the one the injected failure hits.
+		f.AddImage(repo + ":aaa")
+		f.AddImage(repo + ":zzz")
+		f.FailOnce(dockerclienttest.OpImageRemove, errors.New("daemon says no"))
+
+		report, err := m.CleanupAgentImages(context.Background(), config.HarnessClaudeCode)
+		if err != nil {
+			t.Fatalf("CleanupAgentImages: %v", err)
+		}
+		if _, ok := report.Failed["aaa"]; !ok {
+			t.Errorf("Failed = %v, want an entry for aaa", report.Failed)
+		}
+		if !reflect.DeepEqual(report.Removed, []string{"zzz"}) {
+			t.Errorf("Removed = %v, want [zzz] -- one refusal must not stop the rest", report.Removed)
+		}
+	})
+
+	t.Run("a failed image list removes nothing and returns an error", func(t *testing.T) {
+		m, f, _ := newTagManager(t, newTestRegistries())
+		seedTagManagerImages(f)
+		f.Fail(dockerclienttest.OpImageList, errors.New("daemon says no"))
+
+		report, err := m.CleanupAgentImages(context.Background(), config.HarnessClaudeCode)
+		if err == nil {
+			t.Fatal("CleanupAgentImages with a failed image list = nil error, want fail closed")
+		}
+		if len(report.Removed) != 0 {
+			t.Errorf("Removed = %v, want empty", report.Removed)
+		}
+	})
+
+	t.Run("one harness's repository is never touched from the other", func(t *testing.T) {
+		m, f, _ := newTagManager(t, newTestRegistries())
+		repo := seedTagManagerImages(f) // claude-code only
+		f.AddImage("test.example.com/agent-image-opencode:20260101-000000")
+
+		if _, err := m.CleanupAgentImages(context.Background(), config.HarnessClaudeCode); err != nil {
+			t.Fatalf("CleanupAgentImages: %v", err)
+		}
+		if _, err := f.ImageInspect(context.Background(), "test.example.com/agent-image-opencode:20260101-000000"); err != nil {
+			t.Errorf("the opencode repository was touched by a claude-code cleanup: %v", err)
+		}
+		_ = repo
+	})
+}
+
+func TestPullLatestAgentImage(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("pulls the newest published date-time tag", func(t *testing.T) {
+		regs := map[string]registry.Client{
+			config.HarnessClaudeCode: &registrytest.Fake{Tags: []string{"20260101-000000", "20260102-000000", "latest"}},
+		}
+		m, f, _ := newTagManager(t, regs)
+
+		report := m.PullLatestAgentImage(ctx, config.HarnessClaudeCode)
+		if report.Error != "" {
+			t.Fatalf("report.Error = %q, want empty", report.Error)
+		}
+		if report.Tag != "20260102-000000" {
+			t.Errorf("report.Tag = %q, want the newest published tag", report.Tag)
+		}
+		var pulled bool
+		for _, c := range f.Calls() {
+			if c.Op == dockerclienttest.OpImagePull && c.Target == "test.example.com/agent-image:20260102-000000" {
+				pulled = true
+			}
+		}
+		if !pulled {
+			t.Errorf("no OpImagePull of the newest tag recorded; calls: %+v", f.Calls())
+		}
+	})
+
+	t.Run("no registry client is a report error, not a returned one", func(t *testing.T) {
+		m, _, _ := newTagManager(t, map[string]registry.Client{})
+
+		report := m.PullLatestAgentImage(ctx, config.HarnessClaudeCode)
+		if report.Error == "" {
+			t.Error("report.Error = \"\", want it to say no registry client is configured")
+		}
+	})
+
+	t.Run("nothing published yet is a report error", func(t *testing.T) {
+		regs := map[string]registry.Client{
+			config.HarnessClaudeCode: &registrytest.Fake{Tags: []string{"latest"}},
+		}
+		m, _, _ := newTagManager(t, regs)
+
+		report := m.PullLatestAgentImage(ctx, config.HarnessClaudeCode)
+		if report.Error == "" {
+			t.Error("report.Error = \"\", want it to say no published date-time tag is known")
+		}
+	})
+
+	t.Run("a failed pull is a report error", func(t *testing.T) {
+		regs := map[string]registry.Client{
+			config.HarnessClaudeCode: &registrytest.Fake{Tags: []string{"20260101-000000"}},
+		}
+		m, f, _ := newTagManager(t, regs)
+		f.Fail(dockerclienttest.OpImagePull, errors.New("registry unreachable"))
+
+		report := m.PullLatestAgentImage(ctx, config.HarnessClaudeCode)
+		if report.Error == "" {
+			t.Error("report.Error = \"\", want the pull failure in it")
+		}
+		if report.Tag != "" {
+			t.Errorf("report.Tag = %q, want empty on failure", report.Tag)
+		}
+	})
+}
+
+// containsOp reports whether the fake's call log holds at least one call of op.
+func containsOp(calls []dockerclienttest.Call, op dockerclienttest.Op) bool {
+	for _, c := range calls {
+		if c.Op == op {
+			return true
+		}
+	}
+	return false
 }
