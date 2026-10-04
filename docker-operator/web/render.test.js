@@ -1215,6 +1215,55 @@ test('formatLastActive: chain then the em dash', () => {
 	assert.equal(Render.formatLastActive({}), '—');
 });
 
+test('formatCPUPercent: integer at/above 10, one decimal below, 0% for idle, — for garbage', () => {
+	assert.equal(Render.formatCPUPercent(0), '0%');
+	assert.equal(Render.formatCPUPercent(0.04), '0%');
+	assert.equal(Render.formatCPUPercent(0.4), '0.4%');
+	assert.equal(Render.formatCPUPercent(3.25), '3.3%');
+	assert.equal(Render.formatCPUPercent(12.4), '12%');
+	assert.equal(Render.formatCPUPercent(87.51), '88%');
+	assert.equal(Render.formatCPUPercent(-1), '—');
+	assert.equal(Render.formatCPUPercent(NaN), '—');
+	assert.equal(Render.formatCPUPercent(Infinity), '—');
+	assert.equal(Render.formatCPUPercent(undefined), '—');
+	assert.equal(Render.formatCPUPercent('12'), '—');
+});
+
+test('renderDashboard: a row with resources renders the combined CPU and memory cells', () => {
+	const html = Render.renderDashboard([{
+		id: 'a', name: 'A', status: 'running',
+		resources: { cpu_percent: 12.4, mem_used_bytes: 340 << 20, mem_limit_bytes: 2 * 1024 * 1024 * 1024, pids: 7 },
+	}]);
+	assert.match(html, /activity-table__cpu">12%</);
+	assert.match(html, /activity-table__mem">340\.0 MiB \/ 2\.0 GiB</);
+});
+
+test('renderDashboard: a sub-10% cpu reading keeps one decimal; a real idle is an honest 0%', () => {
+	const html = Render.renderDashboard([{
+		id: 'a', name: 'A', status: 'running',
+		resources: { cpu_percent: 0.4, mem_used_bytes: 1 << 20, mem_limit_bytes: 2 * 1024 * 1024 * 1024, pids: 1 },
+	}]);
+	assert.match(html, /activity-table__cpu">0\.4%</);
+
+	const idle = Render.renderDashboard([{
+		id: 'b', name: 'B', status: 'running',
+		resources: { cpu_percent: 0, mem_used_bytes: 0, mem_limit_bytes: 2 * 1024 * 1024 * 1024, pids: 1 },
+	}]);
+	assert.match(idle, /activity-table__cpu">0%</);
+});
+
+test('renderDashboard: absent resources renders an em dash in both cells, never a zero', () => {
+	// A stopped agent, and a running agent whose stats read failed (the
+	// backend drops the whole resources object), both degrade to the em dash.
+	const html = Render.renderDashboard([
+		{ id: 'a', name: 'A', status: 'stopped' },
+		{ id: 'b', name: 'B', status: 'running' },
+	]);
+	assert.match(html, /activity-table__cpu">—</);
+	assert.match(html, /activity-table__mem">—</);
+	assert.doesNotMatch(html, /activity-table__cpu">0%/);
+});
+
 test('renderDashboard: empty/null fleet renders the sidebar empty-state sentence inside the header shell', () => {
 	for (const input of [[], null, undefined]) {
 		const html = Render.renderDashboard(input);
@@ -1233,12 +1282,17 @@ test('renderDashboard: one row per agent, in API order', () => {
 	const rows = html.match(/<tr class="activity-table__row">/g) || [];
 	assert.equal(rows.length, 2);
 	assert.ok(html.indexOf('Alpha') < html.indexOf('Bravo'));
-	// The seven column headings, in order.
-	const th = ['Agent', 'Status', 'Activity', 'Last active', 'Harness', 'Backend', 'Repository'];
-	th.forEach((h, i) => {
-		const at = html.indexOf('<th>' + h + '</th>');
+	// The nine column headings, in order. Matched with a '<th[^>]*>name</th>'
+	// regex rather than a bare substring: the CPU and Memory headings carry
+	// title attributes, and a plain 'Activity' substring would also match the
+	// page title above the table.
+	const th = ['Agent', 'Status', 'Activity', 'Last active', 'CPU', 'Memory', 'Harness', 'Backend', 'Repository'];
+	let prev = -1;
+	th.forEach((h) => {
+		const at = html.search(new RegExp('<th[^>]*>' + h + '</th>'));
 		assert.ok(at >= 0, `missing heading ${h}`);
-		if (i > 0) assert.ok(html.indexOf('<th>' + th[i - 1] + '</th>') < at, `${th[i - 1]} must precede ${h}`);
+		assert.ok(at > prev, `${h} must come after the previous heading`);
+		prev = at;
 	});
 });
 

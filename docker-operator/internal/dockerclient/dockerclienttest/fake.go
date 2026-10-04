@@ -52,6 +52,7 @@ const (
 	OpContainerRemove   Op = "ContainerRemove"
 	OpContainerInspect  Op = "ContainerInspect"
 	OpContainerList     Op = "ContainerList"
+	OpContainerStats    Op = "ContainerStats"
 	OpExecCreate        Op = "ExecCreate"
 	OpExecAttach        Op = "ExecAttach"
 	OpExecResize        Op = "ExecResize"
@@ -108,6 +109,12 @@ type containerRecord struct {
 	exitCode int
 	labels   map[string]string
 	networks map[string]netip.Addr
+	// stats is the sample ContainerStats returns for THIS container, seeded
+	// by SetStats. Per container, not a Fake-level map: the container ID is
+	// what the caller passes and what ContainerStats resolves, unlike
+	// ExecOutput, which is keyed by command across containers. nil means no
+	// override -- a running container then gets the canned sample.
+	stats *dockerclient.Stats
 }
 
 func (c *containerRecord) toContainer() dockerclient.Container {
@@ -333,6 +340,20 @@ func (f *Fake) SetHealth(idOrName string, h dockerclient.HealthStatus) error {
 		return fmt.Errorf("container %q: %w", idOrName, dockerclient.ErrNotFound)
 	}
 	c.health = h
+	return nil
+}
+
+// SetStats seeds the resource sample ContainerStats returns for an existing
+// container, found by ID or name. A container with no seeded stats still
+// answers, with a canned plausible sample, as long as it is RUNNING.
+func (f *Fake) SetStats(idOrName string, s dockerclient.Stats) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(idOrName)
+	if !ok {
+		return fmt.Errorf("container %q: %w", idOrName, dockerclient.ErrNotFound)
+	}
+	c.stats = &s
 	return nil
 }
 
@@ -744,8 +765,44 @@ func (f *Fake) ContainerList(ctx context.Context, labels map[string]string) ([]d
 	return out, nil
 }
 
-// ExecCreate prepares a process, seeding its output and exit code from
-// ExecOutput/ExecExit if the caller populated them for spec.Cmd.
+// ContainerStats returns a resource sample for a container, found by ID or
+// name.
+//
+// The fake models only the LIFECYCLE shape the real client's error conversion
+// gives ContainerStats: a missing container satisfies dockerclient.IsNotFound,
+// a non-running (created or stopped) one is an error -- mirroring the real
+// client turning the daemon's all-zero stats document for a stopped container
+// into an error, so a stopped agent can never read as a silently idle one --
+// and a running one yields a sample. It deliberately does NOT model
+// IncludePreviousSample: those options are pinned inside Docker.ContainerStats
+// and never appear in this signature. A container seeded through SetStats
+// returns that sample verbatim; any other running container gets the same
+// canned plausible sample, so a conformance case can assert shape and
+// plausibility on both legs without per-leg branching.
+func (f *Fake) ContainerStats(ctx context.Context, id string) (dockerclient.Stats, error) {
+	if err := f.call(OpContainerStats, id); err != nil {
+		return dockerclient.Stats{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(id)
+	if !ok {
+		return dockerclient.Stats{}, fmt.Errorf("container %q: %w", id, dockerclient.ErrNotFound)
+	}
+	if c.state != dockerclient.StateRunning {
+		return dockerclient.Stats{}, fmt.Errorf("reading stats for container %q: container is not running", id)
+	}
+	if c.stats != nil {
+		return *c.stats, nil
+	}
+	return dockerclient.Stats{
+		Read:        time.Now(),
+		CPUPercent:  12.5,
+		MemoryUsed:  340 << 20,
+		MemoryLimit: 2 << 30,
+		Pids:        3,
+	}, nil
+}
 func (f *Fake) ExecCreate(ctx context.Context, containerID string, spec dockerclient.ExecSpec) (string, error) {
 	if err := f.call(OpExecCreate, containerID); err != nil {
 		return "", err

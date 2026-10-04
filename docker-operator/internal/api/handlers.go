@@ -133,11 +133,21 @@ type AgentManager interface {
 // UI by the login endpoints so it does not hard-code the path.
 const anthropicLoginWSPath = "/ws/anthropic/login/terminal"
 
+// execStatsClient is the least Docker surface these handlers need:
+// dockerclient.ExecClient (the output/activity exec reads) plus the one
+// ContainerStats method added for #218. Composed here rather than widening
+// Handler.docker to the full ContainerClient, which would hand the api
+// package the container create/remove lifecycle it must never call.
+type execStatsClient interface {
+	dockerclient.ExecClient
+	ContainerStats(ctx context.Context, id string) (dockerclient.Stats, error)
+}
+
 // Handler serves the docker-operator's REST surface: the agent collection
 // and item endpoints, and the output endpoint.
 type Handler struct {
 	mgr    AgentManager
-	docker dockerclient.ExecClient
+	docker execStatsClient
 	log    *slog.Logger
 	// files is the centralized file store, or nil when it is disabled -- in
 	// which case every /api/files* route answers 501 filestore_disabled.
@@ -148,12 +158,13 @@ type Handler struct {
 
 // NewHandler builds the docker-operator's HTTP handler. mgr is the agent
 // lifecycle (create/delete/list/rename); docker is used only for the output
-// endpoint's exec into a running agent container -- the narrowest interface
-// that works, matching internal/wsbridge.ReadOutput's own signature. files is
+// endpoint's exec into a running agent container and the Activity page's
+// per-agent stats read -- the narrowest interface that works, matching
+// internal/wsbridge.ReadOutput's own signature plus one stats method. files is
 // the centralized file store (nil disables the /api/files* routes, which then
 // answer 501); maxUpload is the per-file upload cap. A nil log falls back to
 // slog.Default.
-func NewHandler(mgr AgentManager, docker dockerclient.ExecClient, files *filestore.Store, maxUpload int64, log *slog.Logger) http.Handler {
+func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store, maxUpload int64, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -387,26 +398,52 @@ type agentView struct {
 	// every agent with no signal, forcing every client to know that sentinel.
 	// Same shape as agentImageHarness.CheckedAt.
 	ActivityAt *time.Time `json:"activity_at,omitempty"`
+	// Resources is the agent's CURRENT host-side resource usage: the SUM of
+	// its agent container and its DinD sidecar (under sysbox the sidecar's
+	// host-side cgroup includes the agent's workload containers, so the pair
+	// is an honest total). One aggregated object on purpose: per-workload
+	// granularity lives inside the sidecar's own daemon, which this operator
+	// does not talk to, and a split would imply precision the two-container
+	// total does not have. nil when the agent is not StatusRunning, a
+	// container ID is missing, or either stats read failed -- a stopped agent
+	// reports NOTHING rather than a stale or misleading zero (the pointer is
+	// what lets omitempty drop the whole object).
+	Resources *agentResources `json:"resources,omitempty"`
 }
 
-// activityReadTimeout bounds each agent's own ReadActivity call. Independent
-// per agent (see buildAgentViews) and much shorter than wsbridge's own
-// execTimeout: this runs on the GET /api/agents list path the sidebar polls
-// every few seconds, so one wedged container's exec must fail fast and read
-// back as "unknown" rather than hold up either its own goroutine for 30s or
-// (absent the per-agent timeout) the whole response.
+// agentResources is one running agent's current host-side resource usage,
+// aggregated over both its containers. MemLimitBytes is the MAX of the two
+// containers' cgroup limits, not the sum: this operator configures no
+// per-container memory limit, so each limit is the host total and summing
+// would report 2x host memory. CPUPercent is summed because each container's
+// percentage is already expressed against all host cpus.
+type agentResources struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemUsedBytes  uint64  `json:"mem_used_bytes"`
+	MemLimitBytes uint64  `json:"mem_limit_bytes"`
+	Pids          uint64  `json:"pids"`
+}
+
+// activityReadTimeout bounds the whole per-agent read that buildAgentViews
+// performs: the activity exec AND both containers' stats calls. Those run
+// concurrently (see buildAgentViews), so this bounds max(activity exec, one
+// stats read) rather than their sum. Independent per agent and much shorter
+// than wsbridge's own execTimeout: this runs on the GET /api/agents list path
+// the sidebar polls every few seconds, so one wedged container's exec must
+// fail fast and read back as "unknown" rather than hold up either its own
+// goroutine for 30s or (absent the per-agent timeout) the whole response.
 const activityReadTimeout = 4 * time.Second
 
 // buildAgentViews wraps each agent in an agentView, computing
 // UpgradeAvailable/UpgradeReady against EACH AGENT'S OWN HARNESS's agent
 // image inventory (issue #199 -- previously every agent was compared against
-// claude-code's tag list regardless of its own harness), and Activity by
-// reading each StatusRunning agent's container concurrently (one exec per
-// agent; sequential would multiply this endpoint's latency by the agent
-// count). Each harness's inventory is fetched once and best-effort: on any
-// error it is treated as absent and nothing is flagged for that harness --
-// the list must not fail because tag discovery is unavailable. The result is
-// non-nil even for an empty input.
+// claude-code's tag list regardless of its own harness), and Activity and
+// Resources by reading each StatusRunning agent's containers concurrently
+// (one exec plus a stats read per container; sequential would multiply this
+// endpoint's latency by the agent count). Each harness's inventory is fetched
+// once and best-effort: on any error it is treated as absent and nothing is
+// flagged for that harness -- the list must not fail because tag discovery is
+// unavailable. The result is non-nil even for an empty input.
 func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []agentView {
 	inv := make(map[string]agent.ImageInventory, len(config.Harnesses()))
 	for _, harness := range config.Harnesses() {
@@ -433,26 +470,80 @@ func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []a
 			continue
 		}
 		wg.Add(1)
-		go func(i int, containerID string) {
+		go func(i int, a store.Agent) {
 			defer wg.Done()
-			actCtx, cancel := context.WithTimeout(ctx, activityReadTimeout)
-			defer cancel()
-			act, at, err := wsbridge.ReadActivity(actCtx, h.docker, containerID)
-			if err != nil {
-				return // best-effort; leave Activity "" like the tag lookup above
-			}
-			views[i].Activity = string(act)
-			// at is a fresh local per goroutine invocation (&at aliases nothing
-			// shared; the suite runs under -race). The IsZero guard keeps
-			// ReadActivity's "unknown" reading ("", zero time, nil) off the wire
-			// as a bogus year-1 activity_at.
-			if !at.IsZero() {
-				views[i].ActivityAt = &at
-			}
-		}(i, a.ContainerID)
+			// The activity exec and the stats pair run CONCURRENTLY. Each stats
+			// call costs ~1s of daemon-side sampling (two per agent): serial they
+			// would spend ~3s of the 4s budget and let one slow read starve the
+			// other, so the worst path becomes max(exec, 2x1s) ~= 2s. The two inner
+			// closures write disjoint fields of the same views[i], and each
+			// views[i] is touched by exactly one outer goroutine -- the same -race
+			// argument this comment has always made.
+			var inner sync.WaitGroup
+
+			inner.Add(1)
+			go func() {
+				defer inner.Done()
+				actCtx, cancel := context.WithTimeout(ctx, activityReadTimeout)
+				defer cancel()
+				act, at, err := wsbridge.ReadActivity(actCtx, h.docker, a.ContainerID)
+				if err != nil {
+					return // best-effort; leave Activity "" like the tag lookup above
+				}
+				views[i].Activity = string(act)
+				// at is a fresh local per goroutine invocation (&at aliases nothing
+				// shared; the suite runs under -race). The IsZero guard keeps
+				// ReadActivity's "unknown" reading ("", zero time, nil) off the wire
+				// as a bogus year-1 activity_at.
+				if !at.IsZero() {
+					views[i].ActivityAt = &at
+				}
+			}()
+
+			inner.Add(1)
+			go func() {
+				defer inner.Done()
+				statsCtx, cancel := context.WithTimeout(ctx, activityReadTimeout)
+				defer cancel()
+				views[i].Resources = h.agentResources(statsCtx, a)
+			}()
+
+			inner.Wait()
+		}(i, a)
 	}
 	wg.Wait()
 	return views
+}
+
+// agentResources sums one running agent's host-side usage over both its
+// containers (agent + DinD sidecar). All-or-nothing: when either read fails it
+// returns nil, because a half total -- the agent container without the sidecar
+// its workload actually runs in, or vice versa -- is exactly the misleading
+// number this field must never show. That rule covers a missing DindContainerID
+// too (only a legacy or corrupted record can have one on a running agent --
+// creation stamps it before the agent ever reaches StatusRunning): degrading to
+// the agent container alone would silently under-report by the sidecar that
+// holds the agent's real workload, so it reports nothing instead. MemLimit is
+// the max, not the sum.
+func (h *Handler) agentResources(ctx context.Context, a store.Agent) *agentResources {
+	if a.DindContainerID == "" {
+		return nil
+	}
+	ids := []string{a.ContainerID, a.DindContainerID}
+	var total agentResources
+	for _, id := range ids {
+		s, err := h.docker.ContainerStats(ctx, id)
+		if err != nil {
+			return nil // best-effort, like the activity read
+		}
+		total.CPUPercent += s.CPUPercent
+		total.MemUsedBytes += s.MemoryUsed
+		if s.MemoryLimit > total.MemLimitBytes {
+			total.MemLimitBytes = s.MemoryLimit
+		}
+		total.Pids += s.Pids
+	}
+	return &total
 }
 
 // agentListResponse is the GET /api/agents body. MaxAgents and the three

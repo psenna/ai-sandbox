@@ -2,6 +2,7 @@ package dockerclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -153,6 +154,14 @@ type ContainerClient interface {
 	// Health and ExitCode are NOT populated: Docker's list endpoint does not
 	// return them. Call ContainerInspect when they matter.
 	ContainerList(ctx context.Context, labels map[string]string) ([]Container, error)
+
+	// ContainerStats returns one sample of the container's current resource
+	// use: CPU percentage, memory used/limit and process count. It is
+	// one-shot with the daemon's previous sample included (the SDK's only
+	// one-shot form in client v0.5.1) and costs ~1s of daemon-side sampling
+	// -- there is no cheaper honest CPU number. Only a RUNNING container has
+	// stats: a stopped one yields an error, not zeros.
+	ContainerStats(ctx context.Context, id string) (Stats, error)
 }
 
 // ExecClient runs processes inside an existing container: the terminal bridge
@@ -398,6 +407,37 @@ type Container struct {
 	ExitCode int
 	Labels   map[string]string
 	Networks map[string]netip.Addr
+}
+
+// Stats is one sample of a running container's resource usage, the moby-free
+// mirror of the daemon's stats document. It is always a REAL sample: the
+// daemon takes two samples one second apart (IncludePreviousSample), which
+// is the only way a CPU percentage exists -- a single sample has nothing to
+// delta against. That second of daemon-side sampling is the honest price of
+// the number and is paid on every call.
+type Stats struct {
+	// Read is when the daemon took this (the second, i.e. current) sample.
+	Read time.Time
+	// CPUPercent is CPU use over the ~1s sampling window as a percentage of
+	// ALL cpus: 100.0 is one fully-used cpu, 400.0 is four on an 8-cpu host.
+	// Computed HERE rather than handed up as raw counters: the calculation
+	// needs BOTH samples and guards the two known quirks (OnlineCPUs can be
+	// 0, and SystemUsage can go backwards across a container restart). Zero
+	// when the deltas are degenerate (just started, counters rewound, no
+	// predecessor).
+	CPUPercent float64
+	// MemoryUsed is resident memory: the daemon's usage MINUS the page cache
+	// the kernel can reclaim (memory.stats' inactive_file) -- the same
+	// subtraction `docker stats` performs. Raw usage when the key is absent.
+	MemoryUsed uint64
+	// MemoryLimit is the cgroup limit. With no limit configured (this
+	// operator configures none) the daemon reports the host's total memory,
+	// so this reads as "against host memory".
+	MemoryLimit uint64
+	// Pids is the number of processes currently in the container. The
+	// daemon's pids LIMIT is deliberately not mirrored: it is uint64-max when
+	// unlimited, which carries no information.
+	Pids uint64
 }
 
 // ExecSpec describes a process to run inside a container.
@@ -726,6 +766,34 @@ func (d *Docker) ContainerList(ctx context.Context, labels map[string]string) ([
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// ContainerStats returns one sample of the container's resource usage. The
+// daemon takes two samples one second apart; the call therefore blocks ~1s.
+func (d *Docker) ContainerStats(ctx context.Context, id string) (Stats, error) {
+	res, err := d.api.ContainerStats(ctx, id, client.ContainerStatsOptions{
+		Stream:                false,
+		IncludePreviousSample: true,
+	})
+	if err != nil {
+		return Stats{}, wrapErr("container", id, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var sr container.StatsResponse
+	if err := json.NewDecoder(res.Body).Decode(&sr); err != nil {
+		// A zero-length body (some daemon versions answer a non-running
+		// container this way) also lands here as EOF.
+		return Stats{}, fmt.Errorf("reading stats for container %q: %w", id, err)
+	}
+	// A non-running container does NOT error on the wire: verified against
+	// Docker 27.5.1, the daemon answers 200 with an all-zero document whose
+	// read is the year-1 zero time. That is "no stats", not a sample of
+	// zeros -- surface it as an error so a stopped container never reads as
+	// a silently idle one.
+	if sr.Read.IsZero() {
+		return Stats{}, fmt.Errorf("reading stats for container %q: container is not running", id)
+	}
+	return toStats(sr), nil
 }
 
 // ExecCreate prepares a process to run inside a container.
@@ -1080,6 +1148,46 @@ func toHealthConfig(h *Healthcheck) *container.HealthConfig {
 
 func toVolume(v volume.Volume) Volume {
 	return Volume{Name: v.Name, Labels: copyLabels(v.Labels), Mountpoint: v.Mountpoint}
+}
+
+func toStats(sr container.StatsResponse) Stats {
+	s := Stats{
+		Read:        sr.Read,
+		MemoryUsed:  sr.MemoryStats.Usage,
+		MemoryLimit: sr.MemoryStats.Limit,
+		Pids:        sr.PidsStats.Current,
+	}
+	if inactive, ok := sr.MemoryStats.Stats["inactive_file"]; ok && inactive <= s.MemoryUsed {
+		s.MemoryUsed -= inactive // the same subtraction `docker stats` performs
+	}
+	s.CPUPercent = cpuPercent(sr.CPUStats, sr.PreCPUStats)
+	return s
+}
+
+// cpuPercent computes the daemon's formula over the sample pair, guarding the
+// two known quirks rather than dividing blindly: OnlineCPUs can be 0 (fall
+// back to the per-cpu slice length, then to 1), and either counter can go
+// BACKWARDS across a container restart -- a plain cur-pre on uint64 would
+// underflow to ~2^64 and report an absurd percentage, so every delta is
+// signed-compared first. A missing predecessor sample reads as zero.
+func cpuPercent(cur, pre container.CPUStats) float64 {
+	if pre.CPUUsage.TotalUsage == 0 || cur.CPUUsage.TotalUsage < pre.CPUUsage.TotalUsage {
+		return 0
+	}
+	if cur.SystemUsage <= pre.SystemUsage {
+		return 0
+	}
+	cpus := float64(cur.OnlineCPUs)
+	if cpus == 0 {
+		if n := len(cur.CPUUsage.PercpuUsage); n > 0 {
+			cpus = float64(n)
+		} else {
+			cpus = 1
+		}
+	}
+	cpuDelta := float64(cur.CPUUsage.TotalUsage - pre.CPUUsage.TotalUsage)
+	sysDelta := float64(cur.SystemUsage - pre.SystemUsage)
+	return cpuDelta / sysDelta * cpus * 100
 }
 
 func toContainer(c container.InspectResponse) Container {

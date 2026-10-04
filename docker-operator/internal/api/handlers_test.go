@@ -536,11 +536,11 @@ func (f *fakeManager) DeleteTemplate(_ context.Context, id string) error {
 
 // --- test helpers -----------------------------------------------------------
 
-func newTestHandler(mgr AgentManager, docker dockerclient.ExecClient) http.Handler {
+func newTestHandler(mgr AgentManager, docker execStatsClient) http.Handler {
 	return NewHandler(mgr, docker, nil, 0, nil)
 }
 
-func newTestHandlerFiles(mgr AgentManager, docker dockerclient.ExecClient, fs *filestore.Store, max int64) http.Handler {
+func newTestHandlerFiles(mgr AgentManager, docker execStatsClient, fs *filestore.Store, max int64) http.Handler {
 	return NewHandler(mgr, docker, fs, max, nil)
 }
 
@@ -1183,6 +1183,7 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 		UpgradeReady:     true,
 		Activity:         "working",
 		ActivityAt:       &at,
+		Resources:        &agentResources{CPUPercent: 12.5, MemUsedBytes: 340 << 20, MemLimitBytes: 2 << 30, Pids: 3},
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1191,7 +1192,7 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"id", "name", "status", "image", "upgrade_available", "upgrade_ready", "activity", "activity_at"} {
+	for _, k := range []string{"id", "name", "status", "image", "upgrade_available", "upgrade_ready", "activity", "activity_at", "resources"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("marshalled agentView missing top-level key %q; got %s", k, b)
 		}
@@ -1199,7 +1200,10 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 
 	// The omission direction: with no activity signal, activity_at must be
 	// absent entirely -- not a bare time.Time's zero value ("0001-01-01...").
-	// The *time.Time is what makes that possible.
+	// The *time.Time is what makes that possible. Same shape for resources: a
+	// bare agentView must not marshal it (the pointer is what lets omitempty
+	// drop the whole object, so a stopped/error agent reports NOTHING rather
+	// than a zeroed one).
 	bare, err := json.Marshal(agentView{Agent: store.Agent{ID: "agt_b", Name: "b"}})
 	if err != nil {
 		t.Fatalf("marshal bare: %v", err)
@@ -1210,6 +1214,9 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 	}
 	if _, ok := bareMap["activity_at"]; ok {
 		t.Errorf("bare agentView marshalled activity_at, want it omitted: %s", bare)
+	}
+	if _, ok := bareMap["resources"]; ok {
+		t.Errorf("bare agentView marshalled resources, want it omitted: %s", bare)
 	}
 }
 
@@ -1288,6 +1295,225 @@ func TestHandleList_ActivityAt(t *testing.T) {
 	}
 	if execs != 1 {
 		t.Errorf("activity exec ran %d times, want 1 (only the running agent)", execs)
+	}
+}
+
+// TestHandleList_Resources is the #218 regression test: a running agent's
+// resources object reaches the wire aggregated over BOTH its containers (agent
+// + DinD sidecar) -- cpu and memory SUMMED, the memory limit the MAX (each
+// container reports the host total, so summing would double it), pids summed
+// -- while a stopped agent reports no resources key at all, and only the
+// running agent's containers are ever read.
+func TestHandleList_Resources(t *testing.T) {
+	fake := dockerclienttest.New()
+	ctx := context.Background()
+
+	id1, err := fake.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "agent", Image: "agent:dev"})
+	if err != nil {
+		t.Fatalf("ContainerCreate(agent): %v", err)
+	}
+	id2, err := fake.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "dind", Image: "docker:27-dind"})
+	if err != nil {
+		t.Fatalf("ContainerCreate(dind): %v", err)
+	}
+	for _, id := range []string{id1, id2} {
+		if err := fake.ContainerStart(ctx, id); err != nil {
+			t.Fatalf("ContainerStart(%s): %v", id, err)
+		}
+	}
+	if err := fake.SetStats(id1, dockerclient.Stats{CPUPercent: 10.0, MemoryUsed: 100 << 20, MemoryLimit: 1 << 30, Pids: 2}); err != nil {
+		t.Fatalf("SetStats(agent): %v", err)
+	}
+	if err := fake.SetStats(id2, dockerclient.Stats{CPUPercent: 32.5, MemoryUsed: 240 << 20, MemoryLimit: 2 << 30, Pids: 5}); err != nil {
+		t.Fatalf("SetStats(dind): %v", err)
+	}
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_run", Name: "run", Status: store.StatusRunning, ContainerID: id1, DindContainerID: id2})
+	mgr.seed(store.Agent{ID: "agt_stop", Name: "stop", Status: store.StatusStopped, ContainerID: id1, DindContainerID: id2})
+	h := newTestHandler(mgr, fake)
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	type resources struct {
+		CPUPercent    float64 `json:"cpu_percent"`
+		MemUsedBytes  uint64  `json:"mem_used_bytes"`
+		MemLimitBytes uint64  `json:"mem_limit_bytes"`
+		Pids          uint64  `json:"pids"`
+	}
+	var resp struct {
+		Agents []struct {
+			ID        string     `json:"id"`
+			Resources *resources `json:"resources"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if len(resp.Agents) != 2 {
+		t.Fatalf("agents = %d, want 2; body: %s", len(resp.Agents), rec.Body)
+	}
+	for _, a := range resp.Agents {
+		switch a.ID {
+		case "agt_run":
+			if a.Resources == nil {
+				t.Fatalf("running agent resources = nil, want the aggregated sample; body: %s", rec.Body)
+			}
+			if a.Resources.CPUPercent != 42.5 {
+				t.Errorf("cpu_percent = %v, want 42.5 (summed)", a.Resources.CPUPercent)
+			}
+			if a.Resources.MemUsedBytes != 340<<20 {
+				t.Errorf("mem_used_bytes = %d, want %d (summed)", a.Resources.MemUsedBytes, uint64(340<<20))
+			}
+			if a.Resources.MemLimitBytes != 2<<30 {
+				t.Errorf("mem_limit_bytes = %d, want %d (the MAX, not the sum)", a.Resources.MemLimitBytes, uint64(2<<30))
+			}
+			if a.Resources.Pids != 7 {
+				t.Errorf("pids = %d, want 7 (summed)", a.Resources.Pids)
+			}
+		case "agt_stop":
+			if a.Resources != nil {
+				t.Errorf("stopped agent resources = %+v, want the key ABSENT", a.Resources)
+			}
+		default:
+			t.Errorf("unexpected agent id %q", a.ID)
+		}
+	}
+
+	// Only the running agent's two containers may be read: 2 calls, not 4.
+	statsCalls := 0
+	for _, c := range fake.Calls() {
+		if c.Op == dockerclienttest.OpContainerStats {
+			statsCalls++
+		}
+	}
+	if statsCalls != 2 {
+		t.Errorf("ContainerStats ran %d times, want 2 (only the running agent's two containers)", statsCalls)
+	}
+}
+
+// TestHandleList_ResourcesPartialFailure proves the all-or-nothing rule: when
+// EITHER container's stats read fails, the agent's resources key is absent
+// entirely -- a half total is exactly the misleading number the field must
+// never show -- while the rest of the response stays a normal 200. The
+// failure is FailOnce, so only the FIRST read (the agent container) fails and
+// the dind read SUCCEEDS: an implementation that kept summing the reads that
+// worked would surface the sidecar-only total, and this test catches it.
+func TestHandleList_ResourcesPartialFailure(t *testing.T) {
+	fake := dockerclienttest.New()
+	ctx := context.Background()
+
+	id, err := fake.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "agent", Image: "agent:dev"})
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	if err := fake.ContainerStart(ctx, id); err != nil {
+		t.Fatalf("ContainerStart: %v", err)
+	}
+	dindID, err := fake.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "dind", Image: "docker:27-dind"})
+	if err != nil {
+		t.Fatalf("ContainerCreate(dind): %v", err)
+	}
+	if err := fake.ContainerStart(ctx, dindID); err != nil {
+		t.Fatalf("ContainerStart(dind): %v", err)
+	}
+	if err := fake.SetStats(dindID, dockerclient.Stats{Read: time.Now(), CPUPercent: 32.5, MemoryUsed: 240 << 20, MemoryLimit: 2 << 30, Pids: 5}); err != nil {
+		t.Fatalf("SetStats(dind): %v", err)
+	}
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_run", Name: "run", Status: store.StatusRunning, ContainerID: id, DindContainerID: dindID})
+	h := newTestHandler(mgr, fake)
+	fake.FailOnce(dockerclienttest.OpContainerStats, errors.New("boom"))
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Resources json.RawMessage `json:"resources"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if len(resp.Agents) != 1 {
+		t.Fatalf("agents = %d, want 1; body: %s", len(resp.Agents), rec.Body)
+	}
+	if resp.Agents[0].Resources != nil {
+		t.Errorf("resources = %s, want the key ABSENT when either read fails (not the sidecar-only partial)", resp.Agents[0].Resources)
+	}
+	if resp.Agents[0].Name != "run" {
+		t.Errorf("name = %q, want %q (the rest of the view stays intact)", resp.Agents[0].Name, "run")
+	}
+	// The read must have been attempted at all (the nil is a discarded
+	// partial, not a skip): at least one stats call, and the failing one is
+	// the agent container's -- the fake consumes FailOnce on the first call,
+	// which agentResources makes against ids[0] = the agent container.
+	var firstStatsCall string
+	for _, c := range fake.Calls() {
+		if c.Op == dockerclienttest.OpContainerStats {
+			firstStatsCall = c.Target
+			break
+		}
+	}
+	if firstStatsCall != id {
+		t.Errorf("first ContainerStats target = %q, want the agent container %q (so the dind leg is the one that would have succeeded)", firstStatsCall, id)
+	}
+}
+
+// TestHandleList_ResourcesMissingDind pins the other half of the all-or-nothing
+// rule: a running agent whose record lacks a dind container ID (only a legacy
+// or corrupted record can) reports NO resources rather than a silently
+// under-reported agent-container-only total.
+func TestHandleList_ResourcesMissingDind(t *testing.T) {
+	fake := dockerclienttest.New()
+	ctx := context.Background()
+
+	id, err := fake.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "agent", Image: "agent:dev"})
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	if err := fake.ContainerStart(ctx, id); err != nil {
+		t.Fatalf("ContainerStart: %v", err)
+	}
+	if err := fake.SetStats(id, dockerclient.Stats{Read: time.Now(), CPUPercent: 10.0, MemoryUsed: 100 << 20, MemoryLimit: 1 << 30, Pids: 2}); err != nil {
+		t.Fatalf("SetStats: %v", err)
+	}
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_run", Name: "run", Status: store.StatusRunning, ContainerID: id})
+	h := newTestHandler(mgr, fake)
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID        string          `json:"id"`
+			Resources json.RawMessage `json:"resources"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if len(resp.Agents) != 1 {
+		t.Fatalf("agents = %d, want 1; body: %s", len(resp.Agents), rec.Body)
+	}
+	if resp.Agents[0].Resources != nil {
+		t.Errorf("resources = %s, want the key ABSENT when the dind container ID is missing (no one-container partial)", resp.Agents[0].Resources)
+	}
+	// And it must not have attempted any read at all.
+	for _, c := range fake.Calls() {
+		if c.Op == dockerclienttest.OpContainerStats {
+			t.Errorf("ContainerStats was called for target %q; want no stats read without both container IDs", c.Target)
+		}
 	}
 }
 

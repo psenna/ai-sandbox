@@ -289,6 +289,104 @@ func TestImageListFailInjection(t *testing.T) {
 	}
 }
 
+// TestContainerStatsLifecycle pins the fake's model of ContainerStats: the
+// same lifecycle shape the real client's error conversion gives it (missing
+// -> IsNotFound, not running -> error, running -> a sample), plus the shared
+// call/Fail/Calls plumbing every Fake method goes through.
+func TestContainerStatsLifecycle(t *testing.T) {
+	f := New()
+	ctx := context.Background()
+
+	runningID, err := f.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "running", Image: "alpine:latest"})
+	if err != nil {
+		t.Fatalf("ContainerCreate(running): %v", err)
+	}
+	if err := f.ContainerStart(ctx, runningID); err != nil {
+		t.Fatalf("ContainerStart: %v", err)
+	}
+
+	stoppedID, err := f.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "stopped", Image: "alpine:latest"})
+	if err != nil {
+		t.Fatalf("ContainerCreate(stopped): %v", err)
+	}
+
+	t.Run("unseeded running container returns the canned sample", func(t *testing.T) {
+		got, err := f.ContainerStats(ctx, runningID)
+		if err != nil {
+			t.Fatalf("ContainerStats: %v", err)
+		}
+		if got.Read.IsZero() {
+			t.Errorf("Read = zero, want a real sample time")
+		}
+		if got.CPUPercent != 12.5 || got.MemoryUsed != 340<<20 || got.MemoryLimit != 2<<30 || got.Pids != 3 {
+			t.Errorf("canned sample = %+v, want the documented plausible values", got)
+		}
+	})
+
+	t.Run("seeded stats are returned verbatim", func(t *testing.T) {
+		seed := dockerclient.Stats{
+			Read:        time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+			CPUPercent:  42.25,
+			MemoryUsed:  7 << 20,
+			MemoryLimit: 1 << 30,
+			Pids:        11,
+		}
+		if err := f.SetStats(runningID, seed); err != nil {
+			t.Fatalf("SetStats: %v", err)
+		}
+		got, err := f.ContainerStats(ctx, runningID)
+		if err != nil {
+			t.Fatalf("ContainerStats: %v", err)
+		}
+		if got != seed {
+			t.Errorf("ContainerStats = %+v, want the seeded %+v verbatim", got, seed)
+		}
+	})
+
+	t.Run("stopped and created containers are an error, not zeros", func(t *testing.T) {
+		if _, err := f.ContainerStats(ctx, stoppedID); err == nil {
+			t.Errorf("ContainerStats(created-never-started) = nil error, want a not-running error")
+		}
+		if err := f.ContainerStop(ctx, stoppedID, 0); err != nil {
+			t.Fatalf("ContainerStop: %v", err)
+		}
+		if _, err := f.ContainerStats(ctx, stoppedID); err == nil {
+			t.Errorf("ContainerStats(stopped) = nil error, want a not-running error")
+		}
+	})
+
+	t.Run("missing container satisfies IsNotFound", func(t *testing.T) {
+		if _, err := f.ContainerStats(ctx, "nope"); !dockerclient.IsNotFound(err) {
+			t.Errorf("ContainerStats(missing) = %v, want IsNotFound", err)
+		}
+	})
+
+	t.Run("Fail and FailOnce take effect through the shared call path", func(t *testing.T) {
+		boom := errors.New("boom")
+		f.FailOnce(OpContainerStats, boom)
+		if _, err := f.ContainerStats(ctx, runningID); !errors.Is(err, boom) {
+			t.Errorf("ContainerStats (FailOnce) = %v, want %v", err, boom)
+		}
+		f.Fail(OpContainerStats, boom)
+		if _, err := f.ContainerStats(ctx, runningID); !errors.Is(err, boom) {
+			t.Errorf("ContainerStats (Fail) = %v, want %v", err, boom)
+		}
+		f.Fail(OpContainerStats, nil)
+	})
+
+	t.Run("the call is recorded with the container id as Target", func(t *testing.T) {
+		var seen bool
+		for _, c := range f.Calls() {
+			if c.Op == OpContainerStats && c.Target == runningID {
+				seen = true
+			}
+		}
+		if !seen {
+			t.Errorf("Calls() did not record OpContainerStats with Target %q", runningID)
+		}
+	})
+}
+
 // readAll reads from r into buf until EOF (buf must be large enough) and
 // returns the number of bytes read.
 func readAll(t *testing.T, r interface{ Read([]byte) (int, error) }, buf []byte) (int, error) {
