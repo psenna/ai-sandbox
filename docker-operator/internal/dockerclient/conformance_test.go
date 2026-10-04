@@ -594,4 +594,65 @@ var conformanceCases = []conformanceCase{
 			t.Errorf("ImageInspect(alpine:latest) after removing alpine:3 = %v, want it untouched", err)
 		}
 	}},
+
+	// ContainerStatsLifecycle pins the one fact #218 depends on that neither
+	// implementation can fake away: only a RUNNING container has stats. A
+	// created-never-started or stopped container answers the daemon with a
+	// 200 and an all-zero document (verified against Docker 27.5.1), and the
+	// real client converts that zero Read into an error -- so a stopped agent
+	// never reads as a silently idle one. The assertion is deliberately
+	// plausibility-only: exact numbers would flake across hosts and daemon
+	// versions, and the CPU percentage in particular depends on live load.
+	{name: "ContainerStatsLifecycle", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+		ctrName := uniqueName(f, t) + "-ctr"
+
+		id, err := c.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: ctrName, Image: "alpine:latest", Cmd: []string{"sleep", "300"}})
+		if err != nil {
+			if isImageNotFoundErr(err) {
+				t.Skipf("alpine:latest not available on the daemon and this client cannot pull images (by design, #63) -- run `docker pull alpine:latest` first: %v", err)
+			}
+			t.Fatalf("ContainerCreate: %v", err)
+		}
+		t.Cleanup(func() { _ = c.ContainerRemove(context.Background(), id) })
+
+		// A created-never-started container has no stats.
+		if _, err := c.ContainerStats(ctx, id); err == nil {
+			t.Errorf("ContainerStats(created) = nil error, want an error (no stats for a container that is not running)")
+		}
+
+		if err := c.ContainerStart(ctx, id); err != nil {
+			t.Fatalf("ContainerStart: %v", err)
+		}
+		s, err := c.ContainerStats(ctx, id)
+		if err != nil {
+			t.Fatalf("ContainerStats(running): %v", err)
+		}
+		if s.Read.IsZero() {
+			t.Errorf("Read = zero, want a real sample time")
+		}
+		if s.MemoryLimit == 0 {
+			t.Errorf("MemoryLimit = 0, want the cgroup limit")
+		}
+		if s.MemoryLimit != 0 && s.MemoryUsed > s.MemoryLimit {
+			t.Errorf("MemoryUsed = %d > MemoryLimit = %d, want used <= limit", s.MemoryUsed, s.MemoryLimit)
+		}
+		if s.CPUPercent < 0 || s.CPUPercent > 100*128 {
+			t.Errorf("CPUPercent = %v, want a plausible value in [0, %d]", s.CPUPercent, 100*128)
+		}
+		if s.Pids < 1 {
+			t.Errorf("Pids = %d, want >= 1 (a running `sleep` has at least one process)", s.Pids)
+		}
+
+		if err := c.ContainerStop(ctx, id, 5*time.Second); err != nil {
+			t.Fatalf("ContainerStop: %v", err)
+		}
+		if _, err := c.ContainerStats(ctx, id); err == nil {
+			t.Errorf("ContainerStats(stopped) = nil error, want an error")
+		}
+
+		if _, err := c.ContainerStats(ctx, uniqueName(f, t)+"-missing"); !dockerclient.IsNotFound(err) {
+			t.Errorf("ContainerStats(missing) = %v, want IsNotFound", err)
+		}
+	}},
 }

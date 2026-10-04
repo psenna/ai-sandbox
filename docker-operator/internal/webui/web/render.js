@@ -897,6 +897,17 @@
 		return v.toFixed(1) + ' TiB';
 	}
 
+	// formatCPUPercent renders a CPU percentage: an integer once it reaches
+	// double digits ("12%"), one decimal below that so early ramp-up (0.4%) is
+	// visible instead of rounding to "0%", and a plain "0%" for idle -- which a
+	// running agent legitimately is.
+	function formatCPUPercent(p) {
+		if (typeof p !== 'number' || !isFinite(p) || p < 0) return '—';
+		if (p < 0.05) return '0%';
+		if (p < 10) return p.toFixed(1) + '%';
+		return Math.round(p) + '%';
+	}
+
 	// formatModTime renders an ISO timestamp as "YYYY-MM-DD HH:MM". An
 	// unparseable value renders as an em dash.
 	function formatModTime(iso) {
@@ -1035,6 +1046,8 @@
 			body = '<table class="activity-table">' +
 				'<thead><tr>' +
 					'<th>Agent</th><th>Status</th><th>Activity</th><th>Last active</th>' +
+					'<th title="Agent container and its Docker sidecar combined; workload containers inside the sidecar are included in this total">CPU</th>' +
+					'<th title="Agent container and its Docker sidecar combined">Memory</th>' +
 					'<th>Harness</th><th>Backend</th><th>Repository</th>' +
 				'</tr></thead>' +
 				'<tbody>' + agents.map(renderActivityRow).join('') + '</tbody>' +
@@ -1074,12 +1087,26 @@
 		var active = lastActiveAt(a);
 		var activeTitle = active ? ' title="' + escapeHTML(active) + '"' : '';
 
+		// resources is absent for a stopped agent, an agent whose read failed,
+		// or a record missing a container ID -- render an em dash, never a zero,
+		// because "0%" would read as "idle" for an agent that is simply unknown.
+		// A running agent's cpu_percent can legitimately be 0, which
+		// formatCPUPercent renders as "0%" -- that one IS a real idle reading.
+		var cpuText = '—';
+		var memText = '—';
+		if (a.resources) {
+			cpuText = formatCPUPercent(a.resources.cpu_percent);
+			memText = formatBytes(a.resources.mem_used_bytes) + ' / ' + formatBytes(a.resources.mem_limit_bytes);
+		}
+
 		return (
 			'<tr class="activity-table__row">' +
 				'<td class="activity-table__name">' + name + '</td>' +
 				'<td class="activity-table__status">' + dot + escapeHTML(label.text) + '</td>' +
 				'<td class="' + activityCls + '">' + escapeHTML(activityText) + '</td>' +
 				'<td class="activity-table__last-active"' + activeTitle + '>' + escapeHTML(formatLastActive(a)) + '</td>' +
+				'<td class="activity-table__cpu">' + escapeHTML(cpuText) + '</td>' +
+				'<td class="activity-table__mem">' + escapeHTML(memText) + '</td>' +
 				'<td>' + escapeHTML(harnessLabel(normalizeHarness(a.harness))) + '</td>' +
 				'<td>' + escapeHTML(backendLabel(a.backend)) + '</td>' +
 				'<td class="activity-table__repo">' + escapeHTML(a.repo || '—') + '</td>' +
@@ -1117,6 +1144,7 @@
 		renderAgentImagePanel: renderAgentImagePanel,
 		agentImageReportNote: agentImageReportNote,
 		formatBytes: formatBytes,
+		formatCPUPercent: formatCPUPercent,
 		formatModTime: formatModTime,
 		renderBreadcrumb: renderBreadcrumb,
 		renderFileTable: renderFileTable,

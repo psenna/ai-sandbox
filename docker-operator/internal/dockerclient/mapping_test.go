@@ -312,6 +312,108 @@ func TestToContainer(t *testing.T) {
 	})
 }
 
+func TestToStats(t *testing.T) {
+	t.Run("happy path: cpu, memory and pids", func(t *testing.T) {
+		read := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		sr := container.StatsResponse{
+			Read: read,
+			CPUStats: container.CPUStats{
+				CPUUsage:    container.CPUUsage{TotalUsage: 5e9},
+				SystemUsage: 7e9,
+				OnlineCPUs:  4,
+			},
+			PreCPUStats: container.CPUStats{
+				CPUUsage:    container.CPUUsage{TotalUsage: 4e9},
+				SystemUsage: 3e9,
+			},
+			MemoryStats: container.MemoryStats{
+				Usage: 10 << 20,
+				Stats: map[string]uint64{"inactive_file": 2 << 20},
+			},
+			PidsStats: container.PidsStats{Current: 7, Limit: ^uint64(0)},
+		}
+		got := toStats(sr)
+		if !got.Read.Equal(read) {
+			t.Errorf("Read = %v, want %v", got.Read, read)
+		}
+		// cpuDelta 1e9 over sysDelta 4e9, scaled by 4 online cpus, is exactly
+		// one fully-used cpu: 100.0.
+		if got.CPUPercent != 100.0 {
+			t.Errorf("CPUPercent = %v, want 100.0", got.CPUPercent)
+		}
+		if got.MemoryUsed != 8<<20 {
+			t.Errorf("MemoryUsed = %d, want %d (usage minus inactive_file)", got.MemoryUsed, uint64(8<<20))
+		}
+		if got.Pids != 7 {
+			t.Errorf("Pids = %d, want 7", got.Pids)
+		}
+	})
+
+	t.Run("inactive_file absent leaves usage raw", func(t *testing.T) {
+		sr := container.StatsResponse{
+			MemoryStats: container.MemoryStats{Usage: 10 << 20},
+		}
+		if got := toStats(sr).MemoryUsed; got != 10<<20 {
+			t.Errorf("MemoryUsed = %d, want %d (no inactive_file to subtract)", got, uint64(10<<20))
+		}
+	})
+
+	t.Run("inactive_file greater than usage leaves usage raw", func(t *testing.T) {
+		sr := container.StatsResponse{
+			MemoryStats: container.MemoryStats{
+				Usage: 10 << 20,
+				Stats: map[string]uint64{"inactive_file": 20 << 20},
+			},
+		}
+		if got := toStats(sr).MemoryUsed; got != 10<<20 {
+			t.Errorf("MemoryUsed = %d, want %d (the <= guard keeps usage raw)", got, uint64(10<<20))
+		}
+	})
+
+	t.Run("no predecessor sample yields zero cpu", func(t *testing.T) {
+		sr := container.StatsResponse{
+			CPUStats: container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 5e9}, SystemUsage: 7e9, OnlineCPUs: 4},
+		}
+		if got := toStats(sr).CPUPercent; got != 0 {
+			t.Errorf("CPUPercent = %v, want 0 (pre.CPUUsage.TotalUsage == 0)", got)
+		}
+	})
+
+	t.Run("rewound counters yield zero, not an explosion", func(t *testing.T) {
+		pre := container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 5e9}, SystemUsage: 7e9}
+		// cpu went backwards (a container restart resets cpuacct).
+		curCPU := container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 1e9}, SystemUsage: 8e9, OnlineCPUs: 4}
+		if got := cpuPercent(curCPU, pre); got != 0 {
+			t.Errorf("cpuPercent(rewound cpu) = %v, want 0 (signed compare, not uint64 underflow)", got)
+		}
+		// system went backwards.
+		curSys := container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 6e9}, SystemUsage: 3e9, OnlineCPUs: 4}
+		if got := cpuPercent(curSys, pre); got != 0 {
+			t.Errorf("cpuPercent(rewound system) = %v, want 0", got)
+		}
+	})
+
+	t.Run("OnlineCPUs zero falls back to the per-cpu slice, then to 1", func(t *testing.T) {
+		pre := container.CPUStats{CPUUsage: container.CPUUsage{TotalUsage: 4e9}, SystemUsage: 3e9}
+		// cpuDelta 1e9 over sysDelta 4e9 is 0.25; scaled by 2 cpus -> 50.0.
+		two := container.CPUStats{
+			CPUUsage:    container.CPUUsage{TotalUsage: 5e9, PercpuUsage: []uint64{1, 1}},
+			SystemUsage: 7e9,
+		}
+		if got := cpuPercent(two, pre); got != 50.0 {
+			t.Errorf("cpuPercent(OnlineCPUs 0, percpu len 2) = %v, want 50.0", got)
+		}
+		// Neither OnlineCPUs nor a percpu slice: assume 1 cpu -> 25.0.
+		one := container.CPUStats{
+			CPUUsage:    container.CPUUsage{TotalUsage: 5e9},
+			SystemUsage: 7e9,
+		}
+		if got := cpuPercent(one, pre); got != 25.0 {
+			t.Errorf("cpuPercent(OnlineCPUs 0, no percpu) = %v, want 25.0", got)
+		}
+	})
+}
+
 func TestSummaryToContainer(t *testing.T) {
 	t.Run("zero value", func(t *testing.T) {
 		got := summaryToContainer(container.Summary{ID: "abc"})
