@@ -655,4 +655,58 @@ var conformanceCases = []conformanceCase{
 			t.Errorf("ContainerStats(missing) = %v, want IsNotFound", err)
 		}
 	}},
+
+	// VolumeUsageLifecycle pins the two facts #219 depends on that a fake alone
+	// cannot establish: a freshly-created, never-written "local" volume is
+	// reported with a REAL Size of 0 -- not -1, not absent -- and a removed
+	// volume simply disappears from the report. Verified against Docker 27.5.1
+	// / API 1.47: GET /system/df?type=volume answers {"RefCount":0,"Size":0} for
+	// a fresh volume. This is what proves the real client did not drop
+	// UsageData on the legacy disk-usage path.
+	//
+	// Deliberately NOT asserted: that "size reflects data written into the
+	// volume". The fake has no filesystem, so that cannot hold identically
+	// across legs; a fake-side version would be vacuous. Do not add one.
+	{name: "VolumeUsageLifecycle", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+		name := uniqueName(f, t)
+
+		if _, err := c.VolumeCreate(ctx, dockerclient.VolumeSpec{Name: name}); err != nil {
+			t.Fatalf("VolumeCreate: %v", err)
+		}
+		t.Cleanup(func() { _ = c.VolumeRemove(context.Background(), name) })
+
+		usage, err := c.VolumeUsage(ctx)
+		if err != nil {
+			t.Fatalf("VolumeUsage: %v", err)
+		}
+		got, ok := findVolumeUsage(usage, name)
+		if !ok {
+			t.Fatalf("VolumeUsage did not report %q (got %v)", name, usage)
+		}
+		if got.Size != 0 {
+			t.Errorf("fresh volume Size = %d, want 0 (a never-written local volume; -1 would mean UsageData was dropped)", got.Size)
+		}
+
+		if err := c.VolumeRemove(ctx, name); err != nil {
+			t.Fatalf("VolumeRemove: %v", err)
+		}
+		usage, err = c.VolumeUsage(ctx)
+		if err != nil {
+			t.Fatalf("VolumeUsage after remove: %v", err)
+		}
+		if _, ok := findVolumeUsage(usage, name); ok {
+			t.Errorf("VolumeUsage still reports removed volume %q (got %v)", name, usage)
+		}
+	}},
+}
+
+// findVolumeUsage returns the entry for name and whether it was present.
+func findVolumeUsage(list []dockerclient.VolumeUsage, name string) (dockerclient.VolumeUsage, bool) {
+	for _, u := range list {
+		if u.Name == name {
+			return u, true
+		}
+	}
+	return dockerclient.VolumeUsage{}, false
 }

@@ -1070,7 +1070,7 @@ html, body {
 .activity-table__name { font-weight: 600; }
 .activity-table__status { white-space: nowrap; }
 .activity-table__last-active { white-space: nowrap; }
-.activity-table__cpu, .activity-table__mem { white-space: nowrap; }
+.activity-table__cpu, .activity-table__mem, .activity-table__disk { white-space: nowrap; }
 .activity-table__repo { color: var(--fg-dim); }
 
 .activity-table__activity--working {

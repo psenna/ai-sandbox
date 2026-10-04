@@ -134,13 +134,19 @@ type AgentManager interface {
 const anthropicLoginWSPath = "/ws/anthropic/login/terminal"
 
 // execStatsClient is the least Docker surface these handlers need:
-// dockerclient.ExecClient (the output/activity exec reads) plus the one
-// ContainerStats method added for #218. Composed here rather than widening
-// Handler.docker to the full ContainerClient, which would hand the api
-// package the container create/remove lifecycle it must never call.
+// dockerclient.ExecClient (the output/activity exec reads), the one
+// ContainerStats method added for #218, and the one VolumeUsage method added
+// for #219. Composed here rather than widening Handler.docker to the full
+// ContainerClient/VolumeClient, which would hand the api package the
+// container and volume create/remove lifecycle it must never call.
+//
+// The name is now slightly stale -- it is stats-plus-usage, not just stats --
+// but it is package-private and the extra method is a read in the same family
+// (a per-resource figure the Activity page shows), so it is kept.
 type execStatsClient interface {
 	dockerclient.ExecClient
 	ContainerStats(ctx context.Context, id string) (dockerclient.Stats, error)
+	VolumeUsage(ctx context.Context) ([]dockerclient.VolumeUsage, error)
 }
 
 // Handler serves the docker-operator's REST surface: the agent collection
@@ -154,16 +160,21 @@ type Handler struct {
 	files *filestore.Store
 	// maxUpload caps a single uploaded file (POST /api/files/upload).
 	maxUpload int64
+	// disk memoizes the per-agent disk-usage snapshot that every GET
+	// /api/agents carries, so the 3s UI poll does not pay a system/df call and
+	// a directory walk per agent on every request. See diskUsageFor.
+	disk diskUsageCache
 }
 
 // NewHandler builds the docker-operator's HTTP handler. mgr is the agent
 // lifecycle (create/delete/list/rename); docker is used only for the output
 // endpoint's exec into a running agent container and the Activity page's
-// per-agent stats read -- the narrowest interface that works, matching
-// internal/wsbridge.ReadOutput's own signature plus one stats method. files is
-// the centralized file store (nil disables the /api/files* routes, which then
-// answer 501); maxUpload is the per-file upload cap. A nil log falls back to
-// slog.Default.
+// per-agent stats and volume-usage reads -- the narrowest interface that
+// works, matching internal/wsbridge.ReadOutput's own signature plus those two
+// reads. files is the centralized file store (nil disables the /api/files*
+// routes, which then answer 501, and also drops the file-store component from
+// the disk figures); maxUpload is the per-file upload cap. A nil log falls back
+// to slog.Default.
 func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store, maxUpload int64, log *slog.Logger) http.Handler {
 	if log == nil {
 		log = slog.Default()
@@ -409,6 +420,14 @@ type agentView struct {
 	// reports NOTHING rather than a stale or misleading zero (the pointer is
 	// what lets omitempty drop the whole object).
 	Resources *agentResources `json:"resources,omitempty"`
+	// Disk is the agent's persistent disk footprint: its three named volumes
+	// plus its centralized file-store subtree. Unlike Resources it is present
+	// for a STOPPED agent too -- a stopped agent still owns its volumes and its
+	// files, and is most of the silent host growth this field exists to
+	// surface. nil on the very first request after boot (the refresh is still
+	// in flight) or when disk discovery is down; the numbers ride on
+	// CollectedAt so the UI can disclose their age.
+	Disk *agentDiskUsage `json:"disk,omitempty"`
 }
 
 // agentResources is one running agent's current host-side resource usage,
@@ -422,6 +441,62 @@ type agentResources struct {
 	MemUsedBytes  uint64  `json:"mem_used_bytes"`
 	MemLimitBytes uint64  `json:"mem_limit_bytes"`
 	Pids          uint64  `json:"pids"`
+}
+
+// agentDiskUsage is one agent's persistent disk footprint: its three named
+// volumes plus its centralized file-store subtree. Every component is a
+// POINTER so a real 0 (an empty volume -- verified: a never-written volume
+// reports Size 0) is distinguishable from unknown, which omitempty needs. A
+// component is nil when its volume name is absent from the record (legacy
+// record), the volume is missing from the df report (removed mid-delete), the
+// daemon reported a negative size ("not available"), or the walk/read failed.
+// DindCacheBytes is the DinD sidecar's /var/lib/docker: its size IS the disk the
+// agent's WORKLOAD images occupy inside the inner daemon (not the harness agent
+// image, which lives on the host's own image store) -- the UI's tooltip says
+// "workload images" for the same reason.
+type agentDiskUsage struct {
+	WorkspaceBytes    *int64 `json:"workspace_bytes,omitempty"`
+	ClaudeConfigBytes *int64 `json:"claude_config_bytes,omitempty"`
+	DindCacheBytes    *int64 `json:"dind_cache_bytes,omitempty"`
+	FileStoreBytes    *int64 `json:"file_store_bytes,omitempty"`
+	// TotalBytes is present ONLY when every component that applies on this
+	// host is known (all-or-nothing, like agentResources: a half total is
+	// exactly the misleading number this field must never show). The
+	// file-store component does not APPLY when the operator runs with the file
+	// store disabled -- the total is then the three volumes, not an eternal
+	// "unknown".
+	TotalBytes  *int64    `json:"total_bytes,omitempty"`
+	CollectedAt time.Time `json:"collected_at"`
+}
+
+// diskUsageTTL is how long one disk-usage snapshot serves GET /api/agents
+// before the next request recomputes it. A var, not a const, purely so tests
+// can shorten it (handlers_test is in-package) -- the UI polls every 3s and a
+// du-based figure does not honestly change that fast.
+var diskUsageTTL = 30 * time.Second
+
+// diskUsageReadTimeout bounds ONE refresh: the single system/df call plus
+// every agent's file-store walk.
+const diskUsageReadTimeout = 10 * time.Second
+
+// diskUsageCache is the Handler's inline, TTL-memoized, single-flight disk
+// snapshot. snapshot is the last successful collect (nil before the first
+// one); refreshing is the single-flight guard so a second request mid-refresh
+// serves the previous snapshot instead of stacking another df+walk; lastTry is
+// when the last refresh was ATTEMPTED, so a failing df is retried at most once
+// per TTL rather than once per 3s poll.
+type diskUsageCache struct {
+	mu         sync.Mutex
+	snapshot   *diskSnapshot
+	refreshing bool
+	lastTry    time.Time
+}
+
+// diskSnapshot is one completed disk-usage collect: when it finished and the
+// per-agent figures it produced.
+type diskSnapshot struct {
+	at   time.Time
+	byID map[string]agentDiskUsage
 }
 
 // activityReadTimeout bounds the whole per-agent read that buildAgentViews
@@ -457,6 +532,11 @@ func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []a
 	}
 
 	views := make([]agentView, len(agents))
+	// The disk snapshot is resolved ONCE per response (behind its TTL), not per
+	// agent: its single df call already covers every agent's volumes. Resolved
+	// here, alongside the inventory block, so a refresh (up to
+	// diskUsageReadTimeout) happens before the per-agent goroutines start.
+	diskByID := h.diskUsageFor(ctx)
 	var wg sync.WaitGroup
 	for i, a := range agents {
 		cur := agent.ImageTagOf(a.Image)
@@ -465,6 +545,13 @@ func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []a
 			Agent:            a,
 			UpgradeAvailable: agent.UpgradeAvailable(cur, hi.RegistryTags),
 			UpgradeReady:     agent.UpgradeAvailable(cur, hi.LocalTags),
+		}
+		// Disk is assigned BEFORE the running-agent gate below: a STOPPED agent
+		// still owns its volumes and its file-store subtree, and stopped agents
+		// are most of the silent host growth this field exists to show.
+		if du, ok := diskByID[a.ID]; ok {
+			d := du // copy, then take the address: never alias the snapshot's map
+			views[i].Disk = &d
 		}
 		if a.Status != store.StatusRunning || a.ContainerID == "" {
 			continue
@@ -544,6 +631,166 @@ func (h *Handler) agentResources(ctx context.Context, a store.Agent) *agentResou
 		total.Pids += s.Pids
 	}
 	return &total
+}
+
+// diskUsageFor returns the current per-agent disk snapshot, refreshing it
+// inline when it is older than diskUsageTTL. This runs on EVERY GET
+// /api/agents (the UI polls every 3s, for every agent), and a df call plus a
+// recursive walk per agent is not affordable at that rate, so the common case
+// is a map lookup behind the cache mutex and no I/O at all.
+//
+// The refresh is SINGLE-FLIGHT WITHOUT WAITING: a second request arriving
+// mid-refresh does not stack another collect and does not block -- it serves
+// the previous snapshot (or, on the very first refresh, nil, so that one
+// response simply carries no disk keys). The df call and the walks happen
+// OUTSIDE the mutex; only the flags and the finished snapshot are touched
+// under it.
+//
+// A FAILED refresh (df unreachable, list failed) keeps the previous snapshot
+// and does not fail the list -- the same degradation the tag inventories use.
+// lastTry throttles the retry to once per TTL, so a down daemon costs one
+// attempt per TTL, not one per poll.
+func (h *Handler) diskUsageFor(ctx context.Context) map[string]agentDiskUsage {
+	h.disk.mu.Lock()
+	snap := h.disk.snapshot
+	if snap != nil && time.Since(snap.at) < diskUsageTTL {
+		h.disk.mu.Unlock()
+		return snap.byID
+	}
+	// Stale (or never collected). Refuse to start a second refresh while one is
+	// running, and refuse to retry a recently-ATTEMPTED one before the TTL is
+	// up -- the failure throttle. lastTry is zero at boot, so time.Since is
+	// huge and the very first request is never throttled; after a failed
+	// attempt it holds off for one TTL even when there is no snapshot to serve
+	// (boot-time df failure), so the operator does not block 10s on every poll.
+	if h.disk.refreshing || time.Since(h.disk.lastTry) < diskUsageTTL {
+		h.disk.mu.Unlock()
+		if snap == nil {
+			return nil
+		}
+		return snap.byID
+	}
+	h.disk.refreshing = true
+	h.disk.lastTry = time.Now()
+	h.disk.mu.Unlock()
+
+	// The expensive work runs with the mutex RELEASED.
+	refreshed := h.collectDiskUsage(ctx)
+
+	h.disk.mu.Lock()
+	defer h.disk.mu.Unlock()
+	h.disk.refreshing = false
+	if refreshed == nil {
+		// Refresh failed: keep whatever we had (which may be a stale snapshot),
+		// and let lastTry hold off the next attempt for one TTL.
+		if snap == nil {
+			return nil
+		}
+		return snap.byID
+	}
+	h.disk.snapshot = refreshed
+	return refreshed.byID
+}
+
+// collectDiskUsage performs one refresh: mgr.List, ONE VolumeUsage df call
+// covering every agent's three volumes, then a file-store walk per agent. It
+// returns nil when the df call itself fails (list failure included) -- that is
+// a FAILED refresh the caller must not cache -- but never fails on a per-agent
+// walk, which only drops that one component.
+func (h *Handler) collectDiskUsage(ctx context.Context) *diskSnapshot {
+	ctx, cancel := context.WithTimeout(ctx, diskUsageReadTimeout)
+	defer cancel()
+
+	agents, err := h.mgr.List(ctx)
+	if err != nil {
+		h.log.Warn("could not list agents while collecting disk usage; keeping the previous snapshot", "error", err)
+		return nil
+	}
+
+	// One df call covers the whole fleet; index it by name for the per-agent
+	// lookup. Do NOT re-derive volume names from an agent ID -- the record is
+	// the authority on what its volumes are called.
+	usage, err := h.docker.VolumeUsage(ctx)
+	if err != nil {
+		h.log.Warn("could not read volume disk usage; keeping the previous snapshot", "error", err)
+		return nil
+	}
+	byName := make(map[string]int64, len(usage))
+	for _, u := range usage {
+		byName[u.Name] = u.Size
+	}
+
+	now := time.Now()
+	byID := make(map[string]agentDiskUsage, len(agents))
+	for _, a := range agents {
+		byID[a.ID] = h.agentDiskUsage(ctx, a, byName, now)
+	}
+	return &diskSnapshot{at: now, byID: byID}
+}
+
+// agentDiskUsage resolves one agent's four disk components and the all-or-
+// nothing total. The three volumes are looked up by the record's OWN names
+// (a.WorkspaceVolume etc.); the file-store subtree is walked through the store
+// handle. A walk error or a missing subtree is an absent component, never a
+// failed response.
+func (h *Handler) agentDiskUsage(ctx context.Context, a store.Agent, volByName map[string]int64, now time.Time) agentDiskUsage {
+	d := agentDiskUsage{
+		WorkspaceBytes:    volumeBytes(volByName, a.WorkspaceVolume),
+		ClaudeConfigBytes: volumeBytes(volByName, a.ClaudeConfigVolume),
+		DindCacheBytes:    volumeBytes(volByName, a.DindCacheVolume),
+		CollectedAt:       now,
+	}
+	if h.files != nil {
+		n, err := h.files.TreeSize(filestore.AgentSubpath(a.ID))
+		switch {
+		case err == nil:
+			size := n
+			d.FileStoreBytes = &size
+		case filestore.IsNotFound(err):
+			// The subtree is gone (deleted mid-collect): an absent component,
+			// not an error, and not unknown-but-applicable either -- the walk
+			// simply found nothing to report.
+		default:
+			h.log.Warn("could not measure an agent's file-store subtree", "agent", a.ID, "error", err)
+		}
+	}
+	d.TotalBytes = totalDiskBytes(d, h.files != nil)
+	return d
+}
+
+// totalDiskBytes sums the components that apply on this host, or nil when any
+// of them is unknown -- all-or-nothing, like agentResources. fileStoreApplies
+// is false when the operator runs with the file store disabled: the
+// file-store component then does not APPLY, so its absence does not make the
+// total unknown (the total is the three volumes).
+func totalDiskBytes(d agentDiskUsage, fileStoreApplies bool) *int64 {
+	if d.WorkspaceBytes == nil || d.ClaudeConfigBytes == nil || d.DindCacheBytes == nil {
+		return nil
+	}
+	sum := *d.WorkspaceBytes + *d.ClaudeConfigBytes + *d.DindCacheBytes
+	if fileStoreApplies {
+		if d.FileStoreBytes == nil {
+			return nil
+		}
+		sum += *d.FileStoreBytes
+	}
+	return &sum
+}
+
+// volumeBytes resolves one named volume's size from the df report: nil when
+// the name is empty (a legacy record with no volume names), the volume is
+// absent from the report (removed mid-delete), or the daemon reported a
+// NEGATIVE size ("not available"). A real 0 passes through as a present 0.
+// The returned pointer addresses a fresh local, never the report's map.
+func volumeBytes(byName map[string]int64, name string) *int64 {
+	if name == "" {
+		return nil
+	}
+	size, ok := byName[name]
+	if !ok || size < 0 {
+		return nil
+	}
+	return &size
 }
 
 // agentListResponse is the GET /api/agents body. MaxAgents and the three

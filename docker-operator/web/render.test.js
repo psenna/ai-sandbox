@@ -1282,11 +1282,11 @@ test('renderDashboard: one row per agent, in API order', () => {
 	const rows = html.match(/<tr class="activity-table__row">/g) || [];
 	assert.equal(rows.length, 2);
 	assert.ok(html.indexOf('Alpha') < html.indexOf('Bravo'));
-	// The nine column headings, in order. Matched with a '<th[^>]*>name</th>'
-	// regex rather than a bare substring: the CPU and Memory headings carry
-	// title attributes, and a plain 'Activity' substring would also match the
-	// page title above the table.
-	const th = ['Agent', 'Status', 'Activity', 'Last active', 'CPU', 'Memory', 'Harness', 'Backend', 'Repository'];
+	// The ten column headings, in order. Matched with a '<th[^>]*>name</th>'
+	// regex rather than a bare substring: the CPU, Memory and Disk headings
+	// carry title attributes, and a plain 'Activity' substring would also match
+	// the page title above the table.
+	const th = ['Agent', 'Status', 'Activity', 'Last active', 'CPU', 'Memory', 'Disk', 'Harness', 'Backend', 'Repository'];
 	let prev = -1;
 	th.forEach((h) => {
 		const at = html.search(new RegExp('<th[^>]*>' + h + '</th>'));
@@ -1369,4 +1369,55 @@ test('renderDashboard: an unrecognised status degrades to visible text; missing 
 	assert.match(html, /bogus/); // statusLabel's visible fallback text
 	assert.match(html, /activity-table__name">\(unnamed\)</);
 	assert.match(html, /activity-table__repo">—</);
+});
+
+test('renderDashboard: the Disk header carries the dind-cache caveat in its title', () => {
+	const html = Render.renderDashboard([{ id: 'a', name: 'A', status: 'running' }]);
+	assert.match(html, /<th title="[^"]*dind-cache[^"]*">Disk<\/th>/);
+});
+
+test('renderDashboard: a disk total renders in the cell and the breakdown title calls the dind cache "Workload images" and measures the age', () => {
+	const html = Render.renderDashboard([{
+		id: 'a', name: 'A', status: 'running',
+		disk: {
+			workspace_bytes: 210 << 20,
+			claude_config_bytes: 12 << 10,
+			dind_cache_bytes: 5 * 1024 * 1024 * 1024,
+			file_store_bytes: 1 * 1024 * 1024 * 1024,
+			total_bytes: (210 << 20) + (12 << 10) + 5 * 1024 * 1024 * 1024 + 1 * 1024 * 1024 * 1024,
+			collected_at: new Date(Date.now() - 25 * 1000).toISOString(),
+		},
+	}]);
+	// The total (6.2 GiB) is in the cell.
+	assert.match(html, /activity-table__disk"[^>]*>6\.2 GiB</);
+	// The title names each component, calls the dind cache "Workload images",
+	// and discloses the snapshot's age.
+	assert.match(html, /title="Workspace 210\.0 MiB · Claude config 12\.0 KiB · Workload images 5\.0 GiB · File store 1\.0 GiB · measured /);
+});
+
+test('renderDashboard: absent disk renders an em dash, never a zero', () => {
+	// A first-request race or a failed disk read drops the whole disk object.
+	const html = Render.renderDashboard([{ id: 'a', name: 'A', status: 'running' }]);
+	assert.match(html, /activity-table__disk">—</);
+	assert.doesNotMatch(html, /activity-table__disk"[^>]*>0 B</);
+});
+
+test('renderDashboard: a partial disk renders an em dash in the cell but titles the known components', () => {
+	// total_bytes is present ONLY when every applicable component is known, so
+	// a partial disk has no total: the cell is unknown (em dash), but the title
+	// still shows what IS known.
+	const html = Render.renderDashboard([{
+		id: 'a', name: 'A', status: 'running',
+		disk: { workspace_bytes: 210 << 20, collected_at: new Date().toISOString() },
+	}]);
+	assert.match(html, /activity-table__disk" title="Workspace 210\.0 MiB[^"]*">—</);
+	assert.doesNotMatch(html, /activity-table__disk"[^>]*>210\.0 MiB</);
+});
+
+test('renderDashboard: a zero total renders 0 B -- a real reading, not an unknown', () => {
+	const html = Render.renderDashboard([{
+		id: 'a', name: 'A', status: 'running',
+		disk: { workspace_bytes: 0, claude_config_bytes: 0, dind_cache_bytes: 0, file_store_bytes: 0, total_bytes: 0, collected_at: new Date().toISOString() },
+	}]);
+	assert.match(html, /activity-table__disk"[^>]*>0 B</);
 });

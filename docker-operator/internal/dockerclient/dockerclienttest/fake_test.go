@@ -387,6 +387,80 @@ func TestContainerStatsLifecycle(t *testing.T) {
 	})
 }
 
+// TestVolumeUsageLifecycle pins the fake's model of VolumeUsage / SetVolumeUsage:
+// a seeded volume reports its seeded size verbatim (including a real 0 and a
+// negative "unknown"), an unseeded one reports Size 0 (the daemon's own value
+// for a never-written local volume), a seed against a missing volume is
+// IsNotFound, and the fleet-wide call is recorded with an empty Target.
+func TestVolumeUsageLifecycle(t *testing.T) {
+	f := New()
+	ctx := context.Background()
+
+	for _, name := range []string{"vol-empty", "vol-used"} {
+		if _, err := f.VolumeCreate(ctx, dockerclient.VolumeSpec{Name: name}); err != nil {
+			t.Fatalf("VolumeCreate(%s): %v", name, err)
+		}
+	}
+	if err := f.SetVolumeUsage("vol-used", 5<<20); err != nil {
+		t.Fatalf("SetVolumeUsage: %v", err)
+	}
+
+	t.Run("SetVolumeUsage against a missing volume satisfies IsNotFound", func(t *testing.T) {
+		if err := f.SetVolumeUsage("nope", 1); !dockerclient.IsNotFound(err) {
+			t.Errorf("SetVolumeUsage(missing) = %v, want IsNotFound", err)
+		}
+	})
+
+	t.Run("seeded and unseeded volumes are reported with their sizes, sorted", func(t *testing.T) {
+		got, err := f.VolumeUsage(ctx)
+		if err != nil {
+			t.Fatalf("VolumeUsage: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("VolumeUsage = %v, want 2 entries", got)
+		}
+		if got[0].Name != "vol-empty" || got[0].Size != 0 {
+			t.Errorf("got[0] = %+v, want the unseeded volume with Size 0", got[0])
+		}
+		if got[1].Name != "vol-used" || got[1].Size != 5<<20 {
+			t.Errorf("got[1] = %+v, want the seeded Size %d", got[1], 5<<20)
+		}
+	})
+
+	t.Run("a negative seed is passed through as unknown, not clamped", func(t *testing.T) {
+		if err := f.SetVolumeUsage("vol-empty", -1); err != nil {
+			t.Fatalf("SetVolumeUsage: %v", err)
+		}
+		got, err := f.VolumeUsage(ctx)
+		if err != nil {
+			t.Fatalf("VolumeUsage: %v", err)
+		}
+		if got[0].Size != -1 {
+			t.Errorf("Size = %d, want -1 passed through", got[0].Size)
+		}
+	})
+
+	t.Run("Fail takes effect through the shared call path", func(t *testing.T) {
+		boom := errors.New("boom")
+		f.FailOnce(OpVolumeUsage, boom)
+		if _, err := f.VolumeUsage(ctx); !errors.Is(err, boom) {
+			t.Errorf("VolumeUsage (FailOnce) = %v, want %v", err, boom)
+		}
+	})
+
+	t.Run("the fleet-wide call is recorded with an empty Target", func(t *testing.T) {
+		var seen bool
+		for _, c := range f.Calls() {
+			if c.Op == OpVolumeUsage && c.Target == "" {
+				seen = true
+			}
+		}
+		if !seen {
+			t.Errorf("Calls() did not record OpVolumeUsage with Target \"\"")
+		}
+	})
+}
+
 // readAll reads from r into buf until EOF (buf must be large enough) and
 // returns the number of bytes read.
 func readAll(t *testing.T, r interface{ Read([]byte) (int, error) }, buf []byte) (int, error) {

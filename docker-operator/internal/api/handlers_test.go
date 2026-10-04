@@ -1517,6 +1517,304 @@ func TestHandleList_ResourcesMissingDind(t *testing.T) {
 	}
 }
 
+// --- disk usage (#219) ------------------------------------------------------
+
+// diskBody decodes one agent's "disk" object. Every component is a *int64 so a
+// PRESENT 0 (a real reading -- a never-written volume) is distinguishable from
+// an OMITTED key (unknown).
+type diskBody struct {
+	WorkspaceBytes    *int64 `json:"workspace_bytes"`
+	ClaudeConfigBytes *int64 `json:"claude_config_bytes"`
+	DindCacheBytes    *int64 `json:"dind_cache_bytes"`
+	FileStoreBytes    *int64 `json:"file_store_bytes"`
+	TotalBytes        *int64 `json:"total_bytes"`
+	CollectedAt       string `json:"collected_at"`
+}
+
+// decodeDiskList runs GET /api/agents and returns each agent's disk object
+// keyed by id -- nil when that agent carries no disk key.
+func decodeDiskList(t *testing.T, h http.Handler) map[string]*diskBody {
+	t.Helper()
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID   string    `json:"id"`
+			Disk *diskBody `json:"disk"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	out := make(map[string]*diskBody, len(resp.Agents))
+	for _, a := range resp.Agents {
+		out[a.ID] = a.Disk
+	}
+	return out
+}
+
+// seedVolumes creates the named volumes on the fake and seeds each usage.
+func seedVolumes(t *testing.T, fake *dockerclienttest.Fake, usage map[string]int64) {
+	t.Helper()
+	ctx := context.Background()
+	for name, size := range usage {
+		if _, err := fake.VolumeCreate(ctx, dockerclient.VolumeSpec{Name: name}); err != nil {
+			t.Fatalf("VolumeCreate(%s): %v", name, err)
+		}
+		if err := fake.SetVolumeUsage(name, size); err != nil {
+			t.Fatalf("SetVolumeUsage(%s): %v", name, err)
+		}
+	}
+}
+
+// countOp returns how many recorded calls used op.
+func countOp(fake *dockerclienttest.Fake, op dockerclienttest.Op) int {
+	n := 0
+	for _, c := range fake.Calls() {
+		if c.Op == op {
+			n++
+		}
+	}
+	return n
+}
+
+// TestHandleList_DiskUsage is the #219 regression test: a RUNNING and a STOPPED
+// agent BOTH carry a disk object -- a stopped agent still owns its volumes and
+// its file-store subtree, which is the whole point of the feature -- with the
+// four components resolved by the record's OWN volume names, the file-store
+// walk summed, the total added up, and collected_at populated. The contrast
+// with TestHandleList_Resources (where a stopped agent has NO resources key) is
+// deliberate.
+func TestHandleList_DiskUsage(t *testing.T) {
+	fake := dockerclienttest.New()
+	seedVolumes(t, fake, map[string]int64{
+		"ws-run":  0, // a real 0: a never-written volume
+		"cc-run":  12 << 10,
+		"dc-run":  5 << 30,
+		"ws-stop": 3 << 20,
+		"cc-stop": 4 << 20,
+		"dc-stop": 0, // unseeded volumes also read as 0
+	})
+
+	fs := newFilestore(t)
+	for id, content := range map[string]string{"agt_run": "hello world", "agt_stop": "stop!"} {
+		if err := fs.EnsureAgentDir(id); err != nil {
+			t.Fatalf("EnsureAgentDir(%s): %v", id, err)
+		}
+		if _, err := fs.Save("agents/"+id+"/f", strings.NewReader(content), 1<<20); err != nil {
+			t.Fatalf("Save(%s): %v", id, err)
+		}
+	}
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_run", Name: "run", Status: store.StatusRunning, ContainerID: "cid",
+		WorkspaceVolume: "ws-run", ClaudeConfigVolume: "cc-run", DindCacheVolume: "dc-run"})
+	mgr.seed(store.Agent{ID: "agt_stop", Name: "stop", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-stop", ClaudeConfigVolume: "cc-stop", DindCacheVolume: "dc-stop"})
+	h := newTestHandlerFiles(mgr, fake, fs, 0)
+
+	got := decodeDiskList(t, h)
+
+	run := got["agt_run"]
+	if run == nil {
+		t.Fatalf("running agent has no disk object; got %+v", got)
+	}
+	// workspace_bytes: 0 must be PRESENT (a real reading), not an omitted key.
+	if run.WorkspaceBytes == nil || *run.WorkspaceBytes != 0 {
+		t.Errorf("workspace_bytes = %v, want a PRESENT 0 (a real reading, not omitted)", run.WorkspaceBytes)
+	}
+	if run.ClaudeConfigBytes == nil || *run.ClaudeConfigBytes != 12<<10 {
+		t.Errorf("claude_config_bytes = %v, want %d", run.ClaudeConfigBytes, 12<<10)
+	}
+	if run.DindCacheBytes == nil || *run.DindCacheBytes != 5<<30 {
+		t.Errorf("dind_cache_bytes = %v, want %d", run.DindCacheBytes, 5<<30)
+	}
+	if run.FileStoreBytes == nil || *run.FileStoreBytes != int64(len("hello world")) {
+		t.Errorf("file_store_bytes = %v, want %d (the walked subtree)", run.FileStoreBytes, len("hello world"))
+	}
+	wantRunTotal := int64(0 + 12<<10 + 5<<30 + len("hello world"))
+	if run.TotalBytes == nil || *run.TotalBytes != wantRunTotal {
+		t.Errorf("total_bytes = %v, want %d", run.TotalBytes, wantRunTotal)
+	}
+	if run.CollectedAt == "" {
+		t.Errorf("collected_at is empty, want the snapshot time")
+	}
+
+	stop := got["agt_stop"]
+	if stop == nil {
+		t.Fatalf("STOPPED agent has no disk object; a stopped agent still owns its volumes and files: %+v", got)
+	}
+	wantStopTotal := int64(3<<20 + 4<<20 + 0 + len("stop!"))
+	if stop.TotalBytes == nil || *stop.TotalBytes != wantStopTotal {
+		t.Errorf("stopped total_bytes = %v, want %d", stop.TotalBytes, wantStopTotal)
+	}
+}
+
+// TestHandleList_DiskUsageOneDfCall is the acceptance criterion made
+// non-vacuous by the call counter: two GETs (as the 3s UI poll produces),
+// N agents, and exactly ONE system/df call. The TTL is far above this test's
+// duration, so the second request must be served from the cache.
+func TestHandleList_DiskUsageOneDfCall(t *testing.T) {
+	fake := dockerclienttest.New()
+	seedVolumes(t, fake, map[string]int64{"ws-1": 1, "cc-1": 2, "dc-1": 3, "ws-2": 4, "cc-2": 5, "dc-2": 6})
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "one", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-1", ClaudeConfigVolume: "cc-1", DindCacheVolume: "dc-1"})
+	mgr.seed(store.Agent{ID: "agt_2", Name: "two", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-2", ClaudeConfigVolume: "cc-2", DindCacheVolume: "dc-2"})
+	h := newTestHandler(mgr, fake)
+
+	decodeDiskList(t, h)
+	decodeDiskList(t, h)
+
+	if n := countOp(fake, dockerclienttest.OpVolumeUsage); n != 1 {
+		t.Errorf("VolumeUsage ran %d times across two GETs, want 1 (the TTL must serve the cached snapshot)", n)
+	}
+}
+
+// TestHandleList_DiskUsageRefreshesAfterTTL shortens the TTL to 0 (always
+// stale, and deterministically so -- no sleep), so a second GET must recompute
+// and issue a second df call.
+func TestHandleList_DiskUsageRefreshesAfterTTL(t *testing.T) {
+	old := diskUsageTTL
+	diskUsageTTL = 0
+	t.Cleanup(func() { diskUsageTTL = old })
+
+	fake := dockerclienttest.New()
+	seedVolumes(t, fake, map[string]int64{"ws-1": 1, "cc-1": 2, "dc-1": 3})
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "one", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-1", ClaudeConfigVolume: "cc-1", DindCacheVolume: "dc-1"})
+	h := newTestHandler(mgr, fake)
+
+	decodeDiskList(t, h)
+	decodeDiskList(t, h)
+
+	if n := countOp(fake, dockerclienttest.OpVolumeUsage); n != 2 {
+		t.Errorf("VolumeUsage ran %d times after the TTL expired, want 2", n)
+	}
+}
+
+// TestHandleList_DiskUsageMissingVolume: a record naming a volume the daemon
+// does not report (removed mid-delete, or a legacy record naming a volume that
+// never existed) drops only THAT component; the total is then absent (a half
+// total is the misleading number the field must never show), and the response
+// is still a clean 200.
+func TestHandleList_DiskUsageMissingVolume(t *testing.T) {
+	fake := dockerclienttest.New()
+	// ws-1 and cc-1 exist; dc-1 is deliberately NOT created.
+	seedVolumes(t, fake, map[string]int64{"ws-1": 7, "cc-1": 8})
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "one", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-1", ClaudeConfigVolume: "cc-1", DindCacheVolume: "dc-1"})
+	h := newTestHandler(mgr, fake)
+
+	got := decodeDiskList(t, h)["agt_1"]
+	if got == nil {
+		t.Fatal("agent has no disk object, want the known components")
+	}
+	if got.WorkspaceBytes == nil || *got.WorkspaceBytes != 7 {
+		t.Errorf("workspace_bytes = %v, want 7", got.WorkspaceBytes)
+	}
+	if got.ClaudeConfigBytes == nil || *got.ClaudeConfigBytes != 8 {
+		t.Errorf("claude_config_bytes = %v, want 8", got.ClaudeConfigBytes)
+	}
+	if got.DindCacheBytes != nil {
+		t.Errorf("dind_cache_bytes = %v, want ABSENT (the volume is not on the daemon)", got.DindCacheBytes)
+	}
+	if got.TotalBytes != nil {
+		t.Errorf("total_bytes = %v, want ABSENT (all-or-nothing with a missing component)", got.TotalBytes)
+	}
+}
+
+// TestHandleList_DiskUsageDfFailure: disk discovery being down must never fail
+// the list. The df call fails, so no agent carries a disk key, but the rest of
+// the response is intact and the status is 200.
+func TestHandleList_DiskUsageDfFailure(t *testing.T) {
+	fake := dockerclienttest.New()
+	seedVolumes(t, fake, map[string]int64{"ws-1": 7, "cc-1": 8, "dc-1": 9})
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "one", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-1", ClaudeConfigVolume: "cc-1", DindCacheVolume: "dc-1"})
+	h := newTestHandler(mgr, fake)
+	fake.Fail(dockerclienttest.OpVolumeUsage, errors.New("daemon down"))
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even when disk discovery fails; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID   string          `json:"id"`
+			Name string          `json:"name"`
+			Disk json.RawMessage `json:"disk"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if len(resp.Agents) != 1 {
+		t.Fatalf("agents = %d, want 1; body: %s", len(resp.Agents), rec.Body)
+	}
+	if resp.Agents[0].Disk != nil {
+		t.Errorf("disk = %s, want the key ABSENT when the df call fails", resp.Agents[0].Disk)
+	}
+	if resp.Agents[0].Name != "one" {
+		t.Errorf("name = %q, want the rest of the view intact", resp.Agents[0].Name)
+	}
+}
+
+// TestHandleList_DiskUsageDfFailureThrottles: a boot-time df failure (no
+// snapshot to fall back on) must not be retried on every 3s poll -- each retry
+// blocks up to diskUsageReadTimeout. Two GETs within one TTL, df failing
+// throughout, produce exactly ONE attempt. lastTry is zero at boot, so the
+// very first attempt is not throttled; only the ones after it are.
+func TestHandleList_DiskUsageDfFailureThrottles(t *testing.T) {
+	fake := dockerclienttest.New()
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "one", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-1", ClaudeConfigVolume: "cc-1", DindCacheVolume: "dc-1"})
+	h := newTestHandler(mgr, fake)
+	fake.Fail(dockerclienttest.OpVolumeUsage, errors.New("daemon down"))
+
+	decodeDiskList(t, h) // first attempt, not throttled (lastTry is zero)
+	decodeDiskList(t, h) // within the TTL: must be served the failure, not retried
+
+	if n := countOp(fake, dockerclienttest.OpVolumeUsage); n != 1 {
+		t.Errorf("VolumeUsage was attempted %d times across two GETs after a failure, want 1 (the failure must throttle to one attempt per TTL)", n)
+	}
+}
+
+// TestHandleList_DiskUsageFilestoreDisabled: with the file store disabled
+// (nil), file_store_bytes is absent everywhere -- but the total is STILL
+// present, because the file-store component does not APPLY rather than being
+// unknown. The total is the three volumes.
+func TestHandleList_DiskUsageFilestoreDisabled(t *testing.T) {
+	fake := dockerclienttest.New()
+	seedVolumes(t, fake, map[string]int64{"ws-1": 7, "cc-1": 8, "dc-1": 9})
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Name: "one", Status: store.StatusStopped,
+		WorkspaceVolume: "ws-1", ClaudeConfigVolume: "cc-1", DindCacheVolume: "dc-1"})
+	h := newTestHandler(mgr, fake) // nil file store
+
+	got := decodeDiskList(t, h)["agt_1"]
+	if got == nil {
+		t.Fatal("agent has no disk object, want the volume components")
+	}
+	if got.FileStoreBytes != nil {
+		t.Errorf("file_store_bytes = %v, want ABSENT with the file store disabled", got.FileStoreBytes)
+	}
+	if got.TotalBytes == nil || *got.TotalBytes != 7+8+9 {
+		t.Errorf("total_bytes = %v, want %d (inapplicable, not unknown)", got.TotalBytes, 7+8+9)
+	}
+}
+
 // --- GET/PATCH/DELETE /api/agents/{id} --------------------------------------
 
 func TestGet(t *testing.T) {

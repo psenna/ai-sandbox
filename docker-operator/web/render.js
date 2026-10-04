@@ -1048,6 +1048,7 @@
 					'<th>Agent</th><th>Status</th><th>Activity</th><th>Last active</th>' +
 					'<th title="Agent container and its Docker sidecar combined; workload containers inside the sidecar are included in this total">CPU</th>' +
 					'<th title="Agent container and its Docker sidecar combined">Memory</th>' +
+					'<th title="The agent’s three Docker volumes plus its centralized file-store share; the dind-cache volume is the sidecar’s /var/lib/docker, so its figure is the agent’s workload images">Disk</th>' +
 					'<th>Harness</th><th>Backend</th><th>Repository</th>' +
 				'</tr></thead>' +
 				'<tbody>' + agents.map(renderActivityRow).join('') + '</tbody>' +
@@ -1099,6 +1100,29 @@
 			memText = formatBytes(a.resources.mem_used_bytes) + ' / ' + formatBytes(a.resources.mem_limit_bytes);
 		}
 
+		// disk is the agent's persistent footprint (three volumes + file-store
+		// subtree), present for STOPPED agents too. The cell shows total_bytes
+		// when it is known, else an em dash -- NEVER a zero in its place: a
+		// partial disk (some component unknown) is unknown, not empty, and the
+		// backend already withholds total_bytes in exactly that case. The title
+		// carries the honest breakdown from whichever components are present,
+		// labels the dind-cache volume "Workload images" (it IS the sidecar's
+		// /var/lib/docker, where the agent's workload images live), and discloses
+		// the snapshot's age so a 30s-stale figure is not read as live.
+		var diskText = '—';
+		var diskTitle = '';
+		if (a.disk) {
+			if (typeof a.disk.total_bytes === 'number') diskText = formatBytes(a.disk.total_bytes);
+			var diskParts = [];
+			if (typeof a.disk.workspace_bytes === 'number') diskParts.push('Workspace ' + formatBytes(a.disk.workspace_bytes));
+			if (typeof a.disk.claude_config_bytes === 'number') diskParts.push('Claude config ' + formatBytes(a.disk.claude_config_bytes));
+			if (typeof a.disk.dind_cache_bytes === 'number') diskParts.push('Workload images ' + formatBytes(a.disk.dind_cache_bytes));
+			if (typeof a.disk.file_store_bytes === 'number') diskParts.push('File store ' + formatBytes(a.disk.file_store_bytes));
+			var diskAgo = a.disk.collected_at ? formatAgo(a.disk.collected_at) : '';
+			if (diskAgo) diskParts.push('measured ' + diskAgo);
+			if (diskParts.length) diskTitle = ' title="' + escapeHTML(diskParts.join(' · ')) + '"';
+		}
+
 		return (
 			'<tr class="activity-table__row">' +
 				'<td class="activity-table__name">' + name + '</td>' +
@@ -1107,6 +1131,7 @@
 				'<td class="activity-table__last-active"' + activeTitle + '>' + escapeHTML(formatLastActive(a)) + '</td>' +
 				'<td class="activity-table__cpu">' + escapeHTML(cpuText) + '</td>' +
 				'<td class="activity-table__mem">' + escapeHTML(memText) + '</td>' +
+				'<td class="activity-table__disk"' + diskTitle + '>' + escapeHTML(diskText) + '</td>' +
 				'<td>' + escapeHTML(harnessLabel(normalizeHarness(a.harness))) + '</td>' +
 				'<td>' + escapeHTML(backendLabel(a.backend)) + '</td>' +
 				'<td class="activity-table__repo">' + escapeHTML(a.repo || '—') + '</td>' +

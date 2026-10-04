@@ -86,6 +86,14 @@ type VolumeClient interface {
 	// volume a container still references, and that refusal is a real signal
 	// that the caller removed things out of order.
 	VolumeRemove(ctx context.Context, name string) error
+
+	// VolumeUsage returns the disk usage of every volume on the daemon, sorted
+	// by name, in ONE GET /system/df round-trip with {Volumes: true, Verbose:
+	// true}. One call covers every agent's three volumes at once; index the
+	// result by Name. It is deliberately NOT folded into VolumeInspect/List,
+	// where the daemon's UsageData is always absent -- see VolumeUsage's own
+	// doc comment.
+	VolumeUsage(ctx context.Context) ([]VolumeUsage, error)
 }
 
 // NetworkClient manages the shared proxynet/dbnet and the per-agent dinernet.
@@ -275,6 +283,23 @@ type Volume struct {
 	Name       string
 	Labels     map[string]string
 	Mountpoint string
+}
+
+// VolumeUsage is the disk usage of one named volume, as ONLY the daemon's
+// GET /system/df endpoint reports it (the moby type's own doc: "used by the
+// GET /system/df endpoint, and omitted in other endpoints" -- so
+// VolumeInspect/VolumeList never carry it). It is a parallel type rather than a
+// field on Volume for exactly that reason: Volume is returned by Create,
+// Inspect AND List, where UsageData is always absent, so a usage field there
+// would be misleading on three of four paths. The Stats type is the same
+// precedent. Size is the recursive content size of the volume's mountpoint in
+// bytes: 0 is a REAL reading (a never-written "local"-driver volume reports 0
+// -- verified against Docker 27.5.1), a NEGATIVE value (or the daemon omitting
+// UsageData) means the daemon could not compute it and must not be summed or
+// rendered.
+type VolumeUsage struct {
+	Name string
+	Size int64
 }
 
 // NetworkSpec describes a network to create. The driver is always "bridge".
@@ -589,6 +614,34 @@ func (d *Docker) VolumeRemove(ctx context.Context, name string) error {
 		return fmt.Errorf("removing volume %q: %w", name, err)
 	}
 	return nil
+}
+
+// VolumeUsage returns the disk usage of EVERY volume on the daemon, sorted by
+// name, in one GET /system/df round-trip.
+//
+// Verbose is REQUIRED on API >= 1.52 (the per-volume Items are the only place
+// UsageData appears, and the SDK populates them only when verbose) and ignored
+// by legacy daemons (API < 1.52 always populate Items -- which is what this
+// deployment's daemon does: Docker 27.5.1 / API 1.47, verified), so that
+// forward-compatible path is not exercised against this host and a
+// conformance case must not pretend it is.
+//
+// Volumes:true asks the daemon to du volumes ONLY -- the type filter is
+// server-side, so this does not walk the image store. There is no name
+// filtering: the value of the single call is that it covers the whole fleet,
+// and filtering by name is the caller's one map lookup. RefCount is
+// deliberately not mirrored (no consumer has an action to take on it).
+func (d *Docker) VolumeUsage(ctx context.Context) ([]VolumeUsage, error) {
+	res, err := d.api.DiskUsage(ctx, client.DiskUsageOptions{Volumes: true, Verbose: true})
+	if err != nil {
+		return nil, fmt.Errorf("reading volume disk usage: %w", err)
+	}
+	out := make([]VolumeUsage, 0, len(res.Volumes.Items))
+	for _, v := range res.Volumes.Items {
+		out = append(out, toVolumeUsage(v))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // NetworkCreate creates a user-defined bridge network.
@@ -1148,6 +1201,19 @@ func toHealthConfig(h *Healthcheck) *container.HealthConfig {
 
 func toVolume(v volume.Volume) Volume {
 	return Volume{Name: v.Name, Labels: copyLabels(v.Labels), Mountpoint: v.Mountpoint}
+}
+
+// toVolumeUsage maps one df volume entry to VolumeUsage. A nil UsageData (the
+// daemon could not compute it, or a driver that does not report size) becomes
+// -1, NOT 0: the caller must tell "unknown" from "a real 0 B", so -1 is passed
+// through rather than clamped. The daemon's own Size is not adjusted -- a real
+// 0 from a never-written local volume stays 0.
+func toVolumeUsage(v volume.Volume) VolumeUsage {
+	u := VolumeUsage{Name: v.Name, Size: -1}
+	if v.UsageData != nil {
+		u.Size = v.UsageData.Size
+	}
+	return u
 }
 
 func toStats(sr container.StatsResponse) Stats {
