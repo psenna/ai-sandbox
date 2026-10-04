@@ -615,19 +615,29 @@
 		return s.slice(colon + 1);
 	}
 
+	// formatAgo renders an ISO timestamp as a coarse relative bucket: "just
+	// now", "5 minutes ago", "3 hours ago", "2 days ago" (singular/plural
+	// correct). Returns '' for a falsy or unparseable timestamp, so each
+	// caller renders its own placeholder -- the agent image panel's "never
+	// checked", the Activity page's em dash.
+	function formatAgo(iso) {
+		if (!iso) return '';
+		var then = new Date(iso).getTime();
+		if (isNaN(then)) return '';
+		var secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+		if (secs < 60) return 'just now';
+		var mins = Math.round(secs / 60);
+		if (mins < 60) return mins + ' minute' + (mins === 1 ? '' : 's') + ' ago';
+		var hours = Math.round(mins / 60);
+		if (hours < 24) return hours + ' hour' + (hours === 1 ? '' : 's') + ' ago';
+		var days = Math.round(hours / 24);
+		return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+	}
+
 	// formatCheckedAgo renders an ISO timestamp as a coarse "checked ..." bucket.
 	function formatCheckedAgo(iso) {
-		if (!iso) return 'never checked';
-		var then = new Date(iso).getTime();
-		if (isNaN(then)) return 'never checked';
-		var secs = Math.max(0, Math.round((Date.now() - then) / 1000));
-		if (secs < 60) return 'checked just now';
-		var mins = Math.round(secs / 60);
-		if (mins < 60) return 'checked ' + mins + ' minute' + (mins === 1 ? '' : 's') + ' ago';
-		var hours = Math.round(mins / 60);
-		if (hours < 24) return 'checked ' + hours + ' hour' + (hours === 1 ? '' : 's') + ' ago';
-		var days = Math.round(hours / 24);
-		return 'checked ' + days + ' day' + (days === 1 ? '' : 's') + ' ago';
+		var ago = formatAgo(iso);
+		return ago ? 'checked ' + ago : 'never checked';
 	}
 
 	// normalizeImageTagOptions accepts the API's [{tag, present}] list (and
@@ -971,6 +981,112 @@
 		);
 	}
 
+	// --- activity page (issue #217) -----------------------------------------
+
+	// lastActiveAt picks the timestamp that answers "when did this agent last
+	// do anything", strongest signal first:
+	//
+	//   activity_at  when the harness last wrote its activity file -- the only
+	//                signal that advances while the agent actually works, since
+	//                the store record is never written mid-turn.
+	//   updated_at   when the store record last changed. A weaker "did work"
+	//                signal, used only when activity_at is absent: every store
+	//                write stamps it, including a rename or an in-place update,
+	//                and a running agent mid-turn is frozen at its last write.
+	//                Still the right fallback for a stopped agent (stopping
+	//                stamps it) and the best available for a harness that never
+	//                wired activity signaling.
+	//   created_at   the last resort; on a never-updated record it equals
+	//                updated_at anyway, so this is mostly a guard against a
+	//                malformed record.
+	//
+	// Returns '' when nothing usable is present, so the caller renders its own
+	// "unknown" placeholder.
+	function lastActiveAt(agent) {
+		var a = agent || {};
+		return a.activity_at || a.updated_at || a.created_at || '';
+	}
+
+	// formatLastActive renders an agent's last-activity instant for the
+	// Activity page, falling back to the em dash the file table already uses
+	// for a missing mod time.
+	function formatLastActive(agent) {
+		return formatAgo(lastActiveAt(agent)) || '—';
+	}
+
+	// renderDashboard renders the full-page Activity view -- every agent with
+	// what it is doing right now and when it last did anything. Pure markup:
+	// the signature takes `agents` only (no opts), because every cell is a
+	// pure function of the record -- there are no transient states like the
+	// image panel's busy/error/note.
+	//
+	// Rows carry no data-agent-id and no click wiring: the sidebar keeps the
+	// "open this agent" role. Rows render in API order; no client-side sort.
+	//
+	// The header+body shell renders even for an empty/null fleet, because
+	// app.js's presence guard (renderDashboardNow) depends on that shape being
+	// uniform to decide whether the page is mounted.
+	function renderDashboard(agents) {
+		var body;
+		if (!agents || agents.length === 0) {
+			// The sidebar's exact empty-state sentence, so the two never disagree.
+			body = '<p class="activity-page__empty">No agents yet — click “New Agent” to create one.</p>';
+		} else {
+			body = '<table class="activity-table">' +
+				'<thead><tr>' +
+					'<th>Agent</th><th>Status</th><th>Activity</th><th>Last active</th>' +
+					'<th>Harness</th><th>Backend</th><th>Repository</th>' +
+				'</tr></thead>' +
+				'<tbody>' + agents.map(renderActivityRow).join('') + '</tbody>' +
+			'</table>';
+		}
+		return (
+			'<div class="activity-page">' +
+				'<div class="activity-page__header"><strong class="activity-page__title">Activity</strong></div>' +
+				'<div class="activity-page__body">' + body + '</div>' +
+			'</div>'
+		);
+	}
+
+	// renderActivityRow renders one <tr> of the activity table.
+	function renderActivityRow(a) {
+		var label = statusLabel(a.status);
+		var name = a.name ? escapeHTML(a.name) : '(unnamed)';
+		// The dot is a colour-only signal in this table (no flex row lays it
+		// out), so the status text beside it is what actually carries the
+		// state -- the same "readable, not only coloured" rule the sidebar
+		// list follows.
+		var dot = '<span class="status-dot ' + label.cls +
+			(a.activity === 'working' ? ' status-dot--pulse' : '') +
+			'" title="' + escapeHTML(label.text) + '"></span>';
+
+		var activityText = '—';
+		var activityCls = 'activity-table__activity';
+		if (a.activity === 'working') {
+			activityText = 'Working…';
+			activityCls += ' activity-table__activity--working';
+		} else if (a.activity === 'waiting') {
+			activityText = 'Waiting';
+		}
+
+		// title carries the raw timestamp so hovering "5 minutes ago" resolves
+		// to a real instant.
+		var active = lastActiveAt(a);
+		var activeTitle = active ? ' title="' + escapeHTML(active) + '"' : '';
+
+		return (
+			'<tr class="activity-table__row">' +
+				'<td class="activity-table__name">' + name + '</td>' +
+				'<td class="activity-table__status">' + dot + escapeHTML(label.text) + '</td>' +
+				'<td class="' + activityCls + '">' + escapeHTML(activityText) + '</td>' +
+				'<td class="activity-table__last-active"' + activeTitle + '>' + escapeHTML(formatLastActive(a)) + '</td>' +
+				'<td>' + escapeHTML(harnessLabel(normalizeHarness(a.harness))) + '</td>' +
+				'<td>' + escapeHTML(backendLabel(a.backend)) + '</td>' +
+				'<td class="activity-table__repo">' + escapeHTML(a.repo || '—') + '</td>' +
+			'</tr>'
+		);
+	}
+
 	var Render = {
 		escapeHTML: escapeHTML,
 		statusLabel: statusLabel,
@@ -991,6 +1107,7 @@
 		newestDateTimeTag: newestDateTimeTag,
 		upgradeAvailable: upgradeAvailable,
 		imageTagOf: imageTagOf,
+		formatAgo: formatAgo,
 		formatCheckedAgo: formatCheckedAgo,
 		harnessImageTags: harnessImageTags,
 		imageTagsForHarness: imageTagsForHarness,
@@ -1004,6 +1121,9 @@
 		renderBreadcrumb: renderBreadcrumb,
 		renderFileTable: renderFileTable,
 		renderFileBrowser: renderFileBrowser,
+		lastActiveAt: lastActiveAt,
+		formatLastActive: formatLastActive,
+		renderDashboard: renderDashboard,
 	};
 
 	if (typeof module !== 'undefined' && module.exports) {

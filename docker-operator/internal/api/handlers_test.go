@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/filestore"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/wsbridge"
 )
 
 // fakeManager is a small in-memory AgentManager for handler tests. It is
@@ -1174,10 +1176,13 @@ func TestHandleGet_IncludesImageAndUpgradeAvailable(t *testing.T) {
 }
 
 func TestAgentView_JSONShapeIsFlat(t *testing.T) {
+	at := time.Unix(1700000000, 0)
 	b, err := json.Marshal(agentView{
 		Agent:            store.Agent{ID: "agt_a", Name: "a", Status: store.StatusRunning, Image: "ghcr.io/x/y:latest"},
 		UpgradeAvailable: true,
 		UpgradeReady:     true,
+		Activity:         "working",
+		ActivityAt:       &at,
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1186,10 +1191,103 @@ func TestAgentView_JSONShapeIsFlat(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"id", "name", "status", "image", "upgrade_available", "upgrade_ready"} {
+	for _, k := range []string{"id", "name", "status", "image", "upgrade_available", "upgrade_ready", "activity", "activity_at"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("marshalled agentView missing top-level key %q; got %s", k, b)
 		}
+	}
+
+	// The omission direction: with no activity signal, activity_at must be
+	// absent entirely -- not a bare time.Time's zero value ("0001-01-01...").
+	// The *time.Time is what makes that possible.
+	bare, err := json.Marshal(agentView{Agent: store.Agent{ID: "agt_b", Name: "b"}})
+	if err != nil {
+		t.Fatalf("marshal bare: %v", err)
+	}
+	var bareMap map[string]json.RawMessage
+	if err := json.Unmarshal(bare, &bareMap); err != nil {
+		t.Fatalf("unmarshal bare: %v", err)
+	}
+	if _, ok := bareMap["activity_at"]; ok {
+		t.Errorf("bare agentView marshalled activity_at, want it omitted: %s", bare)
+	}
+}
+
+// TestHandleList_ActivityAt is the regression test for issue #217's one
+// backend addition: buildAgentViews used to discard ReadActivity's timestamp,
+// so the Activity page could only say "Working" with no idea how long for.
+// It proves the timestamp reaches the wire, that a stopped agent gets neither
+// field, and that only running agents exec at all.
+//
+// The exec key is rebuilt from the exported wsbridge.ActivityLogPath literal
+// (exactly as wsbridge's own activity_test.go builds it) rather than from the
+// unexported activityReadCmd -- if that command's shape ever drifts, this test
+// fails loudly on the missing activity_at, which is the point.
+func TestHandleList_ActivityAt(t *testing.T) {
+	fake := dockerclienttest.New()
+	ctx := context.Background()
+	containerID, err := fake.ContainerCreate(ctx, dockerclient.ContainerSpec{Name: "agent", Image: "agent:dev"})
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	if err := fake.ContainerStart(ctx, containerID); err != nil {
+		t.Fatalf("ContainerStart: %v", err)
+	}
+	key := strings.Join([]string{"sh", "-c",
+		"if [ ! -f '" + wsbridge.ActivityLogPath + "' ]; then exit 0; fi; exec cat '" + wsbridge.ActivityLogPath + "' 2>&1"}, " ")
+	fake.ExecOutput[key] = []byte("working 1700000000\n")
+	fake.ExecExit[key] = 0
+
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_run", Name: "run", Status: store.StatusRunning, ContainerID: containerID})
+	mgr.seed(store.Agent{ID: "agt_stop", Name: "stop", Status: store.StatusStopped, ContainerID: containerID})
+	h := newTestHandler(mgr, fake)
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Agents []struct {
+			ID         string     `json:"id"`
+			Activity   string     `json:"activity"`
+			ActivityAt *time.Time `json:"activity_at"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding list response: %v", err)
+	}
+	if len(resp.Agents) != 2 {
+		t.Fatalf("agents = %d, want 2; body: %s", len(resp.Agents), rec.Body)
+	}
+	want := time.Unix(1700000000, 0)
+	for _, a := range resp.Agents {
+		switch a.ID {
+		case "agt_run":
+			if a.Activity != "working" {
+				t.Errorf("running agent activity = %q, want %q", a.Activity, "working")
+			}
+			if a.ActivityAt == nil || !a.ActivityAt.Equal(want) {
+				t.Errorf("running agent activity_at = %v, want %v; body: %s", a.ActivityAt, want, rec.Body)
+			}
+		case "agt_stop":
+			if a.Activity != "" || a.ActivityAt != nil {
+				t.Errorf("stopped agent = (%q, %v), want no activity signal", a.Activity, a.ActivityAt)
+			}
+		default:
+			t.Errorf("unexpected agent id %q", a.ID)
+		}
+	}
+
+	// Only the running agent may exec; the stopped one must not be read.
+	execs := 0
+	for _, s := range fake.ExecSpecs() {
+		if strings.Join(s.Cmd, " ") == key {
+			execs++
+		}
+	}
+	if execs != 1 {
+		t.Errorf("activity exec ran %d times, want 1 (only the running agent)", execs)
 	}
 }
 

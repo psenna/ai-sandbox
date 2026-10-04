@@ -1182,3 +1182,137 @@ test('renderCreateForm: the error line renders above the action bar', () => {
 	const html = Render.renderCreateForm();
 	assert.ok(html.indexOf('create-form__error') < html.indexOf('create-form__actions'));
 });
+
+// --- activity page (issue #217) -------------------------------------------
+
+test('formatAgo: empty for falsy/unparseable, else coarse buckets', () => {
+	assert.equal(Render.formatAgo(''), '');
+	assert.equal(Render.formatAgo(null), '');
+	assert.equal(Render.formatAgo(undefined), '');
+	assert.equal(Render.formatAgo('not-a-date'), '');
+	assert.equal(Render.formatAgo(new Date().toISOString()), 'just now');
+	assert.equal(Render.formatAgo(new Date(Date.now() - 5 * 60 * 1000).toISOString()), '5 minutes ago');
+	assert.equal(Render.formatAgo(new Date(Date.now() - 60 * 1000).toISOString()), '1 minute ago');
+	assert.equal(Render.formatAgo(new Date(Date.now() - 3 * 3600 * 1000).toISOString()), '3 hours ago');
+	assert.equal(Render.formatAgo(new Date(Date.now() - 3600 * 1000).toISOString()), '1 hour ago');
+	assert.equal(Render.formatAgo(new Date(Date.now() - 2 * 86400 * 1000).toISOString()), '2 days ago');
+	assert.equal(Render.formatAgo(new Date(Date.now() - 86400 * 1000).toISOString()), '1 day ago');
+});
+
+test('lastActiveAt: activity_at beats updated_at beats created_at; empty record is blank', () => {
+	assert.equal(Render.lastActiveAt({ activity_at: 'A', updated_at: 'U', created_at: 'C' }), 'A');
+	assert.equal(Render.lastActiveAt({ updated_at: 'U', created_at: 'C' }), 'U');
+	assert.equal(Render.lastActiveAt({ created_at: 'C' }), 'C');
+	assert.equal(Render.lastActiveAt({}), '');
+	assert.equal(Render.lastActiveAt(null), '');
+});
+
+test('formatLastActive: chain then the em dash', () => {
+	const iso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+	assert.equal(Render.formatLastActive({ activity_at: iso }), '5 minutes ago');
+	assert.equal(Render.formatLastActive({ updated_at: iso }), '5 minutes ago');
+	assert.equal(Render.formatLastActive({ created_at: iso }), '5 minutes ago');
+	assert.equal(Render.formatLastActive({}), '—');
+});
+
+test('renderDashboard: empty/null fleet renders the sidebar empty-state sentence inside the header shell', () => {
+	for (const input of [[], null, undefined]) {
+		const html = Render.renderDashboard(input);
+		assert.match(html, /class="activity-page"/);
+		assert.match(html, /activity-page__header/);
+		assert.match(html, /activity-page__title">Activity</);
+		assert.match(html, /activity-page__empty">No agents yet — click “New Agent” to create one\.</);
+	}
+});
+
+test('renderDashboard: one row per agent, in API order', () => {
+	const html = Render.renderDashboard([
+		{ id: 'agt_a', name: 'Alpha', status: 'running' },
+		{ id: 'agt_b', name: 'Bravo', status: 'stopped' },
+	]);
+	const rows = html.match(/<tr class="activity-table__row">/g) || [];
+	assert.equal(rows.length, 2);
+	assert.ok(html.indexOf('Alpha') < html.indexOf('Bravo'));
+	// The seven column headings, in order.
+	const th = ['Agent', 'Status', 'Activity', 'Last active', 'Harness', 'Backend', 'Repository'];
+	th.forEach((h, i) => {
+		const at = html.indexOf('<th>' + h + '</th>');
+		assert.ok(at >= 0, `missing heading ${h}`);
+		if (i > 0) assert.ok(html.indexOf('<th>' + th[i - 1] + '</th>') < at, `${th[i - 1]} must precede ${h}`);
+	});
+});
+
+test('renderDashboard: a full row carries name, readable status, harness, backend and repo', () => {
+	const html = Render.renderDashboard([{
+		id: 'agt_a', name: 'Alpha', status: 'running', activity: 'working',
+		harness: 'opencode', backend: 'anthropic', repo: 'acme/widget.git',
+	}]);
+	assert.match(html, /activity-table__name">Alpha</);
+	assert.match(html, /activity-table__status"><span class="status-dot status-running status-dot--pulse" title="Running"><\/span>Running</);
+	// normalizeHarness is load-bearing: an absent harness must read claude-code.
+	assert.match(html, /<td>opencode<\/td>/);
+	assert.match(html, /<td>Anthropic<\/td>/);
+	assert.match(html, /activity-table__repo">acme\/widget\.git</);
+});
+
+test('renderDashboard: harness defaults to claude-code on an old record', () => {
+	const html = Render.renderDashboard([{ id: 'agt_a', name: 'Alpha', status: 'running' }]);
+	assert.match(html, /<td>Claude Code<\/td>/);
+});
+
+test('renderDashboard: working pulses and says Working…, waiting says Waiting, no signal renders an em dash', () => {
+	const working = Render.renderDashboard([{ id: 'a', name: 'A', status: 'running', activity: 'working' }]);
+	assert.match(working, /status-dot--pulse/);
+	assert.match(working, /activity-table__activity--working">Working…</);
+
+	const waiting = Render.renderDashboard([{ id: 'b', name: 'B', status: 'running', activity: 'waiting' }]);
+	assert.doesNotMatch(waiting, /status-dot--pulse/);
+	assert.match(waiting, /activity-table__activity">Waiting</);
+
+	const none = Render.renderDashboard([{ id: 'c', name: 'C', status: 'stopped' }]);
+	assert.doesNotMatch(none, /status-dot--pulse/);
+	assert.match(none, /activity-table__activity">—</);
+});
+
+test('renderDashboard: last active uses activity_at and carries the raw ISO as a title', () => {
+	const iso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+	const html = Render.renderDashboard([{
+		id: 'a', name: 'A', status: 'running', activity: 'working',
+		activity_at: iso, updated_at: new Date(Date.now() - 3600 * 1000).toISOString(),
+	}]);
+	// The raw ISO resolves the hover, so it must appear verbatim (indexOf, not
+	// a regex: an ISO string contains '.' and ':').
+	assert.ok(html.indexOf(iso) >= 0, 'the raw activity_at must appear as the title');
+	assert.match(html, /activity-table__last-active" title="/);
+	assert.match(html, /5 minutes ago</);
+});
+
+test('renderDashboard: last active degrades to updated_at when activity_at is absent', () => {
+	const iso = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
+	const html = Render.renderDashboard([{ id: 'a', name: 'A', status: 'stopped', updated_at: iso }]);
+	assert.ok(html.indexOf(iso) >= 0);
+	assert.match(html, /3 hours ago</);
+});
+
+test('renderDashboard: no timestamp renders the em dash with no title', () => {
+	const html = Render.renderDashboard([{ id: 'a', name: 'A', status: 'stopped' }]);
+	assert.match(html, /activity-table__last-active">—</);
+	assert.doesNotMatch(html, /activity-table__last-active" title/);
+});
+
+test('renderDashboard: a hostile name/repo is escaped, never rendered raw', () => {
+	const html = Render.renderDashboard([{
+		id: 'a', name: '<script>evil()</script>', status: 'running', repo: '"><img src=x>',
+	}]);
+	assert.doesNotMatch(html, /<script>evil/);
+	assert.match(html, /&lt;script&gt;evil\(\)&lt;\/script&gt;/);
+	assert.doesNotMatch(html, /<img src=x>/);
+});
+
+test('renderDashboard: an unrecognised status degrades to visible text; missing name/repo get placeholders', () => {
+	const html = Render.renderDashboard([{ id: 'a', status: 'bogus' }]);
+	assert.match(html, /status-unknown/);
+	assert.match(html, /bogus/); // statusLabel's visible fallback text
+	assert.match(html, /activity-table__name">\(unnamed\)</);
+	assert.match(html, /activity-table__repo">—</);
+});

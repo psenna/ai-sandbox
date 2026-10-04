@@ -310,6 +310,7 @@ html, body {
 
 @media (prefers-reduced-motion: reduce) {
 	.agent-item__activity--working,
+	.activity-table__activity--working,
 	.agent-item__activity-dot { animation: none; }
 }
 
@@ -914,6 +915,10 @@ html, body {
 	margin-bottom: var(--space-5);
 }
 
+.activity-btn {
+	margin-bottom: var(--space-5);
+}
+
 .file-browser {
 	display: flex;
 	flex-direction: column;
@@ -1000,6 +1005,86 @@ html, body {
 	border-radius: 6px;
 	padding: 8px 10px;
 	font-size: 13px;
+}
+
+/* --- activity page (issue #217) ----------------------------------------- */
+
+.activity-page {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+	box-sizing: border-box;
+}
+
+.activity-page__header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	/* The 48px left padding clears .sidebar-toggle, absolutely positioned
+	   over .main-panel's top-left corner -- this is the row that toggle sits
+	   to the left of. Same precedent as .detail__header. */
+	padding: 10px 12px 10px 48px;
+	border-bottom: 1px solid var(--border);
+	flex: 0 0 auto;
+}
+
+.activity-page__title {
+	font-size: var(--font-md);
+	font-weight: 600;
+}
+
+.activity-page__body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	padding: 12px 16px 16px;
+}
+
+.activity-page__empty {
+	color: var(--fg-dim);
+	font-style: italic;
+}
+
+.activity-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+.activity-table th {
+	text-align: left;
+	color: var(--fg-dim);
+	font-weight: 600;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+	white-space: nowrap;
+}
+
+.activity-table td {
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+	vertical-align: top;
+}
+
+.activity-table__name { font-weight: 600; }
+.activity-table__status { white-space: nowrap; }
+.activity-table__last-active { white-space: nowrap; }
+.activity-table__repo { color: var(--fg-dim); }
+
+.activity-table__activity--working {
+	color: var(--status-running);
+	animation: agent-activity-breathe 1.8s ease-in-out infinite;
+}
+
+/* .status-dot is styled for flex rows; a plain span inside a <td> is inline
+   and would ignore width/height and collapse. inline-block restores its box
+   (the pulse ring keys off position:relative, which the base rule already
+   sets). */
+.activity-table__status .status-dot {
+	display: inline-block;
+	vertical-align: middle;
+	margin-right: 6px;
 }
 
 /* --- detail header options menu --- */

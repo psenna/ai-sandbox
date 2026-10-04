@@ -41,6 +41,7 @@
 	var capacityEl = document.getElementById('agent-capacity');
 	var newAgentBtn = document.getElementById('new-agent-btn');
 	var filesBtn = document.getElementById('files-btn');
+	var activityBtn = document.getElementById('activity-btn');
 	var settingsBtn = document.getElementById('settings-btn');
 	var mainArea = document.getElementById('main-area');
 	var sidebarEl = document.getElementById('sidebar');
@@ -106,6 +107,24 @@
 			autoMode: data.default_auto_mode || 'on',
 		};
 		renderSidebar();
+		renderDashboardNow();
+	}
+
+	// renderDashboardNow repaints the Activity page when -- and only when -- it
+	// is the view currently mounted in the main area. It exists so every list
+	// refresh (initial load, poll, create, delete, update) keeps the page's
+	// "last active" times fresh without the guard leaking into refreshAgents:
+	// the state feed there stays unconditional, only this repaint is guarded.
+	function renderDashboardNow() {
+		if (!mainArea.querySelector('.activity-page')) return;
+		var body = mainArea.querySelector('.activity-page__body');
+		var scrollTop = body ? body.scrollTop : 0;
+		// The replacement is wholesale (innerHTML), so carry the scroll
+		// position across it -- otherwise a long fleet list jumps to the top
+		// on every poll.
+		mainArea.innerHTML = window.Render.renderDashboard(state.agents);
+		var next = mainArea.querySelector('.activity-page__body');
+		if (next) next.scrollTop = scrollTop;
 	}
 
 	function selectAgent(id) {
@@ -820,6 +839,27 @@
 			if (typeof window.renderFileBrowser === 'function') {
 				window.renderFileBrowser(mainArea);
 			}
+		});
+	}
+
+	// The Activity page follows the issue's pattern -- pure markup in
+	// render.js, claim/release in app.js -- with no dashboard.js middle file:
+	// the page has no fetch and no listeners, and the mounted-check
+	// (renderDashboardNow) has to live here anyway, since app.js owns mainArea
+	// and state.agents.
+	if (activityBtn) {
+		activityBtn.addEventListener('click', function () {
+			// Exactly the Files teardown: tearing the slot down kills the
+			// terminal *viewer* (xterm + its WebSocket, now on a detached node);
+			// the agent's own session and container are untouched, and clicking
+			// the agent again reattaches a fresh viewer. Render directly here,
+			// NOT via renderDashboardNow -- the page isn't mounted yet at click
+			// time, so the guard would bail. render.js loads before app.js by
+			// construction, so no typeof guard is needed.
+			if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
+			state.selectedID = null;
+			renderSidebar();
+			mainArea.innerHTML = window.Render.renderDashboard(state.agents);
 		});
 	}
 

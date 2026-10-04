@@ -378,6 +378,15 @@ type agentView struct {
 	// even slow down) the rest of the list. Deliberately harness-agnostic in
 	// name and vocabulary; see wsbridge.ActivityLogPath's doc comment.
 	Activity string `json:"activity,omitempty"`
+	// ActivityAt is when the harness wrote Activity -- the timestamp
+	// ReadActivity returns alongside it, which buildAgentViews used to
+	// discard. nil exactly when Activity is "": not running, no signaling
+	// wired, or the read failed. A POINTER rather than a bare time.Time
+	// because encoding/json's omitempty does not apply to structs -- a bare
+	// time.Time would serialise the zero value ("0001-01-01T00:00:00Z") on
+	// every agent with no signal, forcing every client to know that sentinel.
+	// Same shape as agentImageHarness.CheckedAt.
+	ActivityAt *time.Time `json:"activity_at,omitempty"`
 }
 
 // activityReadTimeout bounds each agent's own ReadActivity call. Independent
@@ -428,11 +437,18 @@ func (h *Handler) buildAgentViews(ctx context.Context, agents []store.Agent) []a
 			defer wg.Done()
 			actCtx, cancel := context.WithTimeout(ctx, activityReadTimeout)
 			defer cancel()
-			act, _, err := wsbridge.ReadActivity(actCtx, h.docker, containerID)
+			act, at, err := wsbridge.ReadActivity(actCtx, h.docker, containerID)
 			if err != nil {
 				return // best-effort; leave Activity "" like the tag lookup above
 			}
 			views[i].Activity = string(act)
+			// at is a fresh local per goroutine invocation (&at aliases nothing
+			// shared; the suite runs under -race). The IsZero guard keeps
+			// ReadActivity's "unknown" reading ("", zero time, nil) off the wire
+			// as a bogus year-1 activity_at.
+			if !at.IsZero() {
+				views[i].ActivityAt = &at
+			}
 		}(i, a.ContainerID)
 	}
 	wg.Wait()
