@@ -328,3 +328,190 @@ func TestStartDependaproxySync_StopIsClean(t *testing.T) {
 		t.Errorf("syncer ran %d times before its first tick, want 0", got)
 	}
 }
+
+// --- periodic reconcile ---------------------------------------------------
+
+// fakeReconciler drives startPeriodicReconcile in tests: it counts calls, can
+// return an error, and can park a call on a channel so an overlapping tick can
+// be observed deterministically.
+type fakeReconciler struct {
+	mu      sync.Mutex
+	calls   int
+	rep     agent.Report
+	err     error
+	notify  chan struct{}
+	block   chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (r *fakeReconciler) Reconcile(ctx context.Context) (agent.Report, error) {
+	r.mu.Lock()
+	r.calls++
+	rep := r.rep
+	err := r.err
+	r.mu.Unlock()
+
+	if r.notify != nil {
+		select {
+		case r.notify <- struct{}{}:
+		default:
+		}
+	}
+	if r.entered != nil {
+		r.once.Do(func() { close(r.entered) })
+	}
+	if r.block != nil {
+		select {
+		case <-r.block:
+		case <-ctx.Done():
+		}
+	}
+	return rep, err
+}
+
+func (r *fakeReconciler) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+// TestStartPeriodicReconcile_WaitsForFirstTick proves there is NO immediate
+// pass: the startup pass already ran, so the ticker must wait a full interval
+// before its first run (unlike startAgentImageRefresher, which polls once
+// immediately).
+func TestStartPeriodicReconcile_WaitsForFirstTick(t *testing.T) {
+	log, _ := capturingLogger()
+	r := &fakeReconciler{notify: make(chan struct{}, 8)}
+
+	stop := startPeriodicReconcile(r, 50*time.Millisecond, time.Minute, log)
+
+	select {
+	case <-r.notify:
+		stop()
+		t.Fatal("startPeriodicReconcile ran immediately; want it to wait for the first tick")
+	case <-time.After(15 * time.Millisecond):
+	}
+	stop()
+	if got := r.count(); got != 0 {
+		t.Errorf("reconciler ran %d times before its first tick, want 0", got)
+	}
+}
+
+// TestStartPeriodicReconcile_TicksAndStops proves repeated ticks fire and the
+// stop function is clean: no further runs after it returns.
+func TestStartPeriodicReconcile_TicksAndStops(t *testing.T) {
+	log, _ := capturingLogger()
+	r := &fakeReconciler{notify: make(chan struct{}, 8)}
+
+	stop := startPeriodicReconcile(r, 20*time.Millisecond, time.Minute, log)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-r.notify:
+		case <-time.After(2 * time.Second):
+			stop()
+			t.Fatalf("timed out waiting for tick %d; count=%d", i+1, r.count())
+		}
+	}
+	stop()
+
+	stable := r.count()
+	if stable < 2 {
+		t.Fatalf("reconciler ran %d times, want >= 2", stable)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := r.count(); got != stable {
+		t.Errorf("reconciler ran %d more times after stop()", got-stable)
+	}
+}
+
+// TestStartPeriodicReconcile_OverlapSkipped proves a tick that fires while a
+// pass is still running never becomes a second pass: the call count stays at 1
+// across several interval lengths while the first pass is parked.
+//
+// It asserts the OBSERVABLE, deliberately: the guarantee comes from the pass
+// running inline (see startPeriodicReconcile's comment), so this test passes
+// even if the atomic overlap guard is removed. That is a property of the
+// design, not a hole in the test -- but do not mistake it for proof that the
+// guard does the work.
+func TestStartPeriodicReconcile_OverlapSkipped(t *testing.T) {
+	log, _ := capturingLogger()
+	block := make(chan struct{})
+	r := &fakeReconciler{entered: make(chan struct{}), block: block, notify: make(chan struct{}, 8)}
+
+	stop := startPeriodicReconcile(r, 20*time.Millisecond, time.Minute, log)
+
+	select {
+	case <-r.entered:
+	case <-time.After(2 * time.Second):
+		stop()
+		t.Fatal("timed out waiting for the first pass to start")
+	}
+
+	// Several intervals pass with the first run still parked: every tick must
+	// have been skipped.
+	time.Sleep(100 * time.Millisecond)
+	if got := r.count(); got != 1 {
+		close(block)
+		stop()
+		t.Fatalf("reconciler ran %d times while the first pass was blocked, want 1 (overlapping ticks must be skipped)", got)
+	}
+
+	// Unblock: the next tick runs again, proving the guard cleared.
+	close(block)
+	select {
+	case <-r.notify:
+	case <-time.After(2 * time.Second):
+	}
+	// Give it a couple of intervals to run again.
+	deadline := time.Now().Add(2 * time.Second)
+	for r.count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+	if got := r.count(); got < 2 {
+		t.Errorf("reconciler ran %d times after the blocked pass finished, want >= 2", got)
+	}
+}
+
+// TestStartPeriodicReconcile_ErrorDoesNotStopLoop proves an error from one pass
+// is logged and the loop keeps ticking.
+func TestStartPeriodicReconcile_ErrorDoesNotStopLoop(t *testing.T) {
+	log, _ := capturingLogger()
+	r := &fakeReconciler{notify: make(chan struct{}, 8), err: errors.New("boom: reconcile")}
+
+	stop := startPeriodicReconcile(r, 20*time.Millisecond, time.Minute, log)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-r.notify:
+		case <-time.After(2 * time.Second):
+			stop()
+			t.Fatalf("timed out waiting for tick %d after an error; count=%d", i+1, r.count())
+		}
+	}
+	stop()
+	if got := r.count(); got < 2 {
+		t.Errorf("reconciler ran %d times, want >= 2 (an error must not stop later ticks)", got)
+	}
+}
+
+// TestStartPeriodicReconcile_StopIsCleanWhileIdle proves stop returns promptly
+// when the interval has not yet elapsed.
+func TestStartPeriodicReconcile_StopIsCleanWhileIdle(t *testing.T) {
+	log, _ := capturingLogger()
+	r := &fakeReconciler{notify: make(chan struct{}, 1)}
+
+	stop := startPeriodicReconcile(r, time.Hour, time.Minute, log)
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop() did not return promptly")
+	}
+	if got := r.count(); got != 0 {
+		t.Errorf("reconciler ran %d times before its first tick, want 0", got)
+	}
+}

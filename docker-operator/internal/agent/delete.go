@@ -33,7 +33,22 @@ import (
 // as create-failure rollback and as the reconcile pass's cleanup, and it is why
 // nothing here re-implements idempotency checks of its own: an extra inspect
 // before each remove would add a race, not remove one.
+//
+// It refuses to start if another operation already holds this agent in this
+// process (a concurrent Update/Delete, or the periodic reconcile pass tearing
+// the record down), returning ErrOperationInFlight (a 409); see
+// Manager.inFlight.
 func (m *Manager) Delete(ctx context.Context, id string) error {
+	// Refuse to start if another operation already holds this agent in this
+	// process -- a racing Update/Delete, or the periodic reconcile pass
+	// tearing the very record down. tryBegin is atomic, so there is no
+	// check-then-act window. Note the idempotent "already gone" no-op below
+	// still runs: only a genuinely concurrent operation is refused.
+	if !m.inFlight.tryBegin(id) {
+		return fmt.Errorf("deleting agent %q: %w", id, ErrOperationInFlight)
+	}
+	defer m.inFlight.release(id)
+
 	a, err := m.store.Get(ctx, id)
 	if err != nil {
 		if store.IsNotFound(err) {
