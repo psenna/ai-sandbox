@@ -36,6 +36,13 @@ type Report struct {
 	// or the Docker daemon restarted without the operator's own containers
 	// carrying a restart policy) and have been started back up.
 	Woken []string
+	// Skipped lists the IDs of records that looked stuck -- or, for a
+	// StatusRunning record, needed waking -- but whose operation was in flight
+	// in this process at the moment the pass reached them, and that were
+	// therefore left completely alone. On a ticker these are healthy
+	// create/update/delete/wake operations, not stuck records: the startup
+	// pass never skips anything, because at startup nothing is in flight.
+	Skipped []string
 }
 
 // Reconcile is the startup pass that squares Docker's actual state with the
@@ -54,6 +61,19 @@ type Report struct {
 //     but this package writes those states, and nothing but a crash leaves one
 //     behind across a restart. Its resources are half-built or half-removed by
 //     definition, and its slot is either leaked or already released.
+//
+//     That first framing -- "nothing but a crash leaves one behind" -- is only
+//     true at STARTUP. Once cmd/docker-operator runs this on a ticker, a record
+//     in updating, creating or deleting is exactly what a HEALTHY in-flight
+//     operation looks like too, and the two cannot be told apart from the store
+//     alone. The missing half of the question is answered by Manager.inFlight, a
+//     process-local registry of agent IDs with an operation in flight IN THIS
+//     PROCESS: a record a crash left stuck has nothing in flight, precisely
+//     because the process that would have been running its operation is gone.
+//     So every branch below that would mark or tear a record down is taken only
+//     when the record's ID is NOT in that registry; when it is, the record is
+//     skipped and reported in Report.Skipped. At startup nothing is ever in
+//     flight, so this changes startup's behaviour not at all.
 //
 //   - A record stuck in updating (a crash mid in-place update) is marked
 //     error, NOT torn down: the agent container may be gone but the three
@@ -109,71 +129,155 @@ func (m *Manager) Reconcile(ctx context.Context) (Report, error) {
 	if err != nil {
 		return Report{}, fmt.Errorf("reconciling: %w", err)
 	}
-	rep.Unmanaged = unmanaged
-	for _, u := range unmanaged {
-		m.log.WarnContext(ctx, "unmanaged docker resource left untouched: it carries the docker-operator managed label but no agent record claims it; remove it by hand if it really is an orphan",
-			"kind", u.Kind, "name", u.Name, "agent_id", u.AgentID)
-	}
+	rep.Unmanaged = m.reportUnmanaged(ctx, unmanaged)
 
 	var errs []error
 	for _, a := range agents {
-		// A stuck in-place update: the container may be half-gone but the
-		// volumes are intact. Mark it error and move on -- never teardown.
-		if a.Status == store.StatusUpdating {
-			m.log.InfoContext(ctx, "marking an agent whose record is stuck mid-update as error (its volumes are kept; retry the update)",
-				"agent_id", a.ID)
-			if _, err := m.store.Update(ctx, a.ID, func(ag *store.Agent) error {
-				ag.Status = store.StatusError
-				ag.ErrorMessage = "update interrupted; retry the update"
-				return nil
-			}); err != nil {
-				errs = append(errs, fmt.Errorf("reconciling agent %q: marking a stuck update as error: %w", a.ID, err))
-			}
+		if !mayBeStuck(a.Status) {
 			continue
 		}
-		if a.Status != store.StatusCreating && a.Status != store.StatusDeleting {
+		// A record whose operation is in flight in THIS process is not stuck,
+		// however it looks: it is a healthy create/update/delete that will
+		// finish on its own. Skip it -- do not mark it, do not tear it down.
+		if m.inFlight.busy(a.ID) {
+			m.noteSkipped(ctx, &rep, a, "an operation is already in flight in this process")
 			continue
 		}
-		m.log.InfoContext(ctx, "tearing down an agent whose record is stuck mid-operation (proof of a crash during create or delete)",
-			"agent_id", a.ID, "status", a.Status)
-		if err := m.teardown(ctx, a); err != nil {
-			errs = append(errs, fmt.Errorf("reconciling agent %q: %w", a.ID, err))
+		// tryBegin is the authoritative gate: it closes the race the busy()
+		// check above leaves open, so an operation that started in between
+		// still wins and this pass skips rather than clobbering it. Holding
+		// the reference for the teardown/mark below also stops a user-
+		// initiated Update/Delete from interleaving with it.
+		if !m.inFlight.tryBegin(a.ID) {
+			m.noteSkipped(ctx, &rep, a, "an operation is already in flight in this process")
 			continue
 		}
-		if err := m.store.Delete(ctx, a.ID); err != nil {
-			errs = append(errs, fmt.Errorf("reconciling agent %q: deleting its record: %w", a.ID, err))
-			continue
-		}
-		rep.CleanedUp = append(rep.CleanedUp, a.ID)
+		m.cleanupStuckRecord(ctx, a, &rep, &errs)
+		m.inFlight.release(a.ID)
 	}
 
-	woken, wakeErrs := m.wakeStoppedAgents(ctx, agents)
+	woken, wakeSkipped, wakeErrs := m.wakeStoppedAgents(ctx, agents)
 	rep.Woken = woken
+	rep.Skipped = append(rep.Skipped, wakeSkipped...)
 	errs = append(errs, wakeErrs...)
 
 	m.log.InfoContext(ctx, "reconcile pass complete",
-		"records", rep.Records, "cleaned_up", len(rep.CleanedUp), "unmanaged", len(rep.Unmanaged), "woken", len(rep.Woken))
+		"records", rep.Records, "cleaned_up", len(rep.CleanedUp), "unmanaged", len(rep.Unmanaged),
+		"woken", len(rep.Woken), "skipped", len(rep.Skipped))
 	return rep, errors.Join(errs...)
+}
+
+// mayBeStuck reports whether a record in status s is one the pass would act
+// on: the three states that, at startup, are proof of a crash, and that on a
+// ticker must be checked against the in-flight registry first.
+func mayBeStuck(s store.Status) bool {
+	return s == store.StatusUpdating || s == store.StatusCreating || s == store.StatusDeleting
+}
+
+// noteSkipped records, in the report and the log, that a is mid-operation in
+// this process and was therefore left alone.
+func (m *Manager) noteSkipped(ctx context.Context, rep *Report, a store.Agent, reason string) {
+	rep.Skipped = append(rep.Skipped, a.ID)
+	m.log.InfoContext(ctx, "skipping an agent: it is not stuck, its operation is healthy and running now",
+		"agent_id", a.ID, "status", a.Status, "reason", reason)
+}
+
+// cleanupStuckRecord handles one record the pass believes is stuck, having
+// already reserved its ID in the in-flight registry (so no user-initiated
+// operation can interleave): a stuck in-place update is marked error -- its
+// volumes are kept, never torn down -- and a creating/deleting record is torn
+// down and removed. Failures are collected rather than aborting the pass, so
+// one unrecoverable agent cannot stop the others from being cleaned up.
+func (m *Manager) cleanupStuckRecord(ctx context.Context, a store.Agent, rep *Report, errs *[]error) {
+	// A stuck in-place update: the container may be half-gone but the
+	// volumes are intact. Mark it error and move on -- never teardown.
+	if a.Status == store.StatusUpdating {
+		m.log.InfoContext(ctx, "marking an agent whose record is stuck mid-update as error (its volumes are kept; retry the update)",
+			"agent_id", a.ID)
+		if _, err := m.store.Update(ctx, a.ID, func(ag *store.Agent) error {
+			ag.Status = store.StatusError
+			ag.ErrorMessage = "update interrupted; retry the update"
+			return nil
+		}); err != nil {
+			*errs = append(*errs, fmt.Errorf("reconciling agent %q: marking a stuck update as error: %w", a.ID, err))
+		}
+		return
+	}
+	m.log.InfoContext(ctx, "tearing down an agent whose record is stuck mid-operation (proof of a crash during create or delete)",
+		"agent_id", a.ID, "status", a.Status)
+	if err := m.teardown(ctx, a); err != nil {
+		*errs = append(*errs, fmt.Errorf("reconciling agent %q: %w", a.ID, err))
+		return
+	}
+	if err := m.store.Delete(ctx, a.ID); err != nil {
+		*errs = append(*errs, fmt.Errorf("reconciling agent %q: deleting its record: %w", a.ID, err))
+		return
+	}
+	rep.CleanedUp = append(rep.CleanedUp, a.ID)
+}
+
+// reportUnmanaged filters findUnmanaged's result against the in-flight
+// registry and logs whatever survives, warning only the FIRST time a resource
+// name is seen in this process and dropping to Debug on every later sighting.
+//
+// The filter: a resource carrying an agent-id label is NOT an orphan while
+// that agent has an operation in flight in this process. findUnmanaged keys on
+// the store listing taken at the top of this pass, and Create registers in the
+// in-flight registry BEFORE it inserts the record, so without this a mid-create
+// agent whose record the pass's listing predates could have its very first
+// resources reported as unmanaged.
+//
+// The warn-once: the Warn below is right once per boot, but on a 15-minute
+// ticker a single persistent orphan would emit it ~96 times a day and bury
+// every other warning. Report.Unmanaged stays COMPLETE either way -- this is a
+// logging change only, never a filtering of the report from it.
+func (m *Manager) reportUnmanaged(ctx context.Context, resources []Unmanaged) []Unmanaged {
+	out := make([]Unmanaged, 0, len(resources))
+	for _, u := range resources {
+		if u.AgentID != "" && m.inFlight.busy(u.AgentID) {
+			continue
+		}
+		out = append(out, u)
+		key := u.Kind + "\x00" + u.Name
+		if _, loaded := m.warnedUnmanaged.LoadOrStore(key, struct{}{}); loaded {
+			m.log.DebugContext(ctx, "unmanaged docker resource still left untouched", "kind", u.Kind, "name", u.Name, "agent_id", u.AgentID)
+			continue
+		}
+		m.log.WarnContext(ctx, "unmanaged docker resource left untouched: it carries the docker-operator managed label but no agent record claims it; remove it by hand if it really is an orphan",
+			"kind", u.Kind, "name", u.Name, "agent_id", u.AgentID)
+	}
+	return out
 }
 
 // wakeStoppedAgents walks every StatusRunning record and starts back up
 // whichever of its DinD sidecar and agent container is not actually running
 // on the daemon -- see Reconcile's doc comment for why StatusRunning is the
-// one status this pass acts on. It returns the IDs it successfully woke and
-// collects (rather than aborting on) a per-agent failure, so one agent whose
-// resources are unrecoverable does not stop the pass from waking the rest.
+// one status this pass acts on. It returns the IDs it successfully woke, the
+// IDs it skipped because an operation for them was already in flight in this
+// process (a concurrent Update/Delete, say), and collects (rather than
+// aborting on) a per-agent failure, so one agent whose resources are
+// unrecoverable does not stop the pass from waking the rest.
+//
+// Each wake reserves its agent ID in the in-flight registry first: it is a
+// real operation on the record (it even moves it through StatusUpdating -- see
+// wakeAgent's shield), so a concurrent reconcile pass must skip it rather than
+// mistake its temporary StatusUpdating for a crashed update.
 //
 // A woken agent that failed is left StatusError (see wakeAgent), never
 // silently re-marked StatusRunning against a reality that does not back it
 // up.
-func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) ([]string, []error) {
-	var woken []string
-	var errs []error
+func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) (woken, skipped []string, errs []error) {
 	for _, a := range agents {
 		if a.Status != store.StatusRunning {
 			continue
 		}
+		if !m.inFlight.tryBegin(a.ID) {
+			skipped = append(skipped, a.ID)
+			m.log.InfoContext(ctx, "skipping a running agent whose operation is already in flight in this process", "agent_id", a.ID)
+			continue
+		}
 		awoke, err := m.wakeAgent(ctx, a)
+		m.inFlight.release(a.ID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("waking agent %q: %w", a.ID, err))
 			continue
@@ -182,7 +286,7 @@ func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) (
 			woken = append(woken, a.ID)
 		}
 	}
-	return woken, errs
+	return woken, skipped, errs
 }
 
 // wakeAgent checks agent a's DinD sidecar and agent container against the
@@ -219,6 +323,14 @@ func (m *Manager) wakeStoppedAgents(ctx context.Context, agents []store.Agent) (
 // config and DinD-cache volumes are always left intact, and the user can
 // retry via Update once the underlying cause (a genuinely missing sidecar or
 // container, most likely) is fixed.
+//
+// Because the recreate removes a container under a record that still says
+// StatusRunning, the record is moved to StatusUpdating for the duration (the
+// "shield" described at its call site below) so the status-sync events
+// goroutine treats the old container's own die/stop as expected. The caller
+// (wakeStoppedAgents) holds this agent's ID in the in-flight registry around
+// this call, so Reconcile's StatusUpdating -> error branch never mistakes a
+// healthy wake in progress for a crashed update.
 func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 	// Re-assert the dependaproxy dinernet attachment before anything else: if
 	// the shared dependaproxy container was recreated while this agent's
@@ -263,6 +375,39 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 		m.markWakeError(ctx, a.ID, err)
 		return false, err
 	}
+
+	// SHIELD the record before removing the container.
+	//
+	// removeAgentContainer tears the container down while the record would
+	// otherwise still say StatusRunning, and the status-sync events goroutine
+	// (cmd/docker-operator's startStatusSync -> handleContainerEvent ->
+	// MarkUnexpectedExit) watches for exactly that container leaving the
+	// running state and would flip the record to stopped/error. At startup
+	// this never bit, because startStatusSync is started AFTER the startup
+	// reconcile pass; on a ticker it is already running, so a successfully
+	// woken agent would end up in error. Update closes the same window the
+	// same way: StatusUpdating is not StatusRunning, so MarkUnexpectedExit's
+	// "not running" guard no-ops. markWakeUpdating re-checks the status inside
+	// the store transaction and stands this wake down silently if an Update or
+	// Delete won the race.
+	//
+	// Deliberate trade: a process crash mid-wake now leaves the record
+	// StatusUpdating, which the next reconcile pass turns into StatusError
+	// (volumes intact, manual retry), whereas before the next boot would have
+	// re-woken it automatically. That is the price of making the wake safe to
+	// run on a ticker at all.
+	ok, err := m.markWakeUpdating(ctx, a.ID)
+	if err != nil {
+		err = fmt.Errorf("marking the agent updating before recreating its container: %w", err)
+		m.markWakeError(ctx, a.ID, err)
+		return false, err
+	}
+	if !ok {
+		m.log.InfoContext(ctx, "the agent is no longer running; standing down from the wake-up and leaving the record to whichever operation won",
+			"agent_id", a.ID)
+		return false, nil
+	}
+
 	if err := m.removeAgentContainer(ctx, a); err != nil {
 		err = fmt.Errorf("removing the old agent container: %w", err)
 		m.markWakeError(ctx, a.ID, err)
@@ -276,7 +421,51 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 		m.markWakeError(ctx, a.ID, err)
 		return false, err
 	}
+	// The wake is complete: put the record back to StatusRunning, closing the
+	// shield opened above. A failure here (the store is unhealthy) is recorded
+	// like any other failed wake.
+	if err := m.markRunning(ctx, &a); err != nil {
+		m.markWakeError(ctx, a.ID, fmt.Errorf("marking the agent running after the wake-up: %w", err))
+		return false, err
+	}
 	return true, nil
+}
+
+// errWakeStandDown is the internal sentinel markWakeUpdating's mutator returns
+// to abort its store write (rolling the transaction back) when the record is
+// no longer StatusRunning. It never escapes this package: markWakeUpdating
+// maps it to (false, nil).
+var errWakeStandDown = errors.New("the record is no longer running")
+
+// markWakeUpdating transitions an agent record to StatusUpdating as the shield
+// that makes wakeAgent's container removal safe on a ticker: while the record
+// is updating, the old container's own die/stop event hits MarkUnexpectedExit's
+// "not running" guard and no-ops (see wakeAgent).
+//
+// It reports ok=false, with a nil error, when the record was no longer
+// StatusRunning inside the store transaction -- an Update or Delete won the
+// race between the pass listing the record and this write -- meaning the wake
+// must stand down without touching anything and without clobbering the winner.
+//
+// Extracted from wakeAgent so the transition and its stand-down are
+// unit-testable on their own.
+func (m *Manager) markWakeUpdating(ctx context.Context, id string) (bool, error) {
+	_, err := m.store.Update(ctx, id, func(ag *store.Agent) error {
+		if ag.Status != store.StatusRunning {
+			return errWakeStandDown
+		}
+		ag.Status = store.StatusUpdating
+		ag.ErrorMessage = ""
+		return nil
+	})
+	switch {
+	case errors.Is(err, errWakeStandDown):
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return true, nil
+	}
 }
 
 // resolveBackendFromAgent re-derives a's resolvedBackend (the model routing

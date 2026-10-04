@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
@@ -296,6 +297,19 @@ type Manager struct {
 	// files is the centralized per-agent file store. nil when the file
 	// store is disabled (config.FilestoreDir == "") or could not be opened.
 	files *filestore.Store
+	// inFlight records which agent IDs have an operation in flight in THIS
+	// process. Reconcile consults it so a periodic pass does not mistake a
+	// healthy create/update/delete/wake for a record a crash left stuck; see
+	// opRegistry's doc comment for the whole argument. Its lifetime is the
+	// process's, which is exactly right: a record a crash left behind has
+	// nothing in flight precisely because the process that would have been
+	// running its operation is gone.
+	inFlight opRegistry
+	// warnedUnmanaged remembers which unmanaged Docker resources this process
+	// has already logged a Warn for, so a persistent orphan is warned about
+	// once per boot rather than every periodic reconcile pass (see
+	// reportUnmanaged). Logging only: Report.Unmanaged stays complete.
+	warnedUnmanaged sync.Map
 }
 
 // NewManager returns a Manager. A nil log falls back to slog.Default.
@@ -312,7 +326,8 @@ func NewManager(docker dockerclient.Client, regs map[string]registry.Client, st 
 	if log == nil {
 		log = slog.Default()
 	}
-	m := &Manager{docker: docker, registries: regs, store: st, cfg: cfg, log: log, opts: opts.withDefaults()}
+	m := &Manager{docker: docker, registries: regs, store: st, cfg: cfg, log: log, opts: opts.withDefaults(),
+		inFlight: opRegistry{refs: make(map[string]int)}}
 	if cfg.FilestoreDir != "" {
 		fs, err := filestore.New(cfg.FilestoreDir)
 		if err != nil {
@@ -403,11 +418,29 @@ type CreateRequest struct {
 //
 // Create is synchronous, including a cold image pull on a fresh host. The
 // caller's context bounds the whole thing.
+//
+// The whole operation registers its freshly generated ID in Manager.inFlight
+// before the record is inserted, and holds it until it returns (including
+// through the rollback), so a concurrent periodic Reconcile pass can tell this
+// healthy in-flight create apart from a record a crash left StatusCreating --
+// see opRegistry.
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, error) {
 	id, err := store.NewID()
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
+
+	// Register the operation as in flight BEFORE store.Create makes the record
+	// visible. Reconcile keys on the record's status, so if the record were
+	// inserted first a periodic pass could list it as a stuck StatusCreating
+	// record and check the registry before this operation had registered --
+	// a narrow race that only shows up under load, and that would tear down a
+	// healthy, brand-new agent. The deferred release covers EVERY return path
+	// below: a failed resolveSpec, a failed store.Create, a failed build, and
+	// build's create-failure rollback (which runs inside this function, so the
+	// defer still holds the reference while it tears the record down).
+	m.inFlight.begin(id)
+	defer m.inFlight.release(id)
 
 	// Resolve every create-form field before reserving a slot: an invalid
 	// backend, a backend=anthropic request with no stored credential, a

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -139,6 +140,14 @@ func run(log *slog.Logger) error {
 
 	stopDependaproxySync := startDependaproxySync(mgr, dependaproxySyncInterval, log)
 	defer stopDependaproxySync()
+
+	// Re-run the reconcile pass on a timer, so a record some operation could
+	// not finish (the motivating one: an agent wedged in deleting that
+	// survived weeks because nothing ever re-checked) self-heals without an
+	// operator restart. Started AFTER the startup pass above, and with no
+	// immediate pass of its own.
+	stopPeriodicReconcile := startPeriodicReconcile(mgr, periodicReconcileInterval, periodicReconcileTimeout, log)
+	defer stopPeriodicReconcile()
 
 	// A login helper container must never outlive the operator process that
 	// started it -- it is a transient `claude setup-token` shell. Clear any
@@ -400,6 +409,92 @@ func startDependaproxySync(s dependaproxySyncer, interval time.Duration, log *sl
 		cancel()
 		<-done
 	}
+}
+
+// periodicReconcileInterval is how often the operator re-runs the reconcile
+// pass after startup. Minutes, not seconds: nothing a pass acts on (a record a
+// crash or a failed operation left mid-flight, or a container a host/daemon
+// restart left Exited) needs sub-minute detection, and a pass can be expensive
+// -- it may cold-start DinD sidecars to wake stopped agents.
+const periodicReconcileInterval = 15 * time.Minute
+
+// periodicReconcileTimeout bounds one periodic pass. Deliberately equal to the
+// startup budget (reconcileTimeout): a periodic pass does exactly the same
+// work -- including cold-starting a DinD sidecar and waiting for tmux for
+// every agent it has to wake -- and must not be cut short where the startup
+// pass would not have been.
+const periodicReconcileTimeout = 30 * time.Minute
+
+// reconciler is the one Manager method startPeriodicReconcile needs, as an
+// interface seam so main_test.go can drive it with a counting/blocking fake.
+type reconciler interface {
+	Reconcile(ctx context.Context) (agent.Report, error)
+}
+
+// startPeriodicReconcile re-runs the reconcile pass every interval, so a
+// record a crashed or failed operation left behind self-heals without an
+// operator restart. It is modeled on startDependaproxySync: a cancel-based
+// stop function that waits for the goroutine to exit, no immediate pass (the
+// startup pass in run() already ran, and this ticker starts right after it),
+// and a per-run context.WithTimeout child of the loop context so one slow pass
+// cannot run unbounded.
+//
+// A tick that fires while the previous pass is still running never produces a
+// second pass: a pass can legitimately take minutes (it cold-starts DinD
+// sidecars), and stacked passes would fight over the same records -- the very
+// interference the record-level in-flight registry exists to prevent, made
+// unnecessary here at the whole-pass level.
+//
+// The guarantee today is STRUCTURAL, not the guard below: a pass runs inline
+// in this goroutine, so the loop cannot re-enter the select until the pass has
+// returned, and ticks fired meanwhile are simply dropped by the ticker channel
+// (capacity 1). The atomic.Bool is kept as insurance for the day dispatch is
+// made concurrent -- it is unreachable while the call stays inline, so do not
+// read it as the mechanism, and do not delete it without also making the
+// dispatch concurrent. TestStartPeriodicReconcile_OverlapSkipped asserts the
+// OBSERVABLE (the count stays at 1 while a pass is parked), which holds either
+// way and is the property that actually matters.
+func startPeriodicReconcile(r reconciler, interval, timeout time.Duration, log *slog.Logger) func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		var running atomic.Bool
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if !running.CompareAndSwap(false, true) {
+					log.Info("periodic reconcile: the previous pass is still running; skipping this tick")
+					continue
+				}
+				runPeriodicReconcileOnce(ctx, r, timeout, &running, log)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// runPeriodicReconcileOnce runs one periodic pass under its own timeout and
+// clears the overlap guard when it finishes, however it finishes. An error is
+// logged, never fatal to the loop: the next tick must still run.
+func runPeriodicReconcileOnce(ctx context.Context, r reconciler, timeout time.Duration, running *atomic.Bool, log *slog.Logger) {
+	defer running.Store(false)
+	rctx, rcancel := context.WithTimeout(ctx, timeout)
+	defer rcancel()
+	rep, err := r.Reconcile(rctx)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("periodic reconcile pass reported errors", "error", err)
+	}
+	log.Info("periodic reconcile complete",
+		"records", rep.Records, "cleaned_up", len(rep.CleanedUp), "unmanaged", len(rep.Unmanaged),
+		"woken", len(rep.Woken), "skipped", len(rep.Skipped))
 }
 
 // startStatusSync subscribes to the Docker Events API, filtered to

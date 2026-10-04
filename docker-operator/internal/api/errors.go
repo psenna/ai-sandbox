@@ -41,6 +41,12 @@ const (
 	CodeMethodNotAllowed = "method_not_allowed"
 	CodeInternal         = "internal"
 
+	// CodeOperationInFlight is returned (409) by POST /api/agents/{id}/update
+	// and DELETE /api/agents/{id} when another operation for the same agent is
+	// already in flight in the operator process -- a concurrent request, or the
+	// periodic reconcile pass working that record.
+	CodeOperationInFlight = "operation_in_flight"
+
 	// CodeFilestoreDisabled is returned by every /api/files* route when the
 	// operator runs with no centralized file store configured (FILESTORE_DIR
 	// empty). The HTTP status is 501.

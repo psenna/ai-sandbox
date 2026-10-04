@@ -935,6 +935,8 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, CodeNotFound, "no such agent", "")
 		case agent.IsNotUpdatable(err):
 			writeError(w, http.StatusConflict, CodeNotUpdatable, "the agent is not in an updatable state (only running, stopped or error agents can be updated)", "")
+		case agent.IsOperationInFlight(err):
+			writeError(w, http.StatusConflict, CodeOperationInFlight, "another operation is already in flight for this agent; retry once it finishes", "")
 		case agent.IsInvalidImageTag(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"image_tag" is not a valid image tag`, "image_tag")
 		case agent.IsNoAnthropicAuth(err):
@@ -982,6 +984,10 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.mgr.Delete(r.Context(), id); err != nil {
+		if agent.IsOperationInFlight(err) {
+			writeError(w, http.StatusConflict, CodeOperationInFlight, "another operation is already in flight for this agent; retry once it finishes", "")
+			return
+		}
 		h.internalError(w, "deleting agent "+id, err)
 		return
 	}

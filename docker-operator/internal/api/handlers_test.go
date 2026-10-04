@@ -1422,6 +1422,41 @@ func TestHandleUpdate_NotUpdatable(t *testing.T) {
 	}
 }
 
+// TestHandleUpdate_OperationInFlight proves an update refused because another
+// operation already holds the agent maps to a 409 with its own code, distinct
+// from the not-updatable one.
+func TestHandleUpdate_OperationInFlight(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+	mgr.updateErr = fmt.Errorf("updating agent %q: %w", "agt_1", agent.ErrOperationInFlight)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeOperationInFlight {
+		t.Errorf("error code = %q, want %q", got, CodeOperationInFlight)
+	}
+}
+
+// TestHandleDelete_OperationInFlight proves a delete refused because another
+// operation already holds the agent maps to a 409 rather than the default 500.
+func TestHandleDelete_OperationInFlight(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusDeleting})
+	mgr.deleteErr = fmt.Errorf("deleting agent %q: %w", "agt_1", agent.ErrOperationInFlight)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "DELETE", "/api/agents/agt_1", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeOperationInFlight {
+		t.Errorf("error code = %q, want %q", got, CodeOperationInFlight)
+	}
+}
+
 func TestHandleUpdate_InvalidBackend(t *testing.T) {
 	mgr := newFakeManager(5)
 	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})

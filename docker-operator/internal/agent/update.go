@@ -93,7 +93,21 @@ type UpdateRequest struct {
 //  7. store.Update -> new config fields + Image + ContainerID="" (still updating).
 //  8. ensureAgentFiles, then startAgentContainer("--continue") ->
 //     waitTmuxSession -> markRunning. Any failure from step 5 on -> failUpdate.
+//
+// It refuses to start at all if another operation (a concurrent request, or
+// the periodic reconcile pass) already holds this agent in this process,
+// returning ErrOperationInFlight (a 409) -- see Manager.inFlight.
 func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (store.Agent, error) {
+	// Refuse to start if another operation already holds this agent in this
+	// process. On a ticker this is a deliberate tightening: "updating" is no
+	// longer proof of a crash, so a second operation (a periodic reconcile
+	// pass working the record, or a racing request) must not interleave with
+	// the first. tryBegin is atomic, so there is no check-then-act window.
+	if !m.inFlight.tryBegin(id) {
+		return store.Agent{}, fmt.Errorf("updating agent %q: %w", id, ErrOperationInFlight)
+	}
+	defer m.inFlight.release(id)
+
 	a, err := m.store.Get(ctx, id)
 	if err != nil {
 		return store.Agent{}, err
