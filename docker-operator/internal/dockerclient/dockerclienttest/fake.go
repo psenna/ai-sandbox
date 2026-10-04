@@ -40,6 +40,7 @@ const (
 	OpVolumeInspect     Op = "VolumeInspect"
 	OpVolumeList        Op = "VolumeList"
 	OpVolumeRemove      Op = "VolumeRemove"
+	OpVolumeUsage       Op = "VolumeUsage"
 	OpNetworkCreate     Op = "NetworkCreate"
 	OpNetworkInspect    Op = "NetworkInspect"
 	OpNetworkList       Op = "NetworkList"
@@ -77,6 +78,11 @@ type volumeRecord struct {
 	name       string
 	labels     map[string]string
 	mountpoint string
+	// usage is the disk-usage reading VolumeUsage reports for this volume,
+	// seeded by SetVolumeUsage. nil means "not seeded", in which case
+	// VolumeUsage reports Size 0 -- exactly what the real daemon reports for a
+	// never-written local volume (verified against Docker 27.5.1).
+	usage *dockerclient.VolumeUsage
 }
 
 func (v *volumeRecord) toVolume() dockerclient.Volume {
@@ -357,6 +363,23 @@ func (f *Fake) SetStats(idOrName string, s dockerclient.Stats) error {
 	return nil
 }
 
+// SetVolumeUsage seeds the disk-usage reading VolumeUsage reports for an
+// existing volume, found by name. A size of -1 seeds the "not available"
+// reading the real daemon reports when it cannot compute a size (or omits
+// UsageData); any other value, 0 included, is a real reading. A volume with no
+// seeded usage reports Size 0, the real daemon's value for a never-written
+// local volume.
+func (f *Fake) SetVolumeUsage(name string, size int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.volumes[name]
+	if !ok {
+		return fmt.Errorf("volume %q: %w", name, dockerclient.ErrNotFound)
+	}
+	v.usage = &dockerclient.VolumeUsage{Name: name, Size: size}
+	return nil
+}
+
 // ExecSpecs returns every ExecSpec passed to ExecCreate, in call order, so a
 // test can assert on Cmd / Env / User without re-plumbing them through
 // ExecOutput's string key.
@@ -495,6 +518,29 @@ func (f *Fake) VolumeRemove(ctx context.Context, name string) error {
 	defer f.mu.Unlock()
 	delete(f.volumes, name)
 	return nil
+}
+
+// VolumeUsage returns every known volume, sorted by name, each with its seeded
+// usage or -- unseeded -- Size 0 (exactly what the real daemon reports for a
+// never-written local volume). A removed volume is simply absent, like the
+// daemon. It records the call with Target "" like the other fleet-wide List
+// methods.
+func (f *Fake) VolumeUsage(ctx context.Context) ([]dockerclient.VolumeUsage, error) {
+	if err := f.call(OpVolumeUsage, ""); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]dockerclient.VolumeUsage, 0, len(f.volumes))
+	for _, v := range f.volumes {
+		if v.usage != nil {
+			out = append(out, *v.usage)
+			continue
+		}
+		out = append(out, dockerclient.VolumeUsage{Name: v.name, Size: 0})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
 // NetworkCreate creates a network, or returns the existing one of the same

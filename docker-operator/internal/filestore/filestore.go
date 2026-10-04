@@ -198,6 +198,91 @@ func (s *Store) List(rel string) ([]Entry, error) {
 	return out, nil
 }
 
+// TreeSize returns the recursive content size of rel in bytes: the sum of the
+// sizes of every REGULAR file under it, at any depth. rel is validated and
+// opened exactly like List -- through the Store's os.Root handle, never the raw
+// path -- so the escape protection carries.
+//
+// Symlinks are NOT followed and NOT counted: an agent (uid 1000) can write its
+// own subtree, so a planted link is untrusted input; os.Root would refuse an
+// escaping one, and not following keeps the walk cycle-free and honest. A
+// regular file at rel returns its own size; anything else that is not a
+// directory yields ErrNotDir; a missing rel yields ErrNotFound (the mid-delete
+// case -- an agent whose subtree is gone, which the caller reports as an absent
+// component rather than an error). Entries that vanish between ReadDir and
+// Info are skipped, the same best-effort List uses. Size-only: nothing consumes
+// file counts.
+//
+// There is no os.Root walk helper in Go 1.25, hence the hand-rolled recursion.
+func (s *Store) TreeSize(rel string) (int64, error) {
+	segs, err := cleanRel(rel)
+	if err != nil {
+		return 0, err
+	}
+	return s.treeSize(segs)
+}
+
+// treeSize is TreeSize's recursion over already-validated segments.
+func (s *Store) treeSize(segs []string) (int64, error) {
+	f, err := s.r.Open(openName(segs))
+	if err != nil {
+		return 0, s.wrapOpenErr(err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return 0, fmt.Errorf("stat-ing %q: %w", relDisplay(segs), err)
+	}
+	if !fi.IsDir() {
+		_ = f.Close()
+		if fi.Mode().IsRegular() {
+			return fi.Size(), nil
+		}
+		return 0, fmt.Errorf("%q is not a regular file: %w", relDisplay(segs), ErrNotDir)
+	}
+
+	// ReadDir on the file opened as a directory. It can fail ENOTDIR when the
+	// directory was replaced by a file between Open and ReadDir; normalise that
+	// the same way List does.
+	dirents, err := f.ReadDir(-1)
+	_ = f.Close()
+	if err != nil {
+		if errors.Is(err, syscall.ENOTDIR) {
+			return 0, fmt.Errorf("%q is not a directory: %w", relDisplay(segs), ErrNotDir)
+		}
+		return 0, fmt.Errorf("reading directory %q: %w", relDisplay(segs), err)
+	}
+
+	var total int64
+	for _, de := range dirents {
+		// Copy the segment slice before appending: append reuses the backing
+		// array, so siblings sharing one would corrupt each other's paths.
+		child := append(append([]string(nil), segs...), de.Name())
+		// de.Info is Lstat-based: for a symlink it reports the link ITSELF, not
+		// its target -- which is exactly what leaves a planted link unfollowed
+		// and uncounted.
+		info, infoErr := de.Info()
+		if infoErr != nil {
+			continue // vanished between ReadDir and Info, like List
+		}
+		if !info.IsDir() {
+			if info.Mode().IsRegular() {
+				total += info.Size()
+			}
+			continue // symlink / fifo / device: not counted, not followed
+		}
+		n, err := s.treeSize(child)
+		if err != nil {
+			if IsNotFound(err) {
+				continue // vanished mid-walk, best-effort like List
+			}
+			return 0, err
+		}
+		total += n
+	}
+	return total, nil
+}
+
 // Stat returns the entry at rel.
 func (s *Store) Stat(rel string) (Entry, error) {
 	segs, err := cleanRel(rel)

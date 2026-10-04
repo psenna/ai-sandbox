@@ -308,6 +308,107 @@ func TestOpen(t *testing.T) {
 
 func isIsDir(err error) bool { return err != nil && strings.Contains(err.Error(), "is a directory") }
 
+// TestTreeSize covers TreeSize's recursive sum, its symlink stance (never
+// followed, never counted) and its error normalisation.
+func TestTreeSize(t *testing.T) {
+	s := newStore(t)
+
+	// A nested tree: agents/a/{top.txt (5), sub/{deep.txt (7), deeper/{last.txt (11)}}}
+	// plus an empty directory that contributes nothing.
+	for dir, files := range map[string]map[string]string{
+		"agents/a":            {"top.txt": "hello"},        // 5
+		"agents/a/sub":        {"deep.txt": "seventy"},     // 7
+		"agents/a/sub/deeper": {"last.txt": "elevenbytes"}, // 11
+		"agents/a/empty":      {},
+	} {
+		if err := s.Mkdir(dir); err != nil {
+			t.Fatalf("Mkdir(%s): %v", dir, err)
+		}
+		for name, content := range files {
+			if _, err := s.Save(dir+"/"+name, strings.NewReader(content), 1<<20); err != nil {
+				t.Fatalf("Save(%s/%s): %v", dir, name, err)
+			}
+		}
+	}
+
+	const want = 5 + 7 + 11
+	if got, err := s.TreeSize("agents/a"); err != nil {
+		t.Fatalf("TreeSize: %v", err)
+	} else if got != want {
+		t.Errorf("TreeSize(agents/a) = %d, want %d (summed across levels)", got, want)
+	}
+
+	// The root is a valid target: everything under it, including the empty
+	// shared/ directory New created.
+	if got, err := s.TreeSize(""); err != nil {
+		t.Errorf("TreeSize(\"\") = %v", err)
+	} else if got != want {
+		t.Errorf("TreeSize(\"\") = %d, want %d", got, want)
+	}
+
+	t.Run("a regular file returns its own size", func(t *testing.T) {
+		got, err := s.TreeSize("agents/a/top.txt")
+		if err != nil {
+			t.Fatalf("TreeSize(file): %v", err)
+		}
+		if got != 5 {
+			t.Errorf("TreeSize(file) = %d, want 5", got)
+		}
+	})
+
+	t.Run("an empty directory is 0, not an error", func(t *testing.T) {
+		got, err := s.TreeSize("agents/a/empty")
+		if err != nil {
+			t.Fatalf("TreeSize(empty): %v", err)
+		}
+		if got != 0 {
+			t.Errorf("TreeSize(empty) = %d, want 0", got)
+		}
+	})
+
+	t.Run("a missing subtree satisfies IsNotFound", func(t *testing.T) {
+		if _, err := s.TreeSize("agents/nope"); !IsNotFound(err) {
+			t.Errorf("TreeSize(missing) = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("an invalid path is rejected before any walk", func(t *testing.T) {
+		if _, err := s.TreeSize("../etc"); !IsInvalidPath(err) {
+			t.Errorf("TreeSize(../etc) = %v, want ErrInvalidPath", err)
+		}
+	})
+
+	t.Run("planted symlinks are neither followed nor counted", func(t *testing.T) {
+		// A directory OUTSIDE the store holding a big file: if the walk followed
+		// the link it would count this and, worse, reach outside the root.
+		outside := t.TempDir()
+		secret := filepath.Join(outside, "secret.txt")
+		if err := os.WriteFile(secret, []byte(strings.Repeat("x", 4096)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// An absolute link to a file, and a relative one that climbs out with
+		// "..". Neither may be counted or followed, and the walk must still
+		// succeed.
+		if err := os.Symlink(secret, filepath.Join(s.Root(), "agents", "a", "abs-link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../../../"+filepath.Base(outside), filepath.Join(s.Root(), "agents", "a", "up-link")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.TreeSize("agents/a")
+		if err != nil {
+			t.Fatalf("TreeSize with symlinks present = %v, want success", err)
+		}
+		if got != want {
+			t.Errorf("TreeSize with symlinks = %d, want %d (the links must not be counted)", got, want)
+		}
+		// The target outside the root is untouched.
+		if b, err := os.ReadFile(secret); err != nil || len(b) != 4096 { //nolint:gosec // G304: a path this test itself created under t.TempDir()
+			t.Errorf("the file outside the root = %d bytes / %v, want it untouched", len(b), err)
+		}
+	})
+}
+
 // TestListOnRegularFile: pointing List at a file (rather than a directory)
 // is a client mistake -> ErrNotDir -> 400, not an unwrapped ENOTDIR -> 500.
 func TestListOnRegularFile(t *testing.T) {
