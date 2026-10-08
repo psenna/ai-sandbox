@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
@@ -71,30 +70,6 @@ func (m *Manager) DefaultAutoMode() string { return config.AutoModeString(m.cfg.
 // record so the UI's "Agent info" overlay can show what the operator set.
 func (m *Manager) AgentImage() string    { return m.cfg.AgentImageClaudeCode }
 func (m *Manager) DockerRuntime() string { return m.cfg.DockerRuntime }
-
-// AnthropicAuthStatus reports whether the shared Anthropic credential is
-// configured -- its kind and last-set time, never its value. The value
-// stays inside internal/agent (resolveBackend) and internal/store; nothing
-// that could serialise it to a client ever holds it.
-func (m *Manager) AnthropicAuthStatus(ctx context.Context) (kind string, updatedAt time.Time, configured bool, err error) {
-	auth, ok, err := m.store.GetAnthropicAuth(ctx)
-	if err != nil || !ok {
-		return "", time.Time{}, false, err
-	}
-	return auth.Kind, auth.UpdatedAt, true, nil
-}
-
-// SetAnthropicAuth stores (replacing) the shared Anthropic credential.
-// ClearAnthropicAuth removes it and is idempotent. Both are thin
-// pass-throughs -- the store validates the kind and rejects an empty value.
-func (m *Manager) SetAnthropicAuth(ctx context.Context, kind, value string) error {
-	return m.store.SetAnthropicAuth(ctx, kind, value)
-}
-
-// ClearAnthropicAuth removes the shared Anthropic credential (idempotent).
-func (m *Manager) ClearAnthropicAuth(ctx context.Context) error {
-	return m.store.ClearAnthropicAuth(ctx)
-}
 
 // MarkUnexpectedExit records that an agent's own container stopped or died
 // without going through Delete -- the reactive correction

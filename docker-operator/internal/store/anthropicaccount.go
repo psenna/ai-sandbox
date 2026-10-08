@@ -315,6 +315,9 @@ func migrateLegacyAnthropicAuth(tx *bbolt.Tx, now func() time.Time) error {
 	if err := settings.Put(keySettingsDefaultAnthropicAccount, []byte(id)); err != nil {
 		return fmt.Errorf("setting the migrated account as default: %w", err)
 	}
+	if err := settings.Delete(keySettingsAnthropicAuth); err != nil {
+		return fmt.Errorf("removing the legacy anthropic credential: %w", err)
+	}
 
 	// Pin every agent that was implicitly using the shared credential.
 	// Collected first, applied after: bbolt forbids mutating a bucket while

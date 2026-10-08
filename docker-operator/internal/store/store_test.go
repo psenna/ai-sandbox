@@ -221,15 +221,6 @@ func TestMethodsAfterCloseReturnErrors(t *testing.T) {
 	if err := s.Delete(ctx, "agt_00000001"); err == nil {
 		t.Error("Delete after Close returned nil, want an error")
 	}
-	if _, _, err := s.GetAnthropicAuth(ctx); err == nil {
-		t.Error("GetAnthropicAuth after Close returned nil, want an error")
-	}
-	if err := s.SetAnthropicAuth(ctx, AnthropicKindOAuth, "x"); err == nil {
-		t.Error("SetAnthropicAuth after Close returned nil, want an error")
-	}
-	if err := s.ClearAnthropicAuth(ctx); err == nil {
-		t.Error("ClearAnthropicAuth after Close returned nil, want an error")
-	}
 }
 
 // --- NewID ------------------------------------------------------------
@@ -743,9 +734,6 @@ func TestEveryMethodHonoursACancelledContext(t *testing.T) {
 		{"List", func() error { _, err := s.List(ctx); return err }},
 		{"Update", func() error { _, err := s.Update(ctx, created.ID, func(*Agent) error { return nil }); return err }},
 		{"Delete", func() error { return s.Delete(ctx, created.ID) }},
-		{"GetAnthropicAuth", func() error { _, _, err := s.GetAnthropicAuth(ctx); return err }},
-		{"SetAnthropicAuth", func() error { return s.SetAnthropicAuth(ctx, AnthropicKindAPIKey, "x") }},
-		{"ClearAnthropicAuth", func() error { return s.ClearAnthropicAuth(ctx) }},
 		{"GetAgentImageTags", func() error { _, _, err := s.GetAgentImageTags(ctx, "claude-code"); return err }},
 		{"SetAgentImageTags", func() error { return s.SetAgentImageTags(ctx, "claude-code", AgentImageTags{}) }},
 	}
@@ -960,85 +948,6 @@ func TestCreate_NoHarnessPersistsEmpty(t *testing.T) {
 	}
 	if got.Harness != "" {
 		t.Fatalf("Harness = %q, want empty (documents omitempty / pre-existing-record behaviour)", got.Harness)
-	}
-}
-
-func TestAnthropicAuth_RoundTrip(t *testing.T) {
-	ctx := context.Background()
-	s := newStore(t, 5)
-	s.now = clockAt(baseTime, time.Minute)
-
-	// Nothing configured yet.
-	if _, ok, err := s.GetAnthropicAuth(ctx); err != nil || ok {
-		t.Fatalf("GetAnthropicAuth on a fresh store = (_, %v, %v), want (_, false, nil)", ok, err)
-	}
-
-	// Set an API key.
-	if err := s.SetAnthropicAuth(ctx, AnthropicKindAPIKey, "sk-ant-secret"); err != nil {
-		t.Fatalf("SetAnthropicAuth(api_key): %v", err)
-	}
-	auth, ok, err := s.GetAnthropicAuth(ctx)
-	if err != nil || !ok {
-		t.Fatalf("GetAnthropicAuth after set = (_, %v, %v), want (_, true, nil)", ok, err)
-	}
-	if auth.Kind != AnthropicKindAPIKey || auth.Value != "sk-ant-secret" {
-		t.Fatalf("stored auth = %+v, want kind=api_key value=sk-ant-secret", auth)
-	}
-	if auth.UpdatedAt.IsZero() {
-		t.Fatalf("UpdatedAt is zero, want it stamped from the store clock")
-	}
-
-	// Replacing with an OAuth token overwrites, not appends.
-	if err := s.SetAnthropicAuth(ctx, AnthropicKindOAuth, "oat-token"); err != nil {
-		t.Fatalf("SetAnthropicAuth(oauth): %v", err)
-	}
-	auth, _, err = s.GetAnthropicAuth(ctx)
-	if err != nil {
-		t.Fatalf("GetAnthropicAuth: %v", err)
-	}
-	if auth.Kind != AnthropicKindOAuth || auth.Value != "oat-token" {
-		t.Fatalf("after replace stored auth = %+v, want kind=oauth value=oat-token", auth)
-	}
-
-	// Survives a reopen.
-	path := s.path
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	s2, err := Open(path, 5)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	t.Cleanup(func() { _ = s2.Close() })
-	if auth, ok, err := s2.GetAnthropicAuth(ctx); err != nil || !ok || auth.Value != "oat-token" {
-		t.Fatalf("after reopen GetAnthropicAuth = (%+v, %v, %v), want the oauth token", auth, ok, err)
-	}
-
-	// Clear, twice -- the second is a no-op, not an error.
-	if err := s2.ClearAnthropicAuth(ctx); err != nil {
-		t.Fatalf("ClearAnthropicAuth: %v", err)
-	}
-	if err := s2.ClearAnthropicAuth(ctx); err != nil {
-		t.Fatalf("ClearAnthropicAuth (second call): %v", err)
-	}
-	if _, ok, err := s2.GetAnthropicAuth(ctx); err != nil || ok {
-		t.Fatalf("GetAnthropicAuth after clear = (_, %v, %v), want (_, false, nil)", ok, err)
-	}
-}
-
-func TestSetAnthropicAuth_Rejects(t *testing.T) {
-	ctx := context.Background()
-	s := newStore(t, 5)
-
-	if err := s.SetAnthropicAuth(ctx, "bearer", "x"); err == nil {
-		t.Error("SetAnthropicAuth with an unknown kind returned nil, want an error")
-	}
-	if err := s.SetAnthropicAuth(ctx, AnthropicKindAPIKey, ""); err == nil {
-		t.Error("SetAnthropicAuth with an empty value returned nil, want an error")
-	}
-	// A rejected call stores nothing.
-	if _, ok, err := s.GetAnthropicAuth(ctx); err != nil || ok {
-		t.Fatalf("GetAnthropicAuth after rejected sets = (_, %v, %v), want (_, false, nil)", ok, err)
 	}
 }
 
