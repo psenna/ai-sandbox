@@ -197,6 +197,26 @@ func (f *fakeManager) Update(_ context.Context, id string, req agent.UpdateReque
 	a.MaxContextTokens = req.MaxContextTokens
 	a.AutoMode = req.AutoMode
 	a.Status = store.StatusRunning
+	// Model the same account-resolution precedence the real
+	// agent.resolveBackend uses, so a test that smuggles an account_id
+	// into the update body (via createAgentRequest's embedding into
+	// updateAgentRequest -- see TestUpdateAgent_AccountIDInBodyIsIgnoredLandsOnDefault)
+	// can actually be caught here instead of only at the DTO layer: the
+	// agent's EXISTING pin wins if it already has one; else the request's
+	// AccountID if non-empty; else the store's default. An ollama backend
+	// never carries an account.
+	if a.Backend == config.BackendAnthropic {
+		switch {
+		case a.AnthropicAccountID != "":
+			// existing pin wins; leave it as-is.
+		case req.AccountID != "":
+			a.AnthropicAccountID = req.AccountID
+		default:
+			a.AnthropicAccountID = f.anthropicDefaultID
+		}
+	} else {
+		a.AnthropicAccountID = ""
+	}
 	f.agents[id] = a
 	return a, nil
 }
@@ -2168,33 +2188,55 @@ func TestHandleUpdate_OK(t *testing.T) {
 	}
 }
 
-// TestHandleUpdate_AccountIDInBodyIgnored is a Review Focus case: Task 6's
-// controller ruling requires that POST /api/agents/{id}/update NEVER honor
-// an "account_id" in the request body, even though updateAgentRequest
-// embeds createAgentRequest (which now has an AccountID field for the
-// create path) and so Go's JSON field promotion would otherwise let a
-// client smuggle one through here. This matters most for an ollama->
-// anthropic switch, since that is the one case where the real Manager's
-// resolveBackend has no existing account pinned on the record to fall back
-// to -- req.AccountID would otherwise be load-bearing there. Proven here at
-// the handler level: whatever account_id arrives in the update body, the
-// AccountID the handler forwards to Manager.Update must be "".
-func TestHandleUpdate_AccountIDInBodyIgnored(t *testing.T) {
+// TestUpdateAgent_AccountIDInBodyIsIgnoredLandsOnDefault is a Review Focus
+// case: Task 6's controller ruling requires that POST
+// /api/agents/{id}/update NEVER honor an "account_id" in the request body,
+// even though updateAgentRequest embeds createAgentRequest (which now has
+// an AccountID field for the create path) and so Go's JSON field promotion
+// would otherwise let a client smuggle one through here. This matters most
+// for an ollama->anthropic switch, since that is the one case where the
+// real Manager's resolveBackend has no existing account pinned on the
+// record to fall back to -- req.AccountID would otherwise be load-bearing
+// there.
+//
+// Unlike an earlier version of this test, which only inspected the DTO
+// (mgr.updateReqs[0].AccountID) captured before any resolution happened,
+// this one seeds TWO distinct Anthropic accounts -- a default and a
+// different, explicitly-named one -- and asserts the actually RESOLVED
+// account on the returned agent is the default, never the one smuggled in
+// the body. fakeManager.Update models the same existing-pin > request >
+// default precedence as the real agent.resolveBackend, so this test would
+// fail if handleUpdate's `createReq.AccountID = ""` guard were ever
+// reverted or bypassed.
+func TestUpdateAgent_AccountIDInBodyIsIgnoredLandsOnDefault(t *testing.T) {
 	mgr := newFakeManager(5)
+	def := store.AnthropicAccount{ID: "anc_default", Name: "Default", Kind: "api_key", Value: "sk-ant-default"}
+	other := store.AnthropicAccount{ID: "anc_smuggled", Name: "Smuggled", Kind: "api_key", Value: "sk-ant-smuggled"}
+	mgr.anthropicAccounts = []store.AnthropicAccount{def, other}
+	mgr.anthropicDefaultID = def.ID
 	mgr.seed(store.Agent{ID: "agt_1", Backend: "ollama", Status: store.StatusRunning})
 	h := newTestHandler(mgr, dockerclienttest.New())
 
 	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
-		createAgentRequest: createAgentRequest{Backend: "anthropic", AccountID: "anc_smuggled"},
+		createAgentRequest: createAgentRequest{Backend: "anthropic", AccountID: other.ID},
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
 	}
+
+	var got store.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got.AnthropicAccountID != def.ID {
+		t.Fatalf("AnthropicAccountID = %q, want the default %q -- an ollama->anthropic switch with a smuggled account_id in the update body must still land on the operator's current default, never the account named in the body", got.AnthropicAccountID, def.ID)
+	}
+
 	if len(mgr.updateReqs) != 1 {
 		t.Fatalf("updateReqs = %+v, want exactly one call", mgr.updateReqs)
 	}
-	if got := mgr.updateReqs[0].AccountID; got != "" {
-		t.Errorf("AccountID passed to Manager.Update = %q, want \"\" -- the update path must never honor account_id from the request body; an ollama->anthropic switch must always land on the operator's current default account, never a client-named one", got)
+	if forwarded := mgr.updateReqs[0].AccountID; forwarded != "" {
+		t.Errorf("AccountID passed to Manager.Update = %q, want \"\" -- the update path must never forward account_id from the request body", forwarded)
 	}
 }
 
