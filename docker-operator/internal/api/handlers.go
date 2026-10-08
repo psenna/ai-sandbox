@@ -42,7 +42,7 @@ type AgentManager interface {
 	Get(ctx context.Context, id string) (store.Agent, error)
 	List(ctx context.Context) ([]store.Agent, error)
 	MaxAgents() int
-	Rename(ctx context.Context, id string, name, description *string) (store.Agent, error)
+	Rename(ctx context.Context, id string, name, description, accountID *string) (store.Agent, error)
 
 	// Update recreates an agent's container in place (a new image tag, or a
 	// changed create-form field) under the same agent ID and the same
@@ -1254,7 +1254,7 @@ func (h *Handler) handleRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a, err := h.mgr.Rename(r.Context(), id, req.Name, req.Description)
+	a, err := h.mgr.Rename(r.Context(), id, req.Name, req.Description, nil)
 	if err != nil {
 		h.notFoundOrInternal(w, "renaming agent "+id, err)
 		return

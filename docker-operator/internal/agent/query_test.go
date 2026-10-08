@@ -94,3 +94,71 @@ func TestMarkUnexpectedExit_EmptyContainerIDDisablesGuard(t *testing.T) {
 		t.Errorf("Status = %q, want %q", got.Status, store.StatusStopped)
 	}
 }
+
+func TestRename_AccountIDOnAnthropicAgent(t *testing.T) {
+	m, _, _ := newTestManager(t, 5)
+	ctx := context.Background()
+	a, err := m.store.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount: %v", err)
+	}
+	b, err := m.store.CreateAnthropicAccount(ctx, "Personal", store.AnthropicKindAPIKey, "sk-ant-personal")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount: %v", err)
+	}
+	agentID := "agt_test1"
+	if _, err := m.store.Create(ctx, store.CreateSpec{ID: agentID, Backend: "anthropic", AnthropicAccountID: a.ID}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	newID := b.ID
+	updated, err := m.Rename(ctx, agentID, nil, nil, &newID)
+	if err != nil {
+		t.Fatalf("Rename(accountID=%q): %v", newID, err)
+	}
+	if updated.AnthropicAccountID != b.ID {
+		t.Fatalf("Rename result AnthropicAccountID = %q; want %q", updated.AnthropicAccountID, b.ID)
+	}
+	// Re-fetch to confirm it was actually PERSISTED, not just returned.
+	got, err := m.store.Get(ctx, agentID)
+	if err != nil || got.AnthropicAccountID != b.ID {
+		t.Fatalf("Get after Rename = %+v, %v; want AnthropicAccountID=%q", got, err, b.ID)
+	}
+}
+
+// TestRename_AccountIDOnOllamaAgentIs400Shape is a Review Focus case.
+func TestRename_AccountIDOnOllamaAgentIs400Shape(t *testing.T) {
+	m, _, _ := newTestManager(t, 5)
+	ctx := context.Background()
+	a, _ := m.store.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	agentID := "agt_test2"
+	if _, err := m.store.Create(ctx, store.CreateSpec{ID: agentID, Backend: "ollama"}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	accountID := a.ID
+	_, err := m.Rename(ctx, agentID, nil, nil, &accountID)
+	if !IsAgentNotAnthropic(err) {
+		t.Fatalf("Rename(accountID) on an ollama agent error = %v; want IsAgentNotAnthropic", err)
+	}
+	got, err := m.store.Get(ctx, agentID)
+	if err != nil || got.AnthropicAccountID != "" {
+		t.Fatalf("ollama agent after a rejected Rename = %+v, %v; want AnthropicAccountID unchanged (empty)", got, err)
+	}
+}
+
+func TestRename_UnknownAccountIDIs400Shape(t *testing.T) {
+	m, _, _ := newTestManager(t, 5)
+	ctx := context.Background()
+	a, _ := m.store.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	agentID := "agt_test3"
+	if _, err := m.store.Create(ctx, store.CreateSpec{ID: agentID, Backend: "anthropic", AnthropicAccountID: a.ID}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+
+	unknown := "anc_missing"
+	_, err := m.Rename(ctx, agentID, nil, nil, &unknown)
+	if !IsUnknownAnthropicAccount(err) {
+		t.Fatalf("Rename(unknown accountID) error = %v; want IsUnknownAnthropicAccount", err)
+	}
+}

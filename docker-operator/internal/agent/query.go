@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -155,16 +156,49 @@ func isStaleContainerEvent(eventID, recordID string) bool {
 	return eventID != "" && recordID != "" && eventID != recordID
 }
 
-// Rename updates an agent's Name and/or Description. A nil pointer leaves
-// the corresponding field unchanged; a non-nil pointer sets it, including to
-// an empty string. At least one of name or description must be non-nil.
+// ErrAgentNotAnthropic is returned by Rename for a non-nil accountID against
+// an agent whose Backend is not config.BackendAnthropic -- there is nothing
+// to pin on an ollama agent. internal/api maps it to a 400.
+var ErrAgentNotAnthropic = errors.New("agent is not on the anthropic backend")
+
+// IsAgentNotAnthropic reports whether err was caused by a PATCH account_id
+// against a non-anthropic agent.
+func IsAgentNotAnthropic(err error) bool { return errors.Is(err, ErrAgentNotAnthropic) }
+
+// Rename updates an agent's Name, Description and/or its pinned Anthropic
+// account. A nil pointer leaves the corresponding field unchanged; a
+// non-nil pointer sets it (including to an empty string, for name/
+// description). At least one of the three must be non-nil.
 //
-// This never touches Docker: the name/description are purely cosmetic, UI-
-// facing fields, so this is a direct store.Update rather than a step in the
-// Create/Delete lifecycle.
-func (m *Manager) Rename(ctx context.Context, id string, name, description *string) (store.Agent, error) {
-	if name == nil && description == nil {
-		return store.Agent{}, fmt.Errorf("renaming agent %q: at least one of name or description must be provided", id)
+// This never touches Docker: all three are either cosmetic UI-facing
+// fields or a plain store pin change, so this is a direct store.Update
+// rather than a step in the Create/Update/Delete lifecycle -- changing
+// which account an agent uses does NOT recreate its container; the new
+// credential applies starting at the agent's next restart/wake.
+//
+// accountID is validated BEFORE the store.Update call, not inside its
+// mutator: a deleted-between-check-and-write race just means the
+// fail-closed dangling-pin path in resolveBackend catches it at the
+// agent's next restart/wake -- an already-accepted outcome, not a new hole
+// this adds.
+func (m *Manager) Rename(ctx context.Context, id string, name, description, accountID *string) (store.Agent, error) {
+	if name == nil && description == nil && accountID == nil {
+		return store.Agent{}, fmt.Errorf("renaming agent %q: at least one of name, description or account_id must be provided", id)
+	}
+	if accountID != nil {
+		a, err := m.store.Get(ctx, id)
+		if err != nil {
+			return store.Agent{}, err
+		}
+		if a.Backend != config.BackendAnthropic {
+			return store.Agent{}, fmt.Errorf("renaming agent %q: %w", id, ErrAgentNotAnthropic)
+		}
+		if _, err := m.store.GetAnthropicAccount(ctx, *accountID); err != nil {
+			if store.IsAnthropicAccountNotFound(err) {
+				return store.Agent{}, fmt.Errorf("renaming agent %q: %w: %q", id, ErrUnknownAnthropicAccount, *accountID)
+			}
+			return store.Agent{}, fmt.Errorf("renaming agent %q: checking the anthropic account: %w", id, err)
+		}
 	}
 	return m.store.Update(ctx, id, func(a *store.Agent) error {
 		if name != nil {
@@ -172,6 +206,9 @@ func (m *Manager) Rename(ctx context.Context, id string, name, description *stri
 		}
 		if description != nil {
 			a.Description = *description
+		}
+		if accountID != nil {
+			a.AnthropicAccountID = *accountID
 		}
 		return nil
 	})

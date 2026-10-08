@@ -429,7 +429,7 @@ func (f *fakeManager) AnthropicLoginActive(_ context.Context) (bool, error) {
 	return f.loginActive, nil
 }
 
-func (f *fakeManager) Rename(_ context.Context, id string, name, description *string) (store.Agent, error) {
+func (f *fakeManager) Rename(_ context.Context, id string, name, description, accountID *string) (store.Agent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, ok := f.agents[id]
@@ -441,6 +441,9 @@ func (f *fakeManager) Rename(_ context.Context, id string, name, description *st
 	}
 	if description != nil {
 		a.Description = *description
+	}
+	if accountID != nil {
+		a.AnthropicAccountID = *accountID
 	}
 	f.agents[id] = a
 	return a, nil
