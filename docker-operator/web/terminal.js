@@ -604,7 +604,10 @@
 			var harnessInfo = window.Render.imageTagsForHarness(byHarness, agent.harness);
 			var operatorDefaultTag = harnessInfo.defaultTag;
 			var opDefaults = (typeof window.getAgentDefaults === 'function' && window.getAgentDefaults()) || {};
-			var defaults = Object.assign({}, opDefaults, { agentImage: byHarness });
+			var defaults = Object.assign({}, opDefaults, {
+				agentImage: byHarness,
+				anthropicAccounts: (typeof window.getAnthropicAccounts === 'function' && window.getAnthropicAccounts()) || [],
+			});
 
 			mainArea.innerHTML = window.Render.renderCreateForm(defaults, {
 				title: 'Update agent', submitLabel: 'Update', values: agent,
@@ -663,6 +666,20 @@
 					if (ollamaURL) body.ollama_url = ollamaURL;
 				}
 
+				// The Anthropic account selector is submitted SEPARATELY, through
+				// PATCH (store-only, no container recreate) -- see
+				// docs/superpowers/specs/2026-10-08-multi-anthropic-accounts-design.md.
+				// It is never part of `body`. It only applies when the agent was
+				// ALREADY backend=anthropic before this submit: switching an
+				// ollama agent to anthropic in this same submit always lands on
+				// the operator's current default account (resolveBackend's own
+				// fallback) -- a second update-form visit, once backend=anthropic
+				// is persisted, is what lets the user then pick a different one.
+				var accountSel = form.querySelector('.create-form__anthropic-account');
+				var wasAnthropic = agent.backend === 'anthropic';
+				var newAccountID = (wasAnthropic && accountSel) ? accountSel.value : '';
+				var accountChanged = wasAnthropic && newAccountID && newAccountID !== (agent.anthropic_account_id || '');
+
 				window.OperatorConfirm.show(
 					'It recreates the container (ending the running session) but keeps the volumes and history.',
 					{ title: 'Update this agent?', confirmLabel: 'Update' }
@@ -671,11 +688,26 @@
 
 					errorEl.hidden = true;
 					submitBtn.disabled = true;
-					fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/update', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify(body),
-					})
+
+					// The account PATCH runs first and independently: it never
+					// touches Docker, so even if the recreate below fails, the
+					// account pin is already correct for the next retry.
+					var accountPatch = accountChanged
+						? fetchJSON('/api/agents/' + encodeURIComponent(agentID), {
+							method: 'PATCH',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ account_id: newAccountID }),
+						})
+						: Promise.resolve();
+
+					accountPatch
+						.then(function () {
+							return fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/update', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify(body),
+							});
+						})
 						.then(function () {
 							if (typeof window.onAgentUpdated === 'function') window.onAgentUpdated(agentID);
 							else renderAgentDetail(mainArea, agentID);
