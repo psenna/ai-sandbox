@@ -100,13 +100,17 @@ type AgentManager interface {
 	CleanupAgentImages(ctx context.Context, harness string) (agent.AgentImageCleanupReport, error)
 	PullLatestAgentImage(ctx context.Context, harness string) agent.AgentImagePullReport
 
-	// AnthropicAuthStatus reports whether a shared Anthropic credential is
-	// configured, its kind and when it was last set -- never its value.
-	// SetAnthropicAuth stores (replacing) it; ClearAnthropicAuth removes it
-	// (idempotent).
-	AnthropicAuthStatus(ctx context.Context) (kind string, updatedAt time.Time, configured bool, err error)
-	SetAnthropicAuth(ctx context.Context, kind, value string) error
-	ClearAnthropicAuth(ctx context.Context) error
+	// ListAnthropicAccounts/CreateAnthropicAccount/DeleteAnthropicAccount/
+	// DefaultAnthropicAccountID/SetDefaultAnthropicAccount back the
+	// Settings "Anthropic Accounts" panel and the create/update forms'
+	// account picker. CreateAnthropicAccount never returns an account's
+	// Value to a caller beyond this process boundary -- handlers.go's own
+	// response types simply omit the field.
+	ListAnthropicAccounts(ctx context.Context) ([]store.AnthropicAccount, error)
+	CreateAnthropicAccount(ctx context.Context, name, kind, value string) (store.AnthropicAccount, error)
+	DeleteAnthropicAccount(ctx context.Context, id string) error
+	DefaultAnthropicAccountID(ctx context.Context) (string, error)
+	SetDefaultAnthropicAccount(ctx context.Context, id string) error
 
 	// StartAnthropicLogin ensures the singleton `claude setup-token` helper
 	// container is running (idempotent); StopAnthropicLogin tears it down
@@ -208,9 +212,10 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("PUT /api/templates/{id}", h.handleUpdateTemplate)
 	mux.HandleFunc("DELETE /api/templates/{id}", h.handleDeleteTemplate)
 
-	mux.HandleFunc("GET /api/anthropic/auth", h.handleAnthropicAuthGet)
-	mux.HandleFunc("PUT /api/anthropic/auth", h.handleAnthropicAuthPut)
-	mux.HandleFunc("DELETE /api/anthropic/auth", h.handleAnthropicAuthDelete)
+	mux.HandleFunc("GET /api/anthropic/accounts", h.handleAnthropicAccountsList)
+	mux.HandleFunc("POST /api/anthropic/accounts", h.handleAnthropicAccountsCreate)
+	mux.HandleFunc("DELETE /api/anthropic/accounts/{id}", h.handleAnthropicAccountDelete)
+	mux.HandleFunc("PUT /api/anthropic/accounts/{id}/default", h.handleAnthropicAccountSetDefault)
 	mux.HandleFunc("GET /api/anthropic/login", h.handleAnthropicLoginGet)
 	mux.HandleFunc("POST /api/anthropic/login", h.handleAnthropicLoginStart)
 	mux.HandleFunc("DELETE /api/anthropic/login", h.handleAnthropicLoginStop)
@@ -236,7 +241,9 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("/api/agent-image/tags/{harness}/{tag}", methodNotAllowed)
 	mux.HandleFunc("/api/templates", methodNotAllowed)
 	mux.HandleFunc("/api/templates/{id}", methodNotAllowed)
-	mux.HandleFunc("/api/anthropic/auth", methodNotAllowed)
+	mux.HandleFunc("/api/anthropic/accounts", methodNotAllowed)
+	mux.HandleFunc("/api/anthropic/accounts/{id}", methodNotAllowed)
+	mux.HandleFunc("/api/anthropic/accounts/{id}/default", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/login", methodNotAllowed)
 	mux.HandleFunc("/api/files", methodNotAllowed)
 	mux.HandleFunc("/api/files/download", methodNotAllowed)
@@ -859,19 +866,30 @@ type agentImageTagsResponse struct {
 	Harnesses map[string]agentImageHarness `json:"harnesses"`
 }
 
-// anthropicAuthRequest is the PUT /api/anthropic/auth body.
-type anthropicAuthRequest struct {
+// anthropicAccountCreateRequest is the POST /api/anthropic/accounts body.
+type anthropicAccountCreateRequest struct {
+	Name  string `json:"name"`
 	Kind  string `json:"kind"`
 	Value string `json:"value"`
 }
 
-// anthropicAuthResponse is the GET/PUT/DELETE /api/anthropic/auth body. It
-// never carries the credential value -- only whether one is configured, its
-// kind, and when it was last set.
-type anthropicAuthResponse struct {
-	Configured bool       `json:"configured"`
-	Kind       string     `json:"kind"`
-	UpdatedAt  *time.Time `json:"updated_at"`
+// anthropicAccountView is every GET/POST /api/anthropic/accounts response
+// element. It never carries Value -- only an account's name, kind, and
+// timestamps, plus whether it is the current default.
+type anthropicAccountView struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	IsDefault bool      `json:"is_default"`
+}
+
+// anthropicAccountsListResponse is the GET /api/anthropic/accounts body.
+// Accounts is never nil (JSON "[]" for none), matching every other list
+// response in this package (agentListResponse, templateListResponse).
+type anthropicAccountsListResponse struct {
+	Accounts []anthropicAccountView `json:"accounts"`
 }
 
 // anthropicLoginResponse is the GET/POST/DELETE /api/anthropic/login body.
@@ -1084,34 +1102,46 @@ func (h *Handler) handleAgentImagePullLatest(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func (h *Handler) handleAnthropicAuthGet(w http.ResponseWriter, r *http.Request) {
-	kind, updatedAt, configured, err := h.mgr.AnthropicAuthStatus(r.Context())
+func (h *Handler) handleAnthropicAccountsList(w http.ResponseWriter, r *http.Request) {
+	accounts, err := h.mgr.ListAnthropicAccounts(r.Context())
 	if err != nil {
-		h.internalError(w, "reading the Anthropic credential status", err)
+		h.internalError(w, "listing anthropic accounts", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, anthropicAuthStatusBody(kind, updatedAt, configured))
+	defaultID, err := h.mgr.DefaultAnthropicAccountID(r.Context())
+	if err != nil {
+		h.internalError(w, "reading the default anthropic account", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, anthropicAccountsListResponse{Accounts: toAnthropicAccountViews(accounts, defaultID)})
 }
 
-func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request) {
-	var req anthropicAuthRequest
+// handleAnthropicAccountsCreate serves the direct API-key path AND the
+// `claude setup-token` terminal's finish step (the web UI's "Add account"
+// modal collects the name BEFORE either sub-flow starts and carries it
+// client-side -- see
+// docs/superpowers/specs/2026-10-08-multi-anthropic-accounts-design.md's
+// "Login / add-account flow"). The shape checks mirror the retired
+// handleAnthropicAuthPut's exactly.
+func (h *Handler) handleAnthropicAccountsCreate(w http.ResponseWriter, r *http.Request) {
+	var req anthropicAccountCreateRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, CodeBadJSON, "the request body is not valid JSON: "+err.Error(), "")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, CodeMissingField, `"name" must not be empty`, "name")
 		return
 	}
 	if !store.ValidAnthropicKind(req.Kind) {
 		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"kind" must be "api_key" or "oauth"`, "kind")
 		return
 	}
-	// A credential pasted from a terminal (the setup-token helper's tmux pane,
-	// a shell) almost always arrives with a trailing newline, and an 80-column
-	// pane can hard-wrap the ~100-char OAuth token so the paste has a newline
-	// mid-string. Neither survives as a usable bearer: it is injected verbatim
-	// as CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY, Claude Code sends the
-	// mangled value, the API 401s, and the agent silently drops to an
-	// interactive login. Trim the outside; reject interior whitespace (no valid
-	// Anthropic key or token contains any) rather than store a value that
-	// cannot work.
+	// See handleAnthropicAuthPut's retired doc comment for why interior
+	// whitespace is rejected rather than just the surrounding trim: a
+	// terminal-pasted token that got line-wrapped or truncated must not be
+	// silently stored as an unusable value.
 	req.Value = strings.TrimSpace(req.Value)
 	if req.Value == "" {
 		writeError(w, http.StatusBadRequest, CodeMissingField, `"value" must not be empty`, "value")
@@ -1121,13 +1151,6 @@ func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, CodeInvalidParam, `"value" must not contain whitespace (a wrapped or truncated paste?)`, "value")
 		return
 	}
-	// Cheap shape checks. Both credentials go into every anthropic-backend
-	// agent's environment verbatim (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN),
-	// where a truncated or wrong-field paste does not error loudly -- Claude Code
-	// just ignores it and drops the agent to an interactive login. Catching the
-	// obvious mistakes here is worth the brittleness of a prefix match.
-	//   - a Console API key starts with "sk-ant-"
-	//   - a `claude setup-token` OAuth token starts with "sk-ant-oat01-"
 	switch req.Kind {
 	case store.AnthropicKindAPIKey:
 		if !strings.HasPrefix(req.Value, "sk-ant-") {
@@ -1141,30 +1164,71 @@ func (h *Handler) handleAnthropicAuthPut(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	if err := h.mgr.SetAnthropicAuth(r.Context(), req.Kind, req.Value); err != nil {
-		h.internalError(w, "storing the Anthropic credential", err)
-		return
-	}
-	// The credential is now stored, so a running `claude setup-token` helper
-	// has done its job -- tear it down. Best-effort: a failure here does not
-	// undo the store, so the request still succeeded.
-	if err := h.mgr.StopAnthropicLogin(r.Context()); err != nil {
-		h.log.Warn("could not tear down the Anthropic-login helper after storing the credential", "error", err)
-	}
-	kind, updatedAt, configured, err := h.mgr.AnthropicAuthStatus(r.Context())
+	account, err := h.mgr.CreateAnthropicAccount(r.Context(), req.Name, req.Kind, req.Value)
 	if err != nil {
-		h.internalError(w, "reading back the Anthropic credential status", err)
+		if store.IsAnthropicAccountNameTaken(err) {
+			writeError(w, http.StatusConflict, CodeDuplicateName, "an anthropic account with that name already exists", "name")
+			return
+		}
+		h.internalError(w, "creating anthropic account", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, anthropicAuthStatusBody(kind, updatedAt, configured))
+	// A credential is now stored, so a running `claude setup-token` helper
+	// (if this was its finish step) has done its job -- tear it down.
+	// Best-effort and harmless when this was the direct-paste path instead
+	// (no login container exists, so this is a no-op).
+	if err := h.mgr.StopAnthropicLogin(r.Context()); err != nil {
+		h.log.Warn("could not tear down the Anthropic-login helper after creating an account", "error", err)
+	}
+	defaultID, err := h.mgr.DefaultAnthropicAccountID(r.Context())
+	if err != nil {
+		h.internalError(w, "reading back the default anthropic account", err)
+		return
+	}
+	w.Header().Set("Location", "/api/anthropic/accounts/"+account.ID)
+	writeJSON(w, http.StatusCreated, toAnthropicAccountView(account, defaultID))
 }
 
-func (h *Handler) handleAnthropicAuthDelete(w http.ResponseWriter, r *http.Request) {
-	if err := h.mgr.ClearAnthropicAuth(r.Context()); err != nil {
-		h.internalError(w, "clearing the Anthropic credential", err)
+// handleAnthropicAccountDelete always answers 200, whether or not the
+// account existed -- Manager.DeleteAnthropicAccount is itself idempotent
+// and deliberately does not check whether any agent references the id
+// (see the spec's "Delete is unconditional" decision).
+func (h *Handler) handleAnthropicAccountDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.mgr.DeleteAnthropicAccount(r.Context(), id); err != nil {
+		h.internalError(w, "deleting anthropic account "+id, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, anthropicAuthResponse{Configured: false})
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
+}
+
+func (h *Handler) handleAnthropicAccountSetDefault(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.mgr.SetDefaultAnthropicAccount(r.Context(), id); err != nil {
+		if store.IsAnthropicAccountNotFound(err) {
+			writeError(w, http.StatusNotFound, CodeNotFound, "no such anthropic account", "")
+			return
+		}
+		h.internalError(w, "setting the default anthropic account", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func toAnthropicAccountView(a store.AnthropicAccount, defaultID string) anthropicAccountView {
+	return anthropicAccountView{
+		ID: a.ID, Name: a.Name, Kind: a.Kind,
+		CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		IsDefault: defaultID != "" && a.ID == defaultID,
+	}
+}
+
+func toAnthropicAccountViews(accounts []store.AnthropicAccount, defaultID string) []anthropicAccountView {
+	views := make([]anthropicAccountView, 0, len(accounts))
+	for _, a := range accounts {
+		views = append(views, toAnthropicAccountView(a, defaultID))
+	}
+	return views
 }
 
 func (h *Handler) handleAnthropicLoginGet(w http.ResponseWriter, r *http.Request) {
@@ -1196,15 +1260,6 @@ func anthropicLoginBody(active bool) anthropicLoginResponse {
 	resp := anthropicLoginResponse{Active: active}
 	if active {
 		resp.WS = anthropicLoginWSPath
-	}
-	return resp
-}
-
-func anthropicAuthStatusBody(kind string, updatedAt time.Time, configured bool) anthropicAuthResponse {
-	resp := anthropicAuthResponse{Configured: configured, Kind: kind}
-	if configured {
-		u := updatedAt
-		resp.UpdatedAt = &u
 	}
 	return resp
 }

@@ -54,13 +54,12 @@ type fakeManager struct {
 
 	dockerRuntime string
 
-	anthropicKind      string
-	anthropicValue     string
-	anthropicUpdatedAt time.Time
-	anthropicSet       bool
-	anthropicGetErr    error
-	anthropicSetErr    error
-	anthropicClearErr  error
+	anthropicAccounts      []store.AnthropicAccount
+	anthropicDefaultID     string
+	anthropicListErr       error
+	anthropicCreateErr     error
+	anthropicDeleteErr     error
+	anthropicSetDefaultErr error
 
 	loginActive   bool
 	loginStartErr error
@@ -362,45 +361,78 @@ func (f *fakeManager) PullLatestAgentImage(_ context.Context, harness string) ag
 	return agent.AgentImagePullReport{Harness: h}
 }
 
-func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
+func (f *fakeManager) ListAnthropicAccounts(_ context.Context) ([]store.AnthropicAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.anthropicGetErr != nil {
-		return "", time.Time{}, false, f.anthropicGetErr
+	if f.anthropicListErr != nil {
+		return nil, f.anthropicListErr
 	}
-	if !f.anthropicSet {
-		return "", time.Time{}, false, nil
-	}
-	return f.anthropicKind, f.anthropicUpdatedAt, true, nil
+	out := make([]store.AnthropicAccount, len(f.anthropicAccounts))
+	copy(out, f.anthropicAccounts)
+	return out, nil
 }
 
-func (f *fakeManager) SetAnthropicAuth(_ context.Context, kind, value string) error {
+func (f *fakeManager) CreateAnthropicAccount(_ context.Context, name, kind, value string) (store.AnthropicAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.anthropicSetErr != nil {
-		return f.anthropicSetErr
+	if f.anthropicCreateErr != nil {
+		return store.AnthropicAccount{}, f.anthropicCreateErr
 	}
-	if !store.ValidAnthropicKind(kind) || value == "" {
-		return fmt.Errorf("fakeManager: bad SetAnthropicAuth args kind=%q value-empty=%v", kind, value == "")
+	for _, a := range f.anthropicAccounts {
+		if a.Name == name {
+			return store.AnthropicAccount{}, fmt.Errorf("creating anthropic account %q: %w", name, store.ErrAnthropicAccountNameTaken)
+		}
 	}
-	f.anthropicKind = kind
-	f.anthropicValue = value
-	f.anthropicUpdatedAt = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	f.anthropicSet = true
+	a := store.AnthropicAccount{
+		ID:   fmt.Sprintf("anc_fake%d", len(f.anthropicAccounts)+1),
+		Name: name, Kind: kind, Value: value,
+		UpdatedAt: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC),
+	}
+	f.anthropicAccounts = append(f.anthropicAccounts, a)
+	if f.anthropicDefaultID == "" {
+		f.anthropicDefaultID = a.ID
+	}
+	return a, nil
+}
+
+func (f *fakeManager) DeleteAnthropicAccount(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicDeleteErr != nil {
+		return f.anthropicDeleteErr
+	}
+	kept := f.anthropicAccounts[:0]
+	for _, a := range f.anthropicAccounts {
+		if a.ID != id {
+			kept = append(kept, a)
+		}
+	}
+	f.anthropicAccounts = kept
+	if f.anthropicDefaultID == id {
+		f.anthropicDefaultID = ""
+	}
 	return nil
 }
 
-func (f *fakeManager) ClearAnthropicAuth(_ context.Context) error {
+func (f *fakeManager) DefaultAnthropicAccountID(_ context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.anthropicClearErr != nil {
-		return f.anthropicClearErr
+	return f.anthropicDefaultID, nil
+}
+
+func (f *fakeManager) SetDefaultAnthropicAccount(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicSetDefaultErr != nil {
+		return f.anthropicSetDefaultErr
 	}
-	f.anthropicSet = false
-	f.anthropicKind = ""
-	f.anthropicValue = ""
-	f.anthropicUpdatedAt = time.Time{}
-	return nil
+	for _, a := range f.anthropicAccounts {
+		if a.ID == id {
+			f.anthropicDefaultID = id
+			return nil
+		}
+	}
+	return fmt.Errorf("setting default anthropic account %q: %w", id, store.ErrAnthropicAccountNotFound)
 }
 
 func (f *fakeManager) StartAnthropicLogin(_ context.Context) error {
@@ -436,14 +468,27 @@ func (f *fakeManager) Rename(_ context.Context, id string, name, description, ac
 	if !ok {
 		return store.Agent{}, fmt.Errorf("renaming agent %q: %w", id, store.ErrNotFound)
 	}
+	if accountID != nil {
+		if a.Backend != config.BackendAnthropic {
+			return store.Agent{}, fmt.Errorf("renaming agent %q: %w", id, agent.ErrAgentNotAnthropic)
+		}
+		found := false
+		for _, acc := range f.anthropicAccounts {
+			if acc.ID == *accountID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return store.Agent{}, fmt.Errorf("renaming agent %q: %w: %q", id, agent.ErrUnknownAnthropicAccount, *accountID)
+		}
+		a.AnthropicAccountID = *accountID
+	}
 	if name != nil {
 		a.Name = *name
 	}
 	if description != nil {
 		a.Description = *description
-	}
-	if accountID != nil {
-		a.AnthropicAccountID = *accountID
 	}
 	f.agents[id] = a
 	return a, nil

@@ -91,147 +91,189 @@ func TestCreate_InvalidBackendFromManagerIs400(t *testing.T) {
 	}
 }
 
-// --- /api/anthropic/auth -------------------------------------------------
+// --- /api/anthropic/accounts ----------------------------------------------
 
-func TestAnthropicAuth_GetBeforeSet(t *testing.T) {
+func TestAnthropicAccounts_ListEmpty(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "GET", "/api/anthropic/auth", nil)
+	rec := doJSON(t, h, "GET", "/api/anthropic/accounts", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+		t.Fatalf("GET /api/anthropic/accounts status = %d; want 200", rec.Code)
 	}
-	var resp anthropicAuthResponse
-	decode(t, rec.Body.Bytes(), &resp)
-	if resp.Configured || resp.Kind != "" || resp.UpdatedAt != nil {
-		t.Errorf("resp = %+v, want configured=false, no kind, no updated_at", resp)
+	var body anthropicAccountsListResponse
+	decode(t, rec.Body.Bytes(), &body)
+	if len(body.Accounts) != 0 {
+		t.Fatalf("Accounts = %v; want empty", body.Accounts)
 	}
 }
 
-func TestAnthropicAuth_PutThenGet(t *testing.T) {
+func TestAnthropicAccounts_CreateThenList(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-secret"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT status = %d, want 200; body: %s", rec.Code, rec.Body)
+	rec := doJSON(t, h, "POST", "/api/anthropic/accounts", map[string]any{"name": "Work", "kind": "api_key", "value": "sk-ant-abc123"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/anthropic/accounts status = %d, body = %s; want 201", rec.Code, rec.Body)
 	}
-	var put anthropicAuthResponse
-	decode(t, rec.Body.Bytes(), &put)
-	if !put.Configured || put.Kind != "oauth" || put.UpdatedAt == nil {
-		t.Errorf("PUT resp = %+v, want configured=true kind=oauth with updated_at", put)
+	var created anthropicAccountView
+	decode(t, rec.Body.Bytes(), &created)
+	if created.Name != "Work" || created.Kind != "api_key" || !created.IsDefault {
+		t.Fatalf("created account = %+v; want Name=Work Kind=api_key IsDefault=true (first account)", created)
 	}
-
-	rec = doJSON(t, h, "GET", "/api/anthropic/auth", nil)
-	var got anthropicAuthResponse
-	decode(t, rec.Body.Bytes(), &got)
-	if !got.Configured || got.Kind != "oauth" {
-		t.Errorf("GET resp = %+v, want configured=true kind=oauth", got)
+	// Never leak the value.
+	if strings.Contains(rec.Body.String(), "sk-ant-abc123") {
+		t.Fatalf("response body leaked the account value: %s", rec.Body.String())
 	}
-
-	// The secret must never appear in any response body.
-	if strings.Contains(rec.Body.String(), "sk-ant-oat01-secret") {
-		t.Errorf("GET body leaked the credential value: %s", rec.Body.String())
+	if len(mgr.anthropicAccounts) != 1 || mgr.anthropicAccounts[0].Value != "sk-ant-abc123" {
+		t.Fatalf("fakeManager.anthropicAccounts = %+v; want one account with the real value stored server-side", mgr.anthropicAccounts)
 	}
 }
 
-func TestAnthropicAuth_PutValidation(t *testing.T) {
+func TestAnthropicAccountsCreate_Validation(t *testing.T) {
 	cases := []struct {
 		name string
 		body map[string]any
 		code string
 	}{
-		{"unknown kind", map[string]any{"kind": "bearer", "value": "x"}, CodeInvalidParam},
-		{"empty value", map[string]any{"kind": "oauth", "value": "  "}, CodeMissingField},
-		{"whitespace-only value", map[string]any{"kind": "oauth", "value": "\n\t "}, CodeMissingField},
-		{"api key without sk-ant- prefix", map[string]any{"kind": "api_key", "value": "nope"}, CodeInvalidParam},
-		{"oauth token without sk-ant-oat01- prefix", map[string]any{"kind": "oauth", "value": "oat-nope"}, CodeInvalidParam},
-		{"oauth token with an interior newline (wrapped paste)", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-aaa\nbbb"}, CodeInvalidParam},
-		{"api key with an interior space", map[string]any{"kind": "api_key", "value": "sk-ant-aaa bbb"}, CodeInvalidParam},
+		{"missing name", map[string]any{"kind": "api_key", "value": "sk-ant-abc123"}, CodeMissingField},
+		{"unknown kind", map[string]any{"name": "Work", "kind": "bearer", "value": "x"}, CodeInvalidParam},
+		{"empty value", map[string]any{"name": "Work", "kind": "oauth", "value": "  "}, CodeMissingField},
+		{"whitespace-only value", map[string]any{"name": "Work", "kind": "oauth", "value": "\n\t "}, CodeMissingField},
+		{"api key without sk-ant- prefix", map[string]any{"name": "Work", "kind": "api_key", "value": "nope"}, CodeInvalidParam},
+		{"oauth token without sk-ant-oat01- prefix", map[string]any{"name": "Work", "kind": "oauth", "value": "oat-nope"}, CodeInvalidParam},
+		{"oauth token with an interior newline (wrapped paste)", map[string]any{"name": "Work", "kind": "oauth", "value": "sk-ant-oat01-aaa\nbbb"}, CodeInvalidParam},
+		{"api key with an interior space", map[string]any{"name": "Work", "kind": "api_key", "value": "sk-ant-aaa bbb"}, CodeInvalidParam},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mgr := newFakeManager(5)
 			h := newTestHandler(mgr, dockerclienttest.New())
-			rec := doJSON(t, h, "PUT", "/api/anthropic/auth", tc.body)
+			rec := doJSON(t, h, "POST", "/api/anthropic/accounts", tc.body)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body)
 			}
 			if got := decodeEnvelope(t, rec).Error.Code; got != tc.code {
 				t.Errorf("error code = %q, want %q", got, tc.code)
 			}
-			if mgr.anthropicSet {
-				t.Errorf("a rejected PUT still stored a credential")
+			if len(mgr.anthropicAccounts) != 0 {
+				t.Errorf("a rejected create still stored an account: %+v", mgr.anthropicAccounts)
 			}
 		})
-	}
-}
-
-func TestAnthropicAuth_PutAcceptsAValidAPIKey(t *testing.T) {
-	mgr := newFakeManager(5)
-	h := newTestHandler(mgr, dockerclienttest.New())
-
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "api_key", "value": "sk-ant-abc123"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
-	}
-	if !mgr.anthropicSet || mgr.anthropicKind != store.AnthropicKindAPIKey {
-		t.Errorf("manager state = set=%v kind=%q, want set with api_key", mgr.anthropicSet, mgr.anthropicKind)
 	}
 }
 
 // A credential pasted from a terminal typically carries a trailing newline;
 // the handler must store the trimmed value so what lands in an agent's
 // environment is a usable bearer, not "sk-ant-oat01-…\n".
-func TestAnthropicAuth_PutTrimsSurroundingWhitespace(t *testing.T) {
+func TestAnthropicAccountsCreate_TrimsSurroundingWhitespace(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "  sk-ant-oat01-secret\n"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	rec := doJSON(t, h, "POST", "/api/anthropic/accounts", map[string]any{"name": "Work", "kind": "oauth", "value": "  sk-ant-oat01-secret\n"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body)
 	}
-	if mgr.anthropicValue != "sk-ant-oat01-secret" {
-		t.Errorf("stored value = %q, want it trimmed to %q", mgr.anthropicValue, "sk-ant-oat01-secret")
+	if len(mgr.anthropicAccounts) != 1 || mgr.anthropicAccounts[0].Value != "sk-ant-oat01-secret" {
+		t.Fatalf("stored accounts = %+v, want one account with the value trimmed to %q", mgr.anthropicAccounts, "sk-ant-oat01-secret")
 	}
 }
 
-func TestAnthropicAuth_Delete(t *testing.T) {
+func TestAnthropicAccountDelete_IsIdempotent(t *testing.T) {
 	mgr := newFakeManager(5)
-	mgr.anthropicSet = true
-	mgr.anthropicKind = "oauth"
+	mgr.anthropicAccounts = []store.AnthropicAccount{{ID: "anc_1", Name: "Work", Kind: store.AnthropicKindAPIKey}}
+	mgr.anthropicDefaultID = "anc_1"
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "DELETE", "/api/anthropic/auth", nil)
+	// An existing id: deleted, 200.
+	rec := doJSON(t, h, "DELETE", "/api/anthropic/accounts/anc_1", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
 	}
-	if mgr.anthropicSet {
-		t.Errorf("credential still set after DELETE")
+	if len(mgr.anthropicAccounts) != 0 {
+		t.Errorf("account still present after DELETE: %+v", mgr.anthropicAccounts)
 	}
-	// Idempotent.
-	rec = doJSON(t, h, "DELETE", "/api/anthropic/auth", nil)
+	// The same id again -- idempotent, still 200.
+	rec = doJSON(t, h, "DELETE", "/api/anthropic/accounts/anc_1", nil)
 	if rec.Code != http.StatusOK {
 		t.Errorf("second DELETE status = %d, want 200", rec.Code)
 	}
+	// An id that never existed -- also 200.
+	rec = doJSON(t, h, "DELETE", "/api/anthropic/accounts/anc_never_existed", nil)
+	if rec.Code != http.StatusOK {
+		t.Errorf("DELETE of an unknown id status = %d, want 200", rec.Code)
+	}
 }
 
-func TestAnthropicAuth_MethodNotAllowed(t *testing.T) {
+func TestAnthropicAccountSetDefault_UnknownIs404(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "POST", "/api/anthropic/auth", nil)
+	rec := doJSON(t, h, "PUT", "/api/anthropic/accounts/anc_missing/default", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAnthropicAccountSetDefault_Succeeds(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.anthropicAccounts = []store.AnthropicAccount{
+		{ID: "anc_1", Name: "Work", Kind: store.AnthropicKindAPIKey},
+		{ID: "anc_2", Name: "Personal", Kind: store.AnthropicKindOAuth},
+	}
+	mgr.anthropicDefaultID = "anc_1"
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PUT", "/api/anthropic/accounts/anc_2/default", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", rec.Code, rec.Body)
+	}
+
+	rec = doJSON(t, h, "GET", "/api/anthropic/accounts", nil)
+	var body anthropicAccountsListResponse
+	decode(t, rec.Body.Bytes(), &body)
+	byID := map[string]anthropicAccountView{}
+	for _, a := range body.Accounts {
+		byID[a.ID] = a
+	}
+	if !byID["anc_2"].IsDefault {
+		t.Errorf("anc_2 = %+v, want IsDefault=true after being set as default", byID["anc_2"])
+	}
+	if byID["anc_1"].IsDefault {
+		t.Errorf("anc_1 = %+v, want IsDefault=false after anc_2 became the default", byID["anc_1"])
+	}
+}
+
+func TestAnthropicAccounts_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/anthropic/accounts", nil)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405; body: %s", rec.Code, rec.Body)
 	}
 }
 
-func TestAnthropicAuth_GetErrorIs500(t *testing.T) {
+func TestAnthropicAccountsList_ErrorIs500(t *testing.T) {
 	mgr := newFakeManager(5)
-	mgr.anthropicGetErr = errors.New("boltdb exploded")
+	mgr.anthropicListErr = errors.New("boltdb exploded")
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "GET", "/api/anthropic/auth", nil)
+	rec := doJSON(t, h, "GET", "/api/anthropic/accounts", nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "boltdb exploded") {
+		t.Errorf("500 body leaked the internal error: %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicAccountsCreate_ErrorIs500(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.anthropicCreateErr = errors.New("boltdb exploded")
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/anthropic/accounts", map[string]any{"name": "Work", "kind": "api_key", "value": "sk-ant-abc123"})
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body: %s", rec.Code, rec.Body)
 	}
@@ -308,36 +350,37 @@ func TestAnthropicLogin_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestAnthropicAuth_PutTearsDownLogin: storing a credential means the
-// setup-token helper has done its job, so PUT /api/anthropic/auth also
-// removes the login container.
-func TestAnthropicAuth_PutTearsDownLogin(t *testing.T) {
+// TestAnthropicAccountsCreate_TearsDownLogin: creating an account means a
+// running `claude setup-token` helper (if this was its finish step) has
+// done its job, so POST /api/anthropic/accounts also removes the login
+// container.
+func TestAnthropicAccountsCreate_TearsDownLogin(t *testing.T) {
 	mgr := newFakeManager(5)
 	mgr.loginActive = true
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-x"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT status = %d, want 200; body: %s", rec.Code, rec.Body)
+	rec := doJSON(t, h, "POST", "/api/anthropic/accounts", map[string]any{"name": "Work", "kind": "oauth", "value": "sk-ant-oat01-x"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d, want 201; body: %s", rec.Code, rec.Body)
 	}
 	if mgr.loginActive {
-		t.Error("login container still active after a successful PUT /api/anthropic/auth")
+		t.Error("login container still active after a successful POST /api/anthropic/accounts")
 	}
 }
 
-// A login-teardown failure during PUT must not fail the request -- the
-// credential was still stored.
-func TestAnthropicAuth_PutSucceedsEvenIfLoginTeardownFails(t *testing.T) {
+// A login-teardown failure during create must not fail the request -- the
+// account was still stored.
+func TestAnthropicAccountsCreate_SucceedsEvenIfLoginTeardownFails(t *testing.T) {
 	mgr := newFakeManager(5)
 	mgr.loginActive = true
 	mgr.loginStopErr = errors.New("daemon hiccup")
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "PUT", "/api/anthropic/auth", map[string]any{"kind": "oauth", "value": "sk-ant-oat01-x"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("PUT status = %d, want 200 despite the teardown failure; body: %s", rec.Code, rec.Body)
+	rec := doJSON(t, h, "POST", "/api/anthropic/accounts", map[string]any{"name": "Work", "kind": "oauth", "value": "sk-ant-oat01-x"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d, want 201 despite the teardown failure; body: %s", rec.Code, rec.Body)
 	}
-	if !mgr.anthropicSet {
-		t.Error("credential was not stored")
+	if len(mgr.anthropicAccounts) != 1 {
+		t.Error("account was not stored")
 	}
 }
