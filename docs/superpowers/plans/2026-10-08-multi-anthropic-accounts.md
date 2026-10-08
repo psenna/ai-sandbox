@@ -3380,7 +3380,9 @@ EOF
 
 ## Task 10: Final gate, PR, CI, merge
 
-**Files:** none (verification and process only).
+**Files:** `docker-operator/web/style.css` and its committed copy (one small
+cleanup deletion, per the controller ruling in Step 2 below — otherwise
+this task is verification and process only).
 
 - [ ] **Step 1: Run the full Go gate**
 
