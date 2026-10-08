@@ -938,7 +938,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		case store.IsAtCapacity(err):
 			writeError(w, http.StatusConflict, CodeAtCapacity, "the maximum number of agents is already running; delete one before creating another", "")
 		case agent.IsNoAnthropicAuth(err):
-			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before creating an agent that uses it", "backend")
+			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure an Anthropic account (POST /api/anthropic/accounts) before creating an agent that uses it", "backend")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
 		case agent.IsInvalidHarness(err):
@@ -1349,7 +1349,7 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		case agent.IsInvalidImageTag(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"image_tag" is not a valid image tag`, "image_tag")
 		case agent.IsNoAnthropicAuth(err):
-			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure the Anthropic account (PUT /api/anthropic/auth) before switching an agent to it", "backend")
+			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure an Anthropic account (POST /api/anthropic/accounts) before switching an agent to it", "backend")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
 		case agent.IsInvalidHarness(err):
