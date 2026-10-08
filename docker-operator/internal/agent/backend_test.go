@@ -15,7 +15,7 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("default: no backend in the request uses the operator default", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		rb, err := m.resolveBackend(ctx, CreateRequest{})
+		rb, err := m.resolveBackend(ctx, CreateRequest{}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -31,7 +31,7 @@ func TestResolveBackend(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
 		rb, err := m.resolveBackend(ctx, CreateRequest{
 			Backend: config.BackendOllama, Model: "custom-opus", FastModel: "custom-fast",
-		})
+		}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -42,7 +42,7 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("ollama: one override, one default", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendOllama, Model: "only-opus"})
+		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendOllama, Model: "only-opus"}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -53,7 +53,7 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("ollama: no ollama_url in the request uses the operator default", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendOllama})
+		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendOllama}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -66,7 +66,7 @@ func TestResolveBackend(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
 		rb, err := m.resolveBackend(ctx, CreateRequest{
 			Backend: config.BackendOllama, OllamaURL: "http://gpu-box:11434",
-		})
+		}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -79,7 +79,7 @@ func TestResolveBackend(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
 		_, err := m.resolveBackend(ctx, CreateRequest{
 			Backend: config.BackendOllama, OllamaURL: "gpu-box:11434",
-		})
+		}, "")
 		if !IsInvalidOllamaURL(err) {
 			t.Fatalf("resolveBackend err = %v, want IsInvalidOllamaURL", err)
 		}
@@ -87,10 +87,10 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("anthropic with a stored api key", func(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
-		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
-			t.Fatalf("SetAnthropicAuth: %v", err)
+		if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
+			t.Fatalf("CreateAnthropicAccount: %v", err)
 		}
-		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic})
+		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -104,10 +104,10 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("anthropic with a stored oauth token", func(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
-		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindOAuth, "oat-abc"); err != nil {
-			t.Fatalf("SetAnthropicAuth: %v", err)
+		if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindOAuth, "oat-abc"); err != nil {
+			t.Fatalf("CreateAnthropicAccount: %v", err)
 		}
-		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic})
+		rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic}, "")
 		if err != nil {
 			t.Fatalf("resolveBackend: %v", err)
 		}
@@ -118,7 +118,7 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("anthropic with no stored credential is ErrNoAnthropicAuth", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		_, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic})
+		_, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic}, "")
 		if !IsNoAnthropicAuth(err) {
 			t.Fatalf("resolveBackend err = %v, want IsNoAnthropicAuth", err)
 		}
@@ -126,11 +126,109 @@ func TestResolveBackend(t *testing.T) {
 
 	t.Run("an unknown backend is ErrInvalidBackend", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		_, err := m.resolveBackend(ctx, CreateRequest{Backend: "vertex"})
+		_, err := m.resolveBackend(ctx, CreateRequest{Backend: "vertex"}, "")
 		if !IsInvalidBackend(err) {
 			t.Fatalf("resolveBackend err = %v, want IsInvalidBackend", err)
 		}
 	})
+}
+
+func TestResolveBackend_AnthropicNoAccountsIs409Shape(t *testing.T) {
+	m, _, _ := newTestManager(t, 5)
+	_, err := m.resolveBackend(context.Background(), CreateRequest{Backend: "anthropic"}, "")
+	if !IsNoAnthropicAuth(err) {
+		t.Fatalf("resolveBackend with no accounts error = %v; want IsNoAnthropicAuth", err)
+	}
+}
+
+func TestResolveBackend_AnthropicExplicitAccountID(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	a, err := st.CreateAnthropicAccount(context.Background(), "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount: %v", err)
+	}
+	b, err := st.CreateAnthropicAccount(context.Background(), "Personal", store.AnthropicKindAPIKey, "sk-ant-personal")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount: %v", err)
+	}
+
+	rb, err := m.resolveBackend(context.Background(), CreateRequest{Backend: "anthropic", AccountID: b.ID}, "")
+	if err != nil {
+		t.Fatalf("resolveBackend: %v", err)
+	}
+	if rb.accountID != b.ID || rb.apiKey != "sk-ant-personal" {
+		t.Fatalf("resolveBackend(explicit %q) = %+v; want accountID=%q apiKey=sk-ant-personal", b.ID, rb, b.ID)
+	}
+	_ = a
+}
+
+func TestResolveBackend_AnthropicExplicitUnknownAccountID(t *testing.T) {
+	m, _, _ := newTestManager(t, 5)
+	_, err := m.resolveBackend(context.Background(), CreateRequest{Backend: "anthropic", AccountID: "anc_missing"}, "")
+	if !IsUnknownAnthropicAccount(err) {
+		t.Fatalf("resolveBackend(unknown explicit account) error = %v; want IsUnknownAnthropicAccount", err)
+	}
+}
+
+func TestResolveBackend_AnthropicOmittedUsesDefault(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	a, err := st.CreateAnthropicAccount(context.Background(), "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount: %v", err)
+	}
+	rb, err := m.resolveBackend(context.Background(), CreateRequest{Backend: "anthropic"}, "")
+	if err != nil {
+		t.Fatalf("resolveBackend: %v", err)
+	}
+	if rb.accountID != a.ID {
+		t.Fatalf("resolveBackend(omitted) accountID = %q; want the default %q", rb.accountID, a.ID)
+	}
+}
+
+// TestResolveBackend_PinAtCreationSurvivesDefaultChange is a Review Focus
+// case for spec decision #7: changing the default afterward must not move
+// an already-resolved pin.
+func TestResolveBackend_PinAtCreationSurvivesDefaultChange(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	ctx := context.Background()
+	a, _ := st.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	b, _ := st.CreateAnthropicAccount(ctx, "Personal", store.AnthropicKindAPIKey, "sk-ant-personal")
+
+	rb, err := m.resolveBackend(ctx, CreateRequest{Backend: "anthropic"}, "")
+	if err != nil {
+		t.Fatalf("resolveBackend: %v", err)
+	}
+	if rb.accountID != a.ID {
+		t.Fatalf("first resolveBackend accountID = %q; want %q", rb.accountID, a.ID)
+	}
+
+	if err := st.SetDefaultAnthropicAccount(ctx, b.ID); err != nil {
+		t.Fatalf("SetDefaultAnthropicAccount: %v", err)
+	}
+	// existingAccountID simulates an Update call for the agent that was
+	// already pinned to `a` -- it must NOT follow the new default.
+	rb2, err := m.resolveBackend(ctx, CreateRequest{Backend: "anthropic"}, a.ID)
+	if err != nil {
+		t.Fatalf("second resolveBackend: %v", err)
+	}
+	if rb2.accountID != a.ID {
+		t.Fatalf("resolveBackend with existingAccountID=%q accountID = %q; want unchanged %q, not the new default %q", a.ID, rb2.accountID, a.ID, b.ID)
+	}
+}
+
+// TestResolveBackend_DanglingExistingAccountFailsClosed is a Review Focus
+// case for spec decision #3.
+func TestResolveBackend_DanglingExistingAccountFailsClosed(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	ctx := context.Background()
+	a, _ := st.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	if err := st.DeleteAnthropicAccount(ctx, a.ID); err != nil {
+		t.Fatalf("DeleteAnthropicAccount: %v", err)
+	}
+	_, err := m.resolveBackend(ctx, CreateRequest{Backend: "anthropic"}, a.ID)
+	if !IsNoAnthropicAuth(err) {
+		t.Fatalf("resolveBackend with a deleted existingAccountID error = %v; want IsNoAnthropicAuth (fail closed)", err)
+	}
 }
 
 // TestAgentEnv_StaticBase checks the backend-independent half of the
@@ -247,8 +345,8 @@ func TestCreate_PersistsBackend(t *testing.T) {
 
 	t.Run("anthropic with a stored credential", func(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
-		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindOAuth, "oat-1"); err != nil {
-			t.Fatalf("SetAnthropicAuth: %v", err)
+		if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindOAuth, "oat-1"); err != nil {
+			t.Fatalf("CreateAnthropicAccount: %v", err)
 		}
 		got, err := m.Create(ctx, CreateRequest{Backend: config.BackendAnthropic})
 		if err != nil {

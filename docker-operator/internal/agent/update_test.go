@@ -242,8 +242,8 @@ func TestUpdate_KeepsIDAndVolumeNames(t *testing.T) {
 func TestUpdate_BackendOllamaToAnthropic(t *testing.T) {
 	m, _, st := newTestManager(t, 5)
 	ctx := context.Background()
-	if err := st.SetAnthropicAuth(ctx, store.AnthropicKindOAuth, "oat-live"); err != nil {
-		t.Fatalf("SetAnthropicAuth: %v", err)
+	if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindOAuth, "oat-live"); err != nil {
+		t.Fatalf("CreateAnthropicAccount: %v", err)
 	}
 	a := createRunningAgent(t, m) // ollama by default
 
@@ -260,7 +260,7 @@ func TestUpdate_BackendOllamaToAnthropic(t *testing.T) {
 		t.Errorf("ollama fields not cleared: %+v", updated)
 	}
 
-	rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic})
+	rb, err := m.resolveBackend(ctx, CreateRequest{Backend: config.BackendAnthropic}, "")
 	if err != nil {
 		t.Fatalf("resolveBackend: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestUpdate_ResyncsDependaproxyBeforeRecreate(t *testing.T) {
 	// TestUpdate_BackendOllamaToAnthropic's approach to checking env vars.
 	rb, err := m.resolveBackend(ctx, CreateRequest{
 		Backend: updated.Backend, Model: updated.Model, FastModel: updated.FastModel, OllamaURL: updated.OllamaURL,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("resolveBackend: %v", err)
 	}

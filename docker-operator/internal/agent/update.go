@@ -116,7 +116,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 		return store.Agent{}, fmt.Errorf("updating agent %q: %w (status %q)", id, ErrNotUpdatable, a.Status)
 	}
 
-	rs, err := m.resolveSpec(ctx, req.CreateRequest)
+	rs, err := m.resolveSpec(ctx, req.CreateRequest, a.AnthropicAccountID)
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("updating agent %q: %w", id, err)
 	}
@@ -209,6 +209,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (sto
 		ag.Model = rs.rb.model
 		ag.FastModel = rs.rb.fastModel
 		ag.OllamaURL = rs.rb.ollamaURL
+		ag.AnthropicAccountID = rs.rb.accountID
 		ag.Repo = rs.repo
 		ag.AutoCompactThreshold = rs.autoCompact
 		ag.MaxContextTokens = rs.maxContextTokens
