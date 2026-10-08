@@ -33,9 +33,21 @@ Settings panel. Tokens must never be sent to the web UI.
    `ErrNoAnthropicAuth`, HTTP 409) the next time it needs new env vars
    (create, restart, wake) — it does not silently fall back to whatever is
    currently default.
-4. **Account changes apply on next natural restart/wake, not immediately.**
-   Editing a running agent's pinned account only changes the stored value;
-   the operator does not stop/recreate the container to apply it early.
+4. **Account changes apply on next natural restart/wake, not immediately —
+   via the existing lightweight PATCH path, not the full recreate.**
+   Verified against the real code (not assumed): `PATCH /api/agents/{id}` →
+   `Manager.Rename` (`internal/agent/query.go:165`) already does a
+   store-only field patch with **no container recreate** — today used only
+   by the inline name/description editor in the agent detail panel
+   (`web/terminal.js`'s `save()`). The big create/update form instead always
+   submits to `POST /api/agents/{id}/update` → `Manager.Update`
+   (`internal/agent/update.go:100`), which **always** stops and recreates
+   the container, for every field it carries (Model/Backend/etc. do take
+   effect immediately today — the original framing of this decision was
+   wrong to imply otherwise). To honor "next restart only" for real, the
+   account selector on the update form submits through its own PATCH call
+   (extending `Rename`/`handleRename`, not through `UpdateRequest`), kept
+   separate from whatever else that form submission changes.
 5. **Naming happens before the credential flow.** "Add account" asks for a
    name first (small modal: name + choice of paste-API-key vs. OAuth login),
    then proceeds into the existing prompt or terminal flow unchanged.
@@ -90,34 +102,75 @@ persisted and round-tripped exactly like `Harness`/`Backend` today.
 
 ## Resolution semantics
 
-`internal/agent/create.go`:
+- `CreateRequest` gains `AccountID` (JSON `account_id`, omitted/empty meaning
+  "use current default"). `UpdateRequest` does **not** expose `account_id` in
+  its JSON body at all (`updateAgentRequest` in `handlers.go` simply has no
+  such field) — the embedded `CreateRequest.AccountID` it inherits
+  structurally is therefore always `""` in practice. Account changes on an
+  existing agent go through the new PATCH extension below, never through
+  `Update`.
+- `resolveBackend` gains a parameter: `existingAccountID string` — the
+  account already pinned on the record, or `""` when there is none yet
+  (every `Create` call; an `Update` call for an agent that was previously
+  `backend=ollama`).
+  ```go
+  func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest, existingAccountID string) (resolvedBackend, error)
+  ```
+  For `kind == config.BackendAnthropic`:
+  1. `accountID := existingAccountID`; if empty, `accountID = req.AccountID`
+     (only ever non-empty for `Create`); if still empty, read
+     `store.DefaultAnthropicAccountID(ctx)`.
+  2. If still empty → `ErrNoAnthropicAuth` (409), same as today's "no
+     credential configured" case.
+  3. Otherwise `store.GetAnthropicAccount(ctx, accountID)`. Not found:
+     - if this ID came from `existingAccountID` (a previously-valid pin that
+       is now dangling) → wrap as `ErrNoAnthropicAuth` (409, decision #3) —
+       reuses the exact existing `IsNoAnthropicAuth` → 409 mapping at
+       `handlers.go:922-923` and `:1296-1297` with no changes needed there.
+     - if this ID came from an explicit `req.AccountID` on `Create` → a new
+       sentinel `ErrUnknownAnthropicAccount` → `IsUnknownAnthropicAccount` →
+       HTTP 400.
+  4. On success, stamp `rb.accountID = accountID` (persisted onto
+     `store.Agent.AnthropicAccountID` by the caller, Create or Update, as it
+     already persists `rb.model`/`rb.ollamaURL`/etc.) and build
+     `rb.apiKey`/`rb.oauthToken` from the account's `(Kind, Value)` exactly as
+     today — `applyBackendEnv` itself is unchanged.
+- `Create` calls `resolveBackend(ctx, req, "")` — always a fresh resolution,
+  implementing decision #7's "pin at that moment."
+- `Update` calls `resolveBackend(ctx, req.CreateRequest, a.AnthropicAccountID)`
+  — reuses the record's existing pin (or resolves-and-pins the default, if
+  this update is switching the agent from `ollama` to `anthropic` for the
+  first time). It never reads an `account_id` from the update request body.
 
-- `CreateRequest`/`UpdateRequest` gain `AccountID string` (JSON
-  `account_id`, omitted/empty meaning "use current default").
-- `resolveBackend`, for `kind == config.BackendAnthropic`:
-  - If `AccountID` is non-empty: look it up via the new store method. Unknown
-    ID → a new sentinel `ErrUnknownAnthropicAccount` → `IsUnknownAnthropicAccount`
-    → HTTP 400 ("unknown Anthropic account"). This mirrors the existing
-    `ErrNoAnthropicAuth`/`IsNoAnthropicAuth` → 409 wiring at
-    `handlers.go:922-923`.
-  - If `AccountID` is empty: read `default_anthropic_account_id`. If unset or
-    it points at a since-deleted account, fail the same way today's
-    "no credential configured" case does — `ErrNoAnthropicAuth` → 409. If it
-    resolves, **stamp that concrete account ID onto the agent now** (decision
-    #7) rather than storing "use default."
-  - On success, `resolveBackend` fetches that account's `(Kind, Value)` and
-    builds `rb.apiKey`/`rb.oauthToken` for `applyBackendEnv` exactly as it
-    does today from the singleton — `applyBackendEnv` itself is unchanged.
-- `internal/agent/update.go`: an `UpdateRequest.AccountID` change only
-  rewrites `Agent.AnthropicAccountID` in the store (decision #4) — no
-  container recreate is triggered by this field, same as how other
-  non-structural fields behave today.
-- When an agent with a pinned `AnthropicAccountID` next needs env vars
-  (create, restart, wake) and that account has been deleted in the
-  meantime, the lookup fails and surfaces as the existing
-  `ErrNoAnthropicAuth`-shaped 409 (decision #3) — the message should name
-  the missing account so it's debuggable, not just "no credential
-  configured."
+## Changing an existing agent's account (no recreate)
+
+`internal/agent/query.go`'s `Rename` is today's only field-only,
+no-container-touch patch (`PATCH /api/agents/{id}` → `handleRename` →
+`Manager.Rename(ctx, id, name, description *string)` → a bare
+`store.Update` mutator). It gains a third optional parameter:
+
+```go
+func (m *Manager) Rename(ctx context.Context, id string, name, description, accountID *string) (store.Agent, error)
+```
+
+When `accountID != nil`: reject (400, a new `ErrAgentNotAnthropic`-style
+sentinel) if the current record's `Backend != config.BackendAnthropic` —
+there is nothing to pin on an ollama agent. Otherwise validate the ID exists
+via `store.GetAnthropicAccount` (a plain pre-check, same shape
+`resolveBackend` already uses elsewhere in this codebase — not transactional
+with the write; a deleted-between-check-and-write race just means the
+fail-closed dangling-pin path (decision #3) catches it at the next restart,
+which is already an accepted outcome, not a new hole), then set
+`a.AnthropicAccountID = *accountID` inside the existing mutator alongside
+name/description. The method keeps the name `Rename` (no status gate, no
+in-flight guard, exactly like today) — it does one more thing than its name
+says, the same tolerated drift as `execStatsClient` elsewhere in this
+codebase (`internal/api/handlers.go:136-145`), called out with the same kind
+of doc-comment rather than hidden.
+
+The update-form UI's account `<select>` submits through this PATCH, as its
+own request, separate from whatever else that form submission sends to
+`POST /api/agents/{id}/update`.
 
 ## Store methods (new, `internal/store/anthropicaccount.go`)
 
@@ -173,6 +226,10 @@ DELETE /api/anthropic/accounts/{id}       -> 204 always (404 only if id never ex
 PUT    /api/anthropic/accounts/{id}/default -> 204, sets default
 ```
 
+`PATCH /api/agents/{id}` (existing route, `handleRename`) gains an optional
+`account_id` field in its body, alongside the existing `name`/`description`
+— see "Changing an existing agent's account" above. No new route.
+
 Unchanged shape, `name` added to the request body:
 
 ```
@@ -211,10 +268,17 @@ operator-internal API with no external consumers to keep compatible.
   - Hidden entirely when `backend !== 'anthropic'`, same show/hide mechanism
     as the existing `.create-form__anthropic-note` toggle
     (`syncBackendAndHarness` in `web/app.js`).
-- Submit handler: include `account_id` in the request body only when the
-  user changed it away from the pre-selected value, following the existing
-  "send only when it differs from default" convention used for the other
-  optional fields.
+- **Create** submit: include `account_id` in the `POST /api/agents` body only
+  when the user picked something other than the pre-filled default,
+  following the existing "send only when it differs from default"
+  convention used for the other optional fields.
+- **Update** submit: the account `<select>` is excluded from the
+  `POST /api/agents/{id}/update` body entirely. If the agent is already
+  `backend=anthropic` and the user changed the selection, the submit handler
+  issues a separate `PATCH /api/agents/{id} {account_id}` call (before or
+  after the main update submit, whichever that form's existing multi-field
+  submit ordering already does for independent changes) — never bundled into
+  the update payload, so it never triggers a recreate.
 
 ## Migration
 
@@ -244,7 +308,9 @@ it. No separate CLI flag or manual step.
 | Delete the default account | 204; default becomes unset |
 | Agent's pinned account deleted, agent later restarted/woken | 409, fail closed, names the missing account |
 | `CreateAnthropicAccount` with a duplicate name | 409 |
-| Update agent's `account_id` while running | 200, stored only; container unaffected until next restart/wake |
+| `PATCH` agent's `account_id` while running | 200, stored only via `Rename`; container unaffected until next restart/wake |
+| `PATCH` `account_id` on a `backend=ollama` agent | 400 (nothing to pin) |
+| `PATCH` `account_id` to an unknown account ID | 400 |
 
 ## Testing
 
@@ -257,6 +323,10 @@ it. No separate CLI flag or manual step.
   Mirrors existing `SetAnthropicAuth`/`IsNoAnthropicAuth` test patterns.
 - `internal/agent/anthropiclogin_test.go` additions: name flows through
   start → finish → `CreateAnthropicAccount`; first-account auto-default.
+- `internal/agent/query_test.go` additions: `Rename` with a non-nil
+  `accountID` — valid account on an anthropic agent (succeeds, no Docker
+  calls); unknown account ID (400-mappable error); attempted on a
+  `backend=ollama` agent (400-mappable error, record unchanged).
 - Migration test in `internal/store`: seed the old singleton + a legacy
   agent with `Backend=anthropic`/empty `AnthropicAccountID`, open the store,
   assert a "Default" account exists, is default, old key gone, legacy agent
