@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
@@ -755,4 +756,45 @@ func hasUnmanaged(resources []Unmanaged, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestResolveBackendFromAgent_PreservesRecordsOwnPin is a regression test for
+// Task 3's review finding: resolveBackendFromAgent (the wake-agent path's
+// direct resolveBackend caller) must pass the AGENT RECORD's own
+// AnthropicAccountID as existingAccountID, not "" -- otherwise a routine
+// wake-up would silently re-resolve to whatever is currently the operator
+// default, moving the agent off the account it was created/updated against.
+// Passing "" here would still compile and still pass every other test in
+// this package; only this assertion catches it.
+func TestResolveBackendFromAgent_PreservesRecordsOwnPin(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	ctx := context.Background()
+
+	first, err := st.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount(first): %v", err)
+	}
+	second, err := st.CreateAnthropicAccount(ctx, "Personal", store.AnthropicKindAPIKey, "sk-ant-personal")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount(second): %v", err)
+	}
+	if err := st.SetDefaultAnthropicAccount(ctx, second.ID); err != nil {
+		t.Fatalf("SetDefaultAnthropicAccount: %v", err)
+	}
+
+	// A record already pinned to the account that is NOT the current
+	// default -- the realistic "existing agent whose pin differs from the
+	// current default" case a wake-up must not disturb.
+	a := store.Agent{Backend: config.BackendAnthropic, AnthropicAccountID: first.ID}
+
+	rb, err := m.resolveBackendFromAgent(ctx, a)
+	if err != nil {
+		t.Fatalf("resolveBackendFromAgent: %v", err)
+	}
+	if rb.accountID != first.ID {
+		t.Fatalf("resolveBackendFromAgent accountID = %q; want the agent's own pin %q (the current default %q must NOT win)", rb.accountID, first.ID, second.ID)
+	}
+	if rb.apiKey != "sk-ant-work" {
+		t.Fatalf("resolveBackendFromAgent apiKey = %q; want the first account's key", rb.apiKey)
+	}
 }

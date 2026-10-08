@@ -276,6 +276,54 @@ func TestUpdate_BackendOllamaToAnthropic(t *testing.T) {
 	}
 }
 
+// TestUpdate_PreservesPinWhenDefaultChangesUnderneath is the end-to-end
+// companion to TestResolveBackend_PinAtCreationSurvivesDefaultChange (which
+// only exercises resolveBackend directly): it goes through the real
+// Manager.Update call and proves an anthropic agent's AnthropicAccountID
+// survives a changed operator default. update.go:119 passes
+// a.AnthropicAccountID as resolveSpec's existingAccountID specifically to
+// make this true -- regressing that line back to "" would silently move
+// every anthropic agent onto the new default on its next Update.
+func TestUpdate_PreservesPinWhenDefaultChangesUnderneath(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	ctx := context.Background()
+
+	first, err := st.CreateAnthropicAccount(ctx, "Work", store.AnthropicKindAPIKey, "sk-ant-work")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount(first): %v", err)
+	}
+	second, err := st.CreateAnthropicAccount(ctx, "Personal", store.AnthropicKindAPIKey, "sk-ant-personal")
+	if err != nil {
+		t.Fatalf("CreateAnthropicAccount(second): %v", err)
+	}
+
+	// first is the default at creation time, so the new agent is pinned to it.
+	a, err := m.Create(ctx, CreateRequest{Backend: config.BackendAnthropic})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if a.AnthropicAccountID != first.ID {
+		t.Fatalf("seeded agent AnthropicAccountID = %q, want the then-default %q", a.AnthropicAccountID, first.ID)
+	}
+
+	// Change the default out from under the already-created agent.
+	if err := st.SetDefaultAnthropicAccount(ctx, second.ID); err != nil {
+		t.Fatalf("SetDefaultAnthropicAccount: %v", err)
+	}
+
+	// An in-place update that does not touch the account pin -- Backend must
+	// still be named explicitly since UpdateRequest.CreateRequest.Backend
+	// empty would otherwise resolve to the config's default backend (ollama
+	// in testConfig), not "whatever this record already is".
+	updated, err := m.Update(ctx, a.ID, UpdateRequest{CreateRequest: CreateRequest{Backend: config.BackendAnthropic}})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.AnthropicAccountID != first.ID {
+		t.Fatalf("updated agent AnthropicAccountID = %q; want it STILL pinned to %q, not the new default %q", updated.AnthropicAccountID, first.ID, second.ID)
+	}
+}
+
 func TestUpdate_ImagePullFailsBeforeRemoval_AgentUntouched(t *testing.T) {
 	m, f, st := newTestManager(t, 5)
 	ctx := context.Background()
