@@ -652,31 +652,65 @@ EOF
 
 ---
 
-## Task 2: Store — migrate the legacy singleton, retire its old surface
+## Task 2: Store — `Agent.AnthropicAccountID` and migrating the legacy singleton
 
 **Files:**
-- Modify: `docker-operator/internal/store/store.go` (Open, and removing the
-  `AnthropicAuth` type + its three methods)
+- Modify: `docker-operator/internal/store/store.go` (the `Agent` and
+  `CreateSpec` structs, `Create`'s struct literal, and `Open`)
 - Create: `docker-operator/internal/store/migration_test.go`
 
 **Interfaces:**
 - Consumes: Task 1's `AnthropicAccount`, `bucketAnthropicAccounts`,
   `keySettingsDefaultAnthropicAccount`, `newAnthropicAccountID`.
-- Produces: `Open` now runs the migration automatically; the exported
-  `AnthropicAuth`/`GetAnthropicAuth`/`SetAnthropicAuth`/`ClearAnthropicAuth`
-  surface no longer exists (Tasks 3/4 must not reference it after this
-  task).
+- Produces (consumed by Tasks 3, 4, 5, 6, 9):
+  ```go
+  // Agent gains:
+  AnthropicAccountID string `json:"anthropic_account_id,omitempty"`
+  // CreateSpec gains:
+  AnthropicAccountID string
+  ```
+  `Open` now runs the migration automatically.
 
-This task's removal step ONLY compiles once Tasks 3 and 4 (which move
-`internal/agent` off the old methods) have also landed, since
-`internal/agent` is a separate package that currently calls
-`store.GetAnthropicAuth`/`SetAnthropicAuth`/`ClearAnthropicAuth`. **Do the
-migration-add half of this task now; hold the removal half (Step 4 below)
-until Tasks 3 and 4 are both merged into this branch**, then come back and
-finish it as a small follow-up commit before Task 5 starts (Task 5's
-`AgentManager` interface change already assumes the old methods are gone).
+**IMPORTANT — this task does NOT remove the old `AnthropicAuth` surface.**
+`GetAnthropicAuth`/`SetAnthropicAuth`/`ClearAnthropicAuth` and the
+`AnthropicAuth` type stay in `store.go`, untouched, through Tasks 2, 3 and 4
+— `internal/agent` (Task 3, Task 4) and `internal/store/store_test.go`'s
+existing tests still call them, and removing them here would break both
+until every caller moves off, which doesn't finish until Task 4. The
+removal is entirely **Task 5's** responsibility (its own step, covering
+`store.go`, `internal/agent/query.go` and `internal/store/store_test.go`
+together in one commit) — see Task 5's new removal step. This task only
+ADDS: the new `Agent`/`CreateSpec` field (needed by this task's own
+migration code) and the migration itself.
 
-- [ ] **Step 1: Write the failing migration tests**
+- [ ] **Step 1: Add `AnthropicAccountID` to `store.Agent` and `store.CreateSpec`**
+
+In `internal/store/store.go`'s `Agent` struct (around line 234, right after
+the `WorkspaceVolume`/`ClaudeConfigVolume`/`DindCacheVolume` block), add:
+
+```go
+	// AnthropicAccountID pins this agent to one stored AnthropicAccount
+	// (empty for a backend=ollama agent). Resolved and stamped once at
+	// create time (Manager.resolveBackend, Task 3), and changed afterward
+	// ONLY through Manager.Rename's PATCH path (Task 4) -- never through
+	// Update's full container recreate. See
+	// docs/superpowers/specs/2026-10-08-multi-anthropic-accounts-design.md.
+	AnthropicAccountID string `json:"anthropic_account_id,omitempty"`
+```
+
+In `CreateSpec` (around line 276-285), add `AnthropicAccountID string` to the
+field list, with a one-line comment mirroring `Backend`'s own ("recorded on
+the new agent verbatim"). In `Store.Create`'s agent-literal construction
+(around line 457-474), add `AnthropicAccountID: spec.AnthropicAccountID,` to
+the struct literal.
+
+This field is added HERE, in Task 2, rather than in Task 3 (which is where
+it is actually consumed by `resolveBackend`) because this task's own
+migration code (Step 4 below) needs to read and write it to pin pre-existing
+agents onto the migrated "Default" account — Task 3 only ever reads a field
+that already exists by the time it runs.
+
+- [ ] **Step 2: Write the failing migration tests**
 
 Create `internal/store/migration_test.go`:
 
@@ -835,16 +869,18 @@ func TestMigrateLegacyAnthropicAuth_NoLegacyDataIsANoop(t *testing.T) {
 var _ = time.Time{} // keep the "time" import if later assertions need it
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run the tests to verify they fail**
 
 ```sh
 go test ./internal/store/... -run TestMigrateLegacyAnthropicAuth -v
 ```
 
-Expected: FAIL — migration does not exist yet, so `ListAnthropicAccounts`
-after seeding legacy data returns 0 accounts, not 1.
+Expected: FAIL — `AnthropicAccountID` doesn't exist on `Agent`/`CreateSpec`
+yet if Step 1 wasn't done first (compile failure), or, once Step 1 is done,
+migration doesn't exist yet so `ListAnthropicAccounts` after seeding legacy
+data returns 0 accounts, not 1.
 
-- [ ] **Step 3: Add the migration to `Open`**
+- [ ] **Step 4: Add the migration to `Open`**
 
 In `internal/store/store.go`, change the `Open` function's bucket-creation
 block from:
@@ -962,7 +998,7 @@ func migrateLegacyAnthropicAuth(tx *bbolt.Tx, now func() time.Time) error {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 ```sh
 go test ./internal/store/... -v
@@ -973,54 +1009,19 @@ Expected: every test in `internal/store` PASSes, including every pre-existing
 one (the `AnthropicAuth` surface is untouched so far) and every new
 `TestMigrateLegacyAnthropicAuth_*`/`TestAnthropicAccount_*` test.
 
-- [ ] **Step 5: Commit the migration (leave the old surface in place for now)**
+- [ ] **Step 6: Commit**
 
 ```sh
 git add internal/store/anthropicaccount.go internal/store/migration_test.go internal/store/store.go
 git commit -m "$(cat <<'EOF'
-store: migrate the legacy shared Anthropic credential into an account
+store: agent account pin field, and migrate the legacy shared credential
 
-One-time, idempotent step inside Open: promotes the pre-accounts single
-credential into an account named "Default", marks it default, and pins
-every pre-existing backend=anthropic agent onto it. The old
-AnthropicAuth surface stays in place until internal/agent moves off it
-(a following commit, once that lands).
-
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
-EOF
-)"
-```
-
-- [ ] **Step 6 (hold until Tasks 3 and 4 are both merged into this branch):
-      remove the old `AnthropicAuth` surface**
-
-Once nothing outside `internal/store` references
-`AnthropicAuth`/`GetAnthropicAuth`/`SetAnthropicAuth`/`ClearAnthropicAuth`
-(verify with `grep -rn "GetAnthropicAuth\|SetAnthropicAuth\|ClearAnthropicAuth\|store\.AnthropicAuth\b" --include=*.go .` from
-`docker-operator/` — it should print nothing outside
-`internal/store/store.go` itself and `internal/store/store_test.go`'s own
-tests for these, which Task 4's step list also has you delete), delete from
-`internal/store/store.go`:
-
-- The `AnthropicAuth` type (the exported struct with `Kind`/`Value`/`UpdatedAt`).
-- `GetAnthropicAuth`, `SetAnthropicAuth`, `ClearAnthropicAuth` methods.
-- The doc comment on `keySettingsAnthropicAuth` can stay (it already
-  documents that this key is legacy-only, read by migration).
-
-Then:
-
-```sh
-go build ./...
-go test ./... 
-gofmt -l internal/store/
-git add internal/store/store.go
-git commit -m "$(cat <<'EOF'
-store: remove the superseded single-credential AnthropicAuth surface
-
-internal/agent no longer calls GetAnthropicAuth/SetAnthropicAuth/
-ClearAnthropicAuth (moved onto the accounts API in the prior two
-commits); migrateLegacyAnthropicAuth is the only remaining reader of
-the legacy settings key, and it never calls these exported methods.
+Agent/CreateSpec gain AnthropicAccountID. One-time, idempotent step
+inside Open: promotes the pre-accounts single credential into an
+account named "Default", marks it default, and pins every
+pre-existing backend=anthropic agent onto it. The old AnthropicAuth
+surface stays in place -- its removal is Task 5's responsibility, once
+every caller (Tasks 3 and 4) has moved off it.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -1034,11 +1035,19 @@ EOF
 **Files:**
 - Modify: `docker-operator/internal/agent/create.go`
 - Modify: `docker-operator/internal/agent/update.go:119`
+- Modify: `docker-operator/internal/agent/reconcile.go:471-481`
+  (`resolveBackendFromAgent`, the wake-agent path's direct
+  `resolveBackend` caller — confirmed by direct inspection, not a maybe)
 - Modify: `docker-operator/internal/agent/backend_test.go`
+- Modify: `docker-operator/internal/agent/harness_test.go` (confirmed: seeds
+  `SetAnthropicAuth` and calls `resolveSpec` with 2 args, at lines 21, 32,
+  45-48, 58-59, 65, 73, 145)
 - Modify: `docker-operator/internal/agent/create_test.go` (if it seeds a
   `store.Store` via `SetAnthropicAuth` anywhere — replace with
   `CreateAnthropicAccount`)
-- Modify: `docker-operator/internal/agent/update_test.go` (same)
+- Modify: `docker-operator/internal/agent/update_test.go` (confirmed: seeds
+  `SetAnthropicAuth` at line 245, calls `resolveBackend` directly with 2
+  args at lines 263 and 467)
 
 **Interfaces:**
 - Consumes: Task 1's `store.CreateAnthropicAccount`,
@@ -1058,37 +1067,31 @@ EOF
   func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest, existingAccountID string) (resolvedBackend, error)
   func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest, existingAccountID string) (resolvedSpec, error)
   ```
-  `store.CreateSpec` gains `AnthropicAccountID string`; `store.Agent` gains
-  `AnthropicAccountID string \`json:"anthropic_account_id,omitempty"\`` (if
-  Task 1 or 2 did not already add it to `store.go` — check before adding a
-  duplicate; it is listed here because `create.go`/`update.go` are what
-  actually read/write it).
+  `store.CreateSpec.AnthropicAccountID` and
+  `store.Agent.AnthropicAccountID` already exist — Task 2 added both (its
+  own migration code needs them before this task runs).
 
-- [ ] **Step 1: Add `AnthropicAccountID` to `store.Agent` and `store.CreateSpec`**
+This task also fixes the THIRD caller of `resolveBackend` that is easy to
+miss: `internal/agent/reconcile.go`'s `resolveBackendFromAgent` (used by the
+periodic-reconcile/wake-agent path) calls `resolveBackend` directly, not
+through `resolveSpec`. A grep for every direct caller BEFORE you start
+confirms the complete list this task must update:
 
-Check first whether a prior task already added this (it may not have,
-depending on execution order — Tasks 1/2 focus on the accounts bucket, not
-the `Agent` struct itself). In `internal/store/store.go`'s `Agent` struct
-(around line 234, right after the `WorkspaceVolume`/`ClaudeConfigVolume`/
-`DindCacheVolume` block), add:
-
-```go
-	// AnthropicAccountID pins this agent to one stored AnthropicAccount
-	// (empty for a backend=ollama agent). Resolved and stamped once at
-	// create time (Manager.resolveBackend), and changed afterward ONLY
-	// through Manager.Rename's PATCH path -- never through Update's full
-	// container recreate. See
-	// docs/superpowers/specs/2026-10-08-multi-anthropic-accounts-design.md.
-	AnthropicAccountID string `json:"anthropic_account_id,omitempty"`
+```sh
+grep -rn "resolveBackend(ctx\|resolveSpec(ctx" internal/agent/*.go
 ```
 
-And in `CreateSpec` (around line 276-285), add `AnthropicAccountID string`
-to the field list, with a one-line comment mirroring `Backend`'s own
-("recorded on the new agent verbatim"). In `Store.Create`'s agent-literal
-construction (around line 457-474), add
-`AnthropicAccountID: spec.AnthropicAccountID,` to the struct literal.
+As of this plan's writing that prints exactly four non-test call sites —
+`create.go` (the `resolveSpec`→`resolveBackend` chain, and `Create`'s own
+call to `resolveSpec`), `update.go`'s call to `resolveSpec`, and
+`reconcile.go:478`'s direct call to `resolveBackend` — plus test-file
+callers in `backend_test.go`, `harness_test.go`, `update_test.go`. All of
+them are addressed by name in the steps below; if your grep finds a FIFTH
+non-test call site this plan does not mention, treat that as a `NEEDS_CONTEXT`
+condition and report it rather than guessing at the right `existingAccountID`
+to pass.
 
-- [ ] **Step 2: Write the failing `resolveBackend` tests**
+- [ ] **Step 1: Write the failing `resolveBackend` tests**
 
 In `internal/agent/backend_test.go`, add (adjust the existing test file's
 helper names — e.g. its own store-opening helper — to match what is
@@ -1203,7 +1206,7 @@ has tests calling `m.resolveBackend`, per the file's existence) and reuse
 that exact helper name instead of inventing `newTestManager` — the name
 above is illustrative, not prescriptive.
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [ ] **Step 2: Run the tests to verify they fail**
 
 ```sh
 go test ./internal/agent/... -run TestResolveBackend -v
@@ -1213,7 +1216,7 @@ Expected: compile failure (`resolveBackend` takes 2 args today, these calls
 pass 3; `CreateRequest.AccountID` does not exist; `ErrUnknownAnthropicAccount`/
 `IsUnknownAnthropicAccount` do not exist).
 
-- [ ] **Step 4: Implement the account-aware `resolveBackend`**
+- [ ] **Step 3: Implement the account-aware `resolveBackend`**
 
 In `internal/agent/create.go`:
 
@@ -1344,7 +1347,7 @@ func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest, existin
    `AnthropicAccountID: rs.rb.accountID,` to the `store.CreateSpec{...}`
    literal (around line 467-475).
 
-- [ ] **Step 5: Wire `Update` to preserve the existing pin**
+- [ ] **Step 4: Wire `Update` to preserve the existing pin**
 
 In `internal/agent/update.go`:
 
@@ -1359,18 +1362,62 @@ In `internal/agent/update.go`:
    `anthropic` (the ollama branch of `resolveBackend` never sets it), so an
    agent switched to `ollama` correctly gets `""` here.
 
-- [ ] **Step 6: Fix any pre-existing tests that seeded the old singleton**
+- [ ] **Step 5: Wire `reconcile.go`'s wake-agent path, and fix every other
+      caller this signature change breaks**
 
-Search `create_test.go` and `update_test.go` for
-`SetAnthropicAuth`/`GetAnthropicAuth` calls (if any exist — these two files
-may or may not use the singleton directly; `backend_test.go` is the one
-confirmed to). Replace each with the equivalent
-`m.store.CreateAnthropicAccount(ctx, "<any name>", store.AnthropicKindAPIKey, "<any sk-ant- value>")`
-call, and update any direct call to `m.resolveSpec(ctx, req)` (2 args) to
-`m.resolveSpec(ctx, req, "")` (3 args) for a Create-path test, or the
-record's real `AnthropicAccountID` for an Update-path test.
+In `internal/agent/reconcile.go`, `resolveBackendFromAgent` (lines 471-481)
+re-derives a resolvedBackend for `wakeAgent` — the one path that recreates
+an agent container with NO caller-supplied `CreateRequest`, from the
+record alone. It must preserve the record's OWN pin, exactly like `Update`
+does, not resolve a fresh one — otherwise a routine wake-up would silently
+re-pin the agent onto whatever is CURRENTLY default, which is precisely the
+bug spec decision #7 exists to prevent. Change:
 
-- [ ] **Step 7: Run the full `internal/agent` test suite**
+```go
+func (m *Manager) resolveBackendFromAgent(ctx context.Context, a store.Agent) (resolvedBackend, error) {
+	return m.resolveBackend(ctx, CreateRequest{
+		Backend: a.Backend, Model: a.Model, FastModel: a.FastModel, OllamaURL: a.OllamaURL,
+	})
+}
+```
+
+to:
+
+```go
+func (m *Manager) resolveBackendFromAgent(ctx context.Context, a store.Agent) (resolvedBackend, error) {
+	return m.resolveBackend(ctx, CreateRequest{
+		Backend: a.Backend, Model: a.Model, FastModel: a.FastModel, OllamaURL: a.OllamaURL,
+	}, a.AnthropicAccountID)
+}
+```
+
+and update its doc comment (lines 471-476) to say it preserves the record's
+existing Anthropic account pin rather than "the CURRENT shared credential"
+(stale wording from before this feature).
+
+Then fix every remaining caller your preflight grep found:
+
+- `internal/agent/harness_test.go`: at lines 21 and 32, change
+  `m.resolveSpec(ctx, CreateRequest{...})` to
+  `m.resolveSpec(ctx, CreateRequest{...}, "")`. At lines 45-46, 58-59 and 145,
+  replace `st.SetAnthropicAuth(ctx, store.AnthropicKindAPIKey, "apikey-xyz")`
+  with `if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindAPIKey, "apikey-xyz"); err != nil { t.Fatalf("CreateAnthropicAccount: %v", err) }`
+  (same test intent: make the anthropic branch resolvable). At lines 48, 65
+  and 73, add `, ""` to the `m.resolveSpec(ctx, CreateRequest{...})` calls
+  the same way.
+- `internal/agent/update_test.go`: at line 245, replace the
+  `st.SetAnthropicAuth(...)` call the same way as above. At lines 263 and
+  467, change the direct `m.resolveBackend(ctx, CreateRequest{...})` calls
+  to add a third argument — `""` if the test is exercising fresh resolution,
+  or the test's own agent record's `AnthropicAccountID` if the test is
+  specifically about Update-path preservation (read each call's surrounding
+  context to tell which; if genuinely ambiguous, `""` is the safer default
+  since it is Create's own semantics and every existing test at these two
+  lines predates the existingAccountID concept entirely).
+- Re-run your Step 0 grep (`grep -rn "resolveBackend(ctx\|resolveSpec(ctx" internal/agent/*.go`)
+  after these edits: every remaining match must now pass three arguments.
+
+- [ ] **Step 6: Run the full `internal/agent` test suite**
 
 ```sh
 go build ./...
@@ -1378,22 +1425,26 @@ go test ./internal/agent/... -v
 gofmt -l internal/agent/
 ```
 
-Expected: every test PASSes (including the pre-existing ones you may have
-touched in Step 6), `gofmt -l` prints nothing.
+Expected: every test PASSes (including every pre-existing one you touched
+in Step 5), `gofmt -l` prints nothing.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```sh
-git add internal/agent/create.go internal/agent/update.go internal/agent/backend_test.go internal/agent/create_test.go internal/agent/update_test.go internal/store/store.go
+git add internal/agent/create.go internal/agent/update.go internal/agent/reconcile.go internal/agent/backend_test.go internal/agent/harness_test.go internal/agent/create_test.go internal/agent/update_test.go
 git commit -m "$(cat <<'EOF'
 agent: resolve and pin a concrete Anthropic account at create/update time
 
 resolveBackend now takes the agent's existing account pin (empty for
-Create, the record's AnthropicAccountID for Update) and resolves
-CreateRequest.AccountID or the store's default against the new
-accounts store, pinning a concrete id rather than "follow the
-default". A dangling pin (the account was since deleted) fails closed
-exactly like the old "no credential configured" case.
+Create, the record's AnthropicAccountID for Update and for the
+wake-agent path in reconcile.go) and resolves CreateRequest.AccountID
+or the store's default against the new accounts store, pinning a
+concrete id rather than "follow the default". A dangling pin (the
+account was since deleted) fails closed exactly like the old "no
+credential configured" case. Fixes every existing direct caller of the
+old 2-arg signature, including the wake-agent path, which previously
+would have silently re-resolved to whatever is currently default on
+every wake-up instead of preserving the agent's own pin.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -1424,7 +1475,9 @@ EOF
   func (m *Manager) SetDefaultAnthropicAccount(ctx context.Context, id string) error
   ```
   `AnthropicAuthStatus`/`SetAnthropicAuth`/`ClearAnthropicAuth` (the old
-  Manager-level wrappers) are REMOVED — Task 5 must not reference them.
+  Manager-level wrappers) are LEFT IN PLACE, untouched, by this task — they
+  are not removed until Task 5 (see that task's dedicated removal step).
+  Task 5 must not assume this task removed them.
 
 - [ ] **Step 1: Write the failing `Rename` tests**
 
@@ -1586,11 +1639,16 @@ func (m *Manager) Rename(ctx context.Context, id string, name, description, acco
 }
 ```
 
-Then remove the old `AnthropicAuthStatus`, `SetAnthropicAuth`,
-`ClearAnthropicAuth` methods (lines 74-96) from this file entirely — they
-are replaced by the new file below. `AnthropicAuthStatus` was this file's
-only use of the `"time"` import; remove `"time"` from `query.go`'s import
-block too, or `go build` fails with "imported and not used".
+**Leave the old `AnthropicAuthStatus`, `SetAnthropicAuth`, `ClearAnthropicAuth`
+methods (lines 74-96) in this file untouched for now** — do NOT remove them
+in this task. They still call `m.store.GetAnthropicAuth`/`SetAnthropicAuth`/
+`ClearAnthropicAuth`, which still exist in `store.go` (Task 2 deliberately
+did not remove them either). Removing all three layers together is Task 5's
+job, in its own dedicated step, once the `AgentManager` interface it also
+owns is being edited in the same commit — removing them here would leave
+`internal/api`'s interface (unedited until Task 5) requiring methods
+`*agent.Manager` no longer has, breaking the whole module's build in the
+gap between this task and Task 5.
 
 - [ ] **Step 4: Add the Manager-level account passthroughs**
 
@@ -1632,19 +1690,17 @@ func (m *Manager) SetDefaultAnthropicAccount(ctx context.Context, id string) err
 }
 ```
 
-- [ ] **Step 5: Run the full `internal/agent` suite, then go back and finish
-      Task 2's Step 6 (removing the old store-level `AnthropicAuth`
-      surface) now that nothing in `internal/agent` references it**
+- [ ] **Step 5: Run the full `internal/agent` suite**
 
 ```sh
 go build ./...
 go test ./... -v
-gofmt -l internal/agent/ internal/store/
+gofmt -l internal/agent/
 ```
 
-Expected: everything PASSes; `go build ./...` succeeds across the whole
-module (this is the point where Task 2's held-back removal step becomes
-safe to finish, if it has not been done yet).
+Expected: everything PASSes. The old `AnthropicAuthStatus`/`SetAnthropicAuth`/
+`ClearAnthropicAuth` methods are still present and still compile (they are
+now simply unused by anything new — Task 5 removes them).
 
 - [ ] **Step 6: Commit**
 
@@ -1655,9 +1711,10 @@ agent: Rename can re-pin an agent's Anthropic account without a recreate
 
 Extends the existing no-Docker-touch PATCH path (Rename) with an
 optional account_id, validated against the accounts store before the
-write. Replaces the old AnthropicAuthStatus/SetAnthropicAuth/
-ClearAnthropicAuth Manager wrappers with pass-throughs to the new
-accounts CRUD.
+write. Adds pass-throughs to the new accounts CRUD alongside (not yet
+replacing) the old AnthropicAuthStatus/SetAnthropicAuth/
+ClearAnthropicAuth Manager wrappers -- their removal is Task 5's, once
+the AgentManager interface stops requiring them too.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
@@ -1672,6 +1729,12 @@ EOF
 - Modify: `docker-operator/internal/api/handlers.go`
 - Modify: `docker-operator/internal/api/handlers_test.go`
 - Rewrite: `docker-operator/internal/api/anthropic_test.go`
+- Modify: `docker-operator/internal/store/store.go` (remove the old
+  `AnthropicAuth` surface)
+- Modify: `docker-operator/internal/store/store_test.go` (remove its now-dead
+  tests for that surface)
+- Modify: `docker-operator/internal/agent/query.go` (remove the old Manager
+  wrappers)
 
 **Interfaces:**
 - Consumes: Task 4's Manager methods.
@@ -1691,7 +1754,69 @@ EOF
   // PUT  /api/anthropic/accounts/{id}/default -> 204
   ```
 
-- [ ] **Step 1: Update the `AgentManager` interface**
+This task is also where the old single-credential surface is finally
+removed, now that nothing outside it will be left referencing it. Do this
+FIRST, as its own step, before touching the new endpoints — it is a clean,
+independently-verifiable deletion (confirm with the grep below, then
+`go build`/`go test` before moving on), and every later step in this task
+builds on a tree that already compiles without it.
+
+- [ ] **Step 1: Remove the old single-credential `AnthropicAuth` surface**
+
+Confirm the removal is safe before doing it:
+
+```sh
+grep -rn "GetAnthropicAuth\|SetAnthropicAuth\|ClearAnthropicAuth\|\bAnthropicAuth\b\|AnthropicAuthStatus" --include=*.go .
+```
+
+This should print matches ONLY in three places: `internal/store/store.go`
+(the surface itself), `internal/store/store_test.go` (its tests), and
+`internal/agent/query.go` (the Manager-level wrappers Task 4 deliberately
+left in place) — if it prints a match anywhere else (a caller Task 3 or 4
+missed), stop and report `NEEDS_CONTEXT` rather than deleting out from under
+a live caller.
+
+Once confirmed, delete:
+
+1. From `internal/store/store.go`: the `AnthropicAuth` type (the exported
+   struct with `Kind`/`Value`/`UpdatedAt`) and the `GetAnthropicAuth`,
+   `SetAnthropicAuth`, `ClearAnthropicAuth` methods. Leave the
+   `keySettingsAnthropicAuth` var and its doc comment in place — migration
+   (Task 2) reads it forever, on every `Open`, for however long an
+   un-migrated pre-feature database might still exist.
+2. From `internal/store/store_test.go`: `TestAnthropicAuth_RoundTrip`,
+   `TestSetAnthropicAuth_Rejects` in full, and the three
+   `GetAnthropicAuth`/`SetAnthropicAuth`/`ClearAnthropicAuth`-after-Close
+   assertions (around lines 224-231) plus their three table-driven entries
+   (around lines 746-748) — read the surrounding table/function first so
+   you remove exactly these entries and leave every unrelated case in the
+   same table/test untouched.
+3. From `internal/agent/query.go`: the `AnthropicAuthStatus`, `SetAnthropicAuth`,
+   `ClearAnthropicAuth` methods (around lines 74-96 as of Task 4's state).
+   This was `query.go`'s only use of the `"time"` import — remove `"time"`
+   from its import block too, or `go build` fails with "imported and not
+   used".
+
+```sh
+go build ./...
+go test ./... -v
+gofmt -l internal/store/ internal/agent/
+git add internal/store/store.go internal/store/store_test.go internal/agent/query.go
+git commit -m "$(cat <<'EOF'
+store,agent: remove the superseded single-credential AnthropicAuth surface
+
+Deletes store.AnthropicAuth and its three methods, their tests, and
+the now-unused Manager-level wrappers in internal/agent/query.go --
+everything that called them moved onto the accounts store in the
+prior three tasks. migrateLegacyAnthropicAuth is the only remaining
+reader of the legacy settings key and never calls these methods.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+- [ ] **Step 2: Update the `AgentManager` interface**
 
 In `internal/api/handlers.go`, replace the block at lines 103-109:
 
@@ -1724,7 +1849,7 @@ with:
 Leave the `StartAnthropicLogin`/`StopAnthropicLogin`/`AnthropicLoginActive`
 lines (111-116) untouched.
 
-- [ ] **Step 2: Remove the old singleton routes and add the new ones**
+- [ ] **Step 3: Remove the old singleton routes and add the new ones**
 
 Replace, at lines 211-213:
 
@@ -1759,7 +1884,7 @@ with:
 
 Leave the `/api/anthropic/login` routes (214-216, 240) untouched.
 
-- [ ] **Step 3: Replace the request/response types**
+- [ ] **Step 4: Replace the request/response types**
 
 Replace `anthropicAuthRequest`/`anthropicAuthResponse` (lines 862-875) with:
 
@@ -1793,7 +1918,7 @@ type anthropicAccountsListResponse struct {
 
 Leave `anthropicLoginResponse` (877-882) untouched.
 
-- [ ] **Step 4: Replace the handlers**
+- [ ] **Step 5: Replace the handlers**
 
 Replace `handleAnthropicAuthGet`/`handleAnthropicAuthPut`/
 `handleAnthropicAuthDelete`/`anthropicAuthStatusBody` (lines 1087-1169,
@@ -1933,7 +2058,7 @@ func toAnthropicAccountViews(accounts []store.AnthropicAccount, defaultID string
 Leave `handleAnthropicLoginGet`/`Start`/`Stop`/`anthropicLoginBody` (lines
 1170-1201) untouched.
 
-- [ ] **Step 5: Update `fakeManager` in `handlers_test.go`**
+- [ ] **Step 6: Update `fakeManager` in `handlers_test.go`**
 
 Replace the Anthropic-auth fields in the `fakeManager` struct (lines 57-63):
 
@@ -2075,7 +2200,7 @@ func (f *fakeManager) Rename(_ context.Context, id string, name, description, ac
 }
 ```
 
-- [ ] **Step 6: Rewrite `internal/api/anthropic_test.go`'s account tests**
+- [ ] **Step 7: Rewrite `internal/api/anthropic_test.go`'s account tests**
 
 Read the current file first (343 lines) — it has 18 test functions. Keep
 every `TestAnthropicLogin_*` test (5 functions: `StartStopStatus`,
@@ -2163,7 +2288,7 @@ these are HTTP-handler tests):
   `PutSucceedsEvenIfLoginTeardownFails`, now against
   `POST /api/anthropic/accounts`.
 
-- [ ] **Step 7: Run the full API test suite**
+- [ ] **Step 8: Run the full API test suite**
 
 ```sh
 go build ./...
@@ -2173,7 +2298,7 @@ gofmt -l internal/api/
 
 Expected: every test PASSes, `gofmt -l` prints nothing.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```sh
 git add internal/api/handlers.go internal/api/handlers_test.go internal/api/anthropic_test.go
@@ -2748,11 +2873,23 @@ EOF
 
 **Files:**
 - Modify: `docker-operator/web/app.js`
+- Modify: `docker-operator/web/render.js` (remove the now-dead
+  `renderAnthropicStatus`, per Step 3 below)
+- Modify: `docker-operator/web/render.test.js` (remove its now-dead test,
+  per Step 3 below)
 
 **Interfaces:**
 - Consumes: Task 7's `Render.renderAnthropicAccountsPanel`.
 - Produces: `state.anthropicAccounts`; `window.getAnthropicAccounts()`
   (consumed by Task 9); `state.defaults.defaultAnthropicAccountId`.
+
+Task 7 deliberately left `render.js`'s old `renderAnthropicStatus` function
+and its export in place, since app.js (Task 7 doesn't touch it) was still
+calling it at the time. This task's Step 3 deletes BOTH the app.js call
+sites AND, since that was its only caller, `renderAnthropicStatus` itself
+(the function, its line in the exports object, and
+`render.test.js`'s test for it) — leaving it would be dead code testing a
+function nothing calls, the kind of thing a final review flags.
 
 This task has no isolated unit tests of its own (app.js's DOM-wiring
 functions are not covered by `render.test.js`, consistent with how
@@ -2795,9 +2932,9 @@ to:
 
 - [ ] **Step 3: Replace the Anthropic Settings-panel functions**
 
-Delete `refreshAnthropicPanel`, `renderAnthropicPanel`, `putAnthropicAuth`,
-and the old no-argument `startAnthropicLogin` (lines 573-614, 754-787).
-Replace with:
+In `web/app.js`, delete `refreshAnthropicPanel`, `renderAnthropicPanel`,
+`putAnthropicAuth`, and the old no-argument `startAnthropicLogin` (lines
+573-614, 754-787). Replace with:
 
 ```js
 	// --- Settings section: Anthropic Accounts -------------------------------
@@ -2916,6 +3053,23 @@ Replace with:
 	}
 ```
 
+That was `renderAnthropicPanel`'s only caller of `window.Render.renderAnthropicStatus`
+in this codebase — now go clean up its source. In `web/render.js`, delete
+the `renderAnthropicStatus` function (the one rendering the old single
+status line — do NOT confuse it with `renderAnthropicAccountsPanel`, Task 7's
+new function, which stays) and remove its
+`renderAnthropicStatus: renderAnthropicStatus,` line from the module's
+export object. In `web/render.test.js`, delete whichever test(s) exercise
+`renderAnthropicStatus` directly.
+
+```sh
+grep -n "renderAnthropicStatus" web/render.js web/render.test.js web/app.js web/terminal.js
+```
+
+should print nothing after this step (confirm before moving on — a leftover
+match in `app.js`/`terminal.js` means a caller was missed, not that
+`render.js`'s definition is still allowed to exist).
+
 - [ ] **Step 4: Update every call site**
 
 In `openSettings` (around line 554), change:
@@ -2972,9 +3126,10 @@ docker run --rm -u "$(id -u):$(id -g)" -v /workspace:/work \
   node --test web/render.test.js web/terminal.test.js web/auth.test.js web/files.test.js
 ```
 
-Expected: every test PASSes (app.js itself has no dedicated test file per
-this codebase's existing layout — these four suites must simply keep
-passing unmodified).
+Expected: every test PASSes. `terminal.test.js`/`auth.test.js`/
+`files.test.js` must simply keep passing unmodified (app.js itself has no
+dedicated test file per this codebase's existing layout); `render.test.js`
+passes WITHOUT the test you removed for `renderAnthropicStatus` in Step 3.
 
 ```sh
 make sync-web-embed
@@ -2984,7 +3139,7 @@ make web-embed-check
 - [ ] **Step 7: Commit**
 
 ```sh
-git add web/app.js internal/webui/web/app.js
+git add web/app.js web/render.js web/render.test.js internal/webui/web/app.js internal/webui/web/render.js
 git commit -m "$(cat <<'EOF'
 web: wire the Anthropic Accounts Settings panel and create-form submit
 
@@ -2993,7 +3148,8 @@ putAnthropicAuth) with list/create/delete/set-default against
 /api/anthropic/accounts, polled every 3s like the agent-image tags
 already are. The create form sends account_id only when it differs
 from the operator's current default, the same convention every other
-optional field in that form already follows.
+optional field in that form already follows. Removes render.js's
+renderAnthropicStatus now that this was its last caller.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
