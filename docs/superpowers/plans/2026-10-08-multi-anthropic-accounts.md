@@ -3409,6 +3409,15 @@ docker run --rm -u "$(id -u):$(id -g)" -v /workspace:/work \
 make web-embed-check
 ```
 
+**Controller-ruling cleanup (found during Task 8's review, no task owned it):**
+`web/style.css` lines ~621-629 (`.anthropic-panel__status`, `.anthropic-panel__status--set`,
+`.anthropic-panel__status--unset`, `.anthropic-panel__actions`) are dead —
+the last JS reference to them (`renderAnthropicStatus`/`renderAnthropicPanel`)
+was removed in Task 8. Delete these four rules now, from both `web/style.css`
+and `internal/webui/web/style.css` (`make sync-web-embed` after editing the
+source, as usual), and fold that into this step's verification pass before
+moving to `make all`.
+
 - [ ] **Step 3: `make all`**
 
 ```sh
