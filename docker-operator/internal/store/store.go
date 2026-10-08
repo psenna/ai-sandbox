@@ -289,11 +289,19 @@ type CreateSpec struct {
 // holds process-wide singletons that are not per-agent -- currently just the
 // shared Anthropic credential, under keySettingsAnthropicAuth.
 var (
-	bucketAgents   = []byte("agents")
-	bucketSettings = []byte("settings")
+	bucketAgents            = []byte("agents")
+	bucketSettings          = []byte("settings")
+	bucketAnthropicAccounts = []byte("anthropic_accounts")
 
-	keySettingsAnthropicAuth  = []byte("anthropic_auth")
-	keySettingsAgentImageTags = []byte("agent_image_tags")
+	// keySettingsAnthropicAuth is the LEGACY single shared credential this
+	// feature replaces. It is read (and deleted) exactly once, by
+	// migrateLegacyAnthropicAuth in Open -- nothing else reads or writes it.
+	keySettingsAnthropicAuth = []byte("anthropic_auth")
+	// keySettingsDefaultAnthropicAccount holds the id (a bucketAnthropicAccounts
+	// key) of the account that pre-fills the create form. Empty/missing means
+	// no default is set.
+	keySettingsDefaultAnthropicAccount = []byte("default_anthropic_account_id")
+	keySettingsAgentImageTags          = []byte("agent_image_tags")
 
 	// The agent-image tag snapshot is per harness. claude-code deliberately
 	// keeps the ORIGINAL, harness-less key, so the snapshot written by every
@@ -389,7 +397,7 @@ func Open(path string, maxAgents int) (*Store, error) {
 		return nil, fmt.Errorf("opening the state database %q: %w", path, err)
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bucketAgents, bucketSettings, bucketTemplates} {
+		for _, name := range [][]byte{bucketAgents, bucketSettings, bucketTemplates, bucketAnthropicAccounts} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("creating the %q bucket: %w", name, err)
 			}
