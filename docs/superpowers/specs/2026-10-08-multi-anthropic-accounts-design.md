@@ -228,7 +228,7 @@ Replacing the old `GET/PUT/DELETE /api/anthropic/auth`:
 ```
 GET    /api/anthropic/accounts            -> [{id, name, kind, created_at, updated_at, is_default}]
 POST   /api/anthropic/accounts            <- {name, kind, value}     (direct API-key path)
-DELETE /api/anthropic/accounts/{id}       -> 204 always (404 only if id never existed)
+DELETE /api/anthropic/accounts/{id}       -> 200 always, idempotent (matches handleDelete/handleDeleteTemplate's existing convention: removing an absent id is success, never 404)
 PUT    /api/anthropic/accounts/{id}/default -> 204, sets default
 ```
 
