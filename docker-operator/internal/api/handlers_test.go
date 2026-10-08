@@ -927,6 +927,36 @@ func TestCreate_AtCapacity(t *testing.T) {
 	}
 }
 
+func TestCreateAgent_WithExplicitAccountID(t *testing.T) {
+	mgr := newFakeManager(5)
+	acc := store.AnthropicAccount{ID: "anc_personal", Name: "Personal", Kind: "api_key", Value: "sk-ant-personal"}
+	mgr.anthropicAccounts = []store.AnthropicAccount{acc}
+	mgr.anthropicDefaultID = acc.ID
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Backend: "anthropic", AccountID: "anc_personal"})
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/agents status = %d, body = %s; want 201", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreate_UnknownAccountIs400(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.createErr = fmt.Errorf("creating agent: %w: %q", agent.ErrUnknownAnthropicAccount, "anc_missing")
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Backend: "anthropic", AccountID: "anc_missing"})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "account_id" {
+		t.Errorf("error = %+v, want invalid_param on field \"account_id\"", env.Error)
+	}
+}
+
 func TestCreate_UnexpectedErrorIs500(t *testing.T) {
 	mgr := newFakeManager(5)
 	mgr.createErr = errors.New("the docker daemon is on fire")
@@ -998,6 +1028,22 @@ func TestList(t *testing.T) {
 	}
 	if resp.DefaultAutoMode != "off" {
 		t.Errorf("DefaultAutoMode = %q, want %q", resp.DefaultAutoMode, "off")
+	}
+}
+
+func TestListAgents_IncludesDefaultAnthropicAccountID(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.anthropicDefaultID = "anc_work"
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+
+	var body agentListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.DefaultAnthropicAccountID != "anc_work" {
+		t.Fatalf("DefaultAnthropicAccountID = %q; want anc_work", body.DefaultAnthropicAccountID)
 	}
 }
 
@@ -2045,6 +2091,61 @@ func TestRename_NotFound(t *testing.T) {
 	}
 }
 
+func TestPatchAgent_AccountID(t *testing.T) {
+	mgr := newFakeManager(5)
+	acc := store.AnthropicAccount{ID: "anc_work", Name: "Work", Kind: "api_key", Value: "sk-ant-work"}
+	mgr.anthropicAccounts = []store.AnthropicAccount{acc}
+	mgr.anthropicDefaultID = acc.ID
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "anthropic", AnthropicAccountID: acc.ID, Status: store.StatusRunning})
+
+	other := store.AnthropicAccount{ID: "anc_personal", Name: "Personal", Kind: "api_key", Value: "sk-ant-personal"}
+	mgr.anthropicAccounts = append(mgr.anthropicAccounts, other)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/agents/agt_1", map[string]any{"account_id": "anc_personal"})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH account_id status = %d, body = %s; want 200", rec.Code, rec.Body.String())
+	}
+	a := decodeAgent(t, rec)
+	if a.AnthropicAccountID != "anc_personal" {
+		t.Fatalf("AnthropicAccountID = %q; want anc_personal", a.AnthropicAccountID)
+	}
+}
+
+// TestPatchAgent_AccountIDOnOllamaAgentIs400 is a Review Focus case.
+func TestPatchAgent_AccountIDOnOllamaAgentIs400(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "ollama", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/agents/agt_1", map[string]any{"account_id": "anc_work"})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH account_id on an ollama agent status = %d, body = %s; want 400", rec.Code, rec.Body.String())
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "account_id" {
+		t.Errorf("error = %+v, want invalid_param on field \"account_id\"", env.Error)
+	}
+}
+
+func TestPatchAgent_UnknownAccountIs400(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "anthropic", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/agents/agt_1", map[string]any{"account_id": "anc_missing"})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "account_id" {
+		t.Errorf("error = %+v, want invalid_param on field \"account_id\"", env.Error)
+	}
+}
+
 // --- POST /api/agents/{id}/update -----------------------------------------
 
 func TestHandleUpdate_OK(t *testing.T) {
@@ -2064,6 +2165,36 @@ func TestHandleUpdate_OK(t *testing.T) {
 	}
 	if len(mgr.updateReqs) != 1 || mgr.updateReqs[0].ImageTag != "20260101-000000" {
 		t.Errorf("updateReqs = %+v, want one call carrying the image tag", mgr.updateReqs)
+	}
+}
+
+// TestHandleUpdate_AccountIDInBodyIgnored is a Review Focus case: Task 6's
+// controller ruling requires that POST /api/agents/{id}/update NEVER honor
+// an "account_id" in the request body, even though updateAgentRequest
+// embeds createAgentRequest (which now has an AccountID field for the
+// create path) and so Go's JSON field promotion would otherwise let a
+// client smuggle one through here. This matters most for an ollama->
+// anthropic switch, since that is the one case where the real Manager's
+// resolveBackend has no existing account pinned on the record to fall back
+// to -- req.AccountID would otherwise be load-bearing there. Proven here at
+// the handler level: whatever account_id arrives in the update body, the
+// AccountID the handler forwards to Manager.Update must be "".
+func TestHandleUpdate_AccountIDInBodyIgnored(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "ollama", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
+		createAgentRequest: createAgentRequest{Backend: "anthropic", AccountID: "anc_smuggled"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	if len(mgr.updateReqs) != 1 {
+		t.Fatalf("updateReqs = %+v, want exactly one call", mgr.updateReqs)
+	}
+	if got := mgr.updateReqs[0].AccountID; got != "" {
+		t.Errorf("AccountID passed to Manager.Update = %q, want \"\" -- the update path must never honor account_id from the request body; an ollama->anthropic switch must always land on the operator's current default account, never a client-named one", got)
 	}
 }
 

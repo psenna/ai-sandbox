@@ -305,6 +305,10 @@ type createAgentRequest struct {
 	// Backend-agnostic. An unrecognised non-empty value is rejected with 400
 	// on the "auto_mode" field.
 	AutoMode string `json:"auto_mode"`
+	// AccountID pins this one agent to a specific stored Anthropic account.
+	// Only meaningful for the anthropic backend; empty means "use the
+	// operator's current default account". See agent.CreateRequest.AccountID.
+	AccountID string `json:"account_id"`
 }
 
 // updateAgentRequest is the POST /api/agents/{id}/update body: every
@@ -364,6 +368,7 @@ func toCreateRequest(req createAgentRequest) agent.CreateRequest {
 		MaxContextTokens:     req.MaxContextTokens,
 		ImageTag:             req.ImageTag,
 		AutoMode:             req.AutoMode,
+		AccountID:            req.AccountID,
 	}
 }
 
@@ -374,6 +379,11 @@ func toCreateRequest(req createAgentRequest) agent.CreateRequest {
 type patchAgentRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	// AccountID re-pins an existing anthropic-backend agent's Anthropic
+	// account WITHOUT recreating its container -- the new credential
+	// applies starting at the agent's next restart/wake. Rejected (400) if
+	// the agent is not currently backend=anthropic.
+	AccountID *string `json:"account_id"`
 }
 
 // agentView is a store.Agent plus the computed, per-request UpgradeAvailable
@@ -823,6 +833,10 @@ type agentListResponse struct {
 	// from the operator's AGENT_AUTO_MODE; the create form shows it as what
 	// leaving its "Auto mode" field on "operator default" resolves to.
 	DefaultAutoMode string `json:"default_auto_mode"`
+	// DefaultAnthropicAccountID is the account id that pre-fills the
+	// create form's account <select>, or "" if no default is set (a fresh
+	// operator, or the default account was since deleted).
+	DefaultAnthropicAccountID string `json:"default_anthropic_account_id"`
 }
 
 // agentOperatorInfo is the operator-level part of the /api/agents/{id}/info
@@ -918,7 +932,21 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		DefaultAutoCompactThreshold: h.mgr.DefaultAutoCompactThreshold(),
 		DefaultMaxContextTokens:     h.mgr.DefaultMaxContextTokens(),
 		DefaultAutoMode:             h.mgr.DefaultAutoMode(),
+		DefaultAnthropicAccountID:   h.defaultAnthropicAccountIDOrEmpty(r.Context()),
 	})
+}
+
+// defaultAnthropicAccountIDOrEmpty degrades to "" on a store read failure
+// rather than failing the whole agent list over a create-form prefill
+// nicety -- the same best-effort spirit diskUsageFor already uses for the
+// Activity page's per-agent disk figures.
+func (h *Handler) defaultAnthropicAccountIDOrEmpty(ctx context.Context) string {
+	id, err := h.mgr.DefaultAnthropicAccountID(ctx)
+	if err != nil {
+		h.log.Warn("could not read the default anthropic account for the agent list", "error", err)
+		return ""
+	}
+	return id
 }
 
 func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -939,6 +967,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, CodeAtCapacity, "the maximum number of agents is already running; delete one before creating another", "")
 		case agent.IsNoAnthropicAuth(err):
 			writeError(w, http.StatusConflict, CodeNoAnthropicAuth, "configure an Anthropic account (POST /api/anthropic/accounts) before creating an agent that uses it", "backend")
+		case agent.IsUnknownAnthropicAccount(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, "unknown anthropic account", "account_id")
 		case agent.IsInvalidBackend(err):
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, `"backend" must be "ollama" or "anthropic"`, "backend")
 		case agent.IsInvalidHarness(err):
@@ -1303,15 +1333,24 @@ func (h *Handler) handleRename(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadJSON, "the request body is not valid JSON: "+err.Error(), "")
 		return
 	}
-	if req.Name == nil && req.Description == nil {
+	if req.Name == nil && req.Description == nil && req.AccountID == nil {
 		writeError(w, http.StatusBadRequest, CodeMissingField,
-			"provide at least one of \"name\" or \"description\" to update", "")
+			"provide at least one of \"name\", \"description\" or \"account_id\" to update", "")
 		return
 	}
 
-	a, err := h.mgr.Rename(r.Context(), id, req.Name, req.Description, nil)
+	a, err := h.mgr.Rename(r.Context(), id, req.Name, req.Description, req.AccountID)
 	if err != nil {
-		h.notFoundOrInternal(w, "renaming agent "+id, err)
+		switch {
+		case store.IsNotFound(err):
+			writeError(w, http.StatusNotFound, CodeNotFound, "no such agent", "")
+		case agent.IsAgentNotAnthropic(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, "the agent is not on the anthropic backend", "account_id")
+		case agent.IsUnknownAnthropicAccount(err):
+			writeError(w, http.StatusBadRequest, CodeInvalidParam, "unknown anthropic account", "account_id")
+		default:
+			h.internalError(w, "renaming agent "+id, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
@@ -1334,8 +1373,10 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	createReq := toCreateRequest(req.createAgentRequest)
+	createReq.AccountID = "" // see Task 6's plan note: never honor account_id on the update path
 	a, err := h.mgr.Update(r.Context(), id, agent.UpdateRequest{
-		CreateRequest: toCreateRequest(req.createAgentRequest),
+		CreateRequest: createReq,
 		ImageTag:      req.ImageTag,
 	})
 	if err != nil {
