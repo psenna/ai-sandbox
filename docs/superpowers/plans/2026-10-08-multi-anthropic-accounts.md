@@ -2507,6 +2507,44 @@ after the existing `agent.IsNoAnthropicAuth(err)` one:
 			writeError(w, http.StatusBadRequest, CodeInvalidParam, "unknown anthropic account", "account_id")
 ```
 
+**Controller ruling (found during Task 3's review, before Task 6 was ever
+dispatched): this step creates a real embedding hazard you must close in
+the SAME step.** `updateAgentRequest` embeds `createAgentRequest` (it is
+defined as `struct { createAgentRequest; ImageTag string }`), so adding
+`AccountID` to `createAgentRequest` here means Go's JSON field promotion
+makes `account_id` a legal key on `POST /api/agents/{id}/update`'s body
+too — for free, silently — even though this plan's Global Constraints
+explicitly require that `UpdateRequest` never reads `account_id` from the
+update request body at all. Today that would be harmless for an agent
+already `backend=anthropic` (`resolveBackend`'s `existingAccountID` wins
+over `req.AccountID` whenever it's non-empty), but for the ONE case where
+`existingAccountID` is empty — an agent being switched from `ollama` to
+`anthropic` by this very update — an attacker or careless client could
+smuggle a specific `account_id` through the update body instead of the
+intended "always lands on the operator's current default" behavior
+(`internal/agent/update.go`'s call site passes `a.AnthropicAccountID`,
+which is `""` for a record that was `ollama`, so `req.AccountID` becomes
+load-bearing exactly in this one gap).
+
+Close it in `handleUpdate` (around line 1282, where `toCreateRequest` is
+called): explicitly clear the mapped field before building `UpdateRequest`:
+
+```go
+	createReq := toCreateRequest(req.createAgentRequest)
+	createReq.AccountID = "" // see Task 6's plan note: never honor account_id on the update path
+	a, err := h.mgr.Update(r.Context(), id, agent.UpdateRequest{
+		CreateRequest: createReq,
+		ImageTag:      req.ImageTag,
+	})
+```
+
+(adjust to the exact surrounding variable names you find in the live file —
+the shape above is the fix, not a literal patch). Add a test asserting that
+a `POST /api/agents/{id}/update` body containing `"account_id"` has zero
+effect on the resolved account for an ollama→anthropic switch (the switch
+still lands on the operator's current default regardless of what
+`account_id` the body named).
+
 - [ ] **Step 5: Add `account_id` to the PATCH request**
 
 Replace `patchAgentRequest` (lines 367-370):
