@@ -1796,20 +1796,42 @@ Once confirmed, delete:
    This was `query.go`'s only use of the `"time"` import — remove `"time"`
    from its import block too, or `go build` fails with "imported and not
    used".
+4. **(Controller ruling from Task 2's review — do this too, in this same
+   step):** restore the legacy-key deletion that Task 2 deliberately left
+   out. In `internal/store/anthropicaccount.go`'s `migrateLegacyAnthropicAuth`,
+   immediately after the `settings.Put(keySettingsDefaultAnthropicAccount, []byte(id))`
+   call, add:
+   ```go
+   if err := settings.Delete(keySettingsAnthropicAuth); err != nil {
+       return fmt.Errorf("removing the legacy anthropic credential: %w", err)
+   }
+   ```
+   Task 2 could not add this: `store_test.go`'s `TestAnthropicAuth_RoundTrip`
+   (which you are deleting in step 2 above, in this same commit) reopens a
+   store with the legacy key set but no account yet created, which would
+   have triggered migration mid-test and deleted the key out from under its
+   own next assertion. Doing both in the same commit — deleting the
+   conflicting test AND restoring the delete call — resolves the conflict
+   cleanly instead of leaving a secret permanently orphaned in the database
+   once this step also removes the only code that could ever read or write
+   that key again.
 
 ```sh
 go build ./...
 go test ./... -v
 gofmt -l internal/store/ internal/agent/
-git add internal/store/store.go internal/store/store_test.go internal/agent/query.go
+git add internal/store/store.go internal/store/store_test.go internal/store/anthropicaccount.go internal/agent/query.go
 git commit -m "$(cat <<'EOF'
 store,agent: remove the superseded single-credential AnthropicAuth surface
 
 Deletes store.AnthropicAuth and its three methods, their tests, and
 the now-unused Manager-level wrappers in internal/agent/query.go --
 everything that called them moved onto the accounts store in the
-prior three tasks. migrateLegacyAnthropicAuth is the only remaining
-reader of the legacy settings key and never calls these methods.
+prior three tasks. Also restores migrateLegacyAnthropicAuth's deletion
+of the legacy settings key, deferred from Task 2 because the test
+this commit also deletes (TestAnthropicAuth_RoundTrip) would otherwise
+have broken on a reopen mid-test; migrateLegacyAnthropicAuth is now
+the only remaining reader of that key, and this is its last use of it.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 EOF
