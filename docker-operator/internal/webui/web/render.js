@@ -573,20 +573,6 @@
 		);
 	}
 
-	// renderAnthropicStatus renders the sidebar Anthropic-account panel's
-	// one-line status from GET /api/anthropic/auth's body
-	// ({configured, kind, updated_at}).
-	function renderAnthropicStatus(status) {
-		status = status || {};
-		if (!status.configured) {
-			return '<span class="anthropic-panel__status anthropic-panel__status--unset">No Anthropic credential</span>';
-		}
-		var kind = status.kind === 'oauth' ? 'OAuth token' : 'API key';
-		var when = status.updated_at ? new Date(status.updated_at) : null;
-		var whenText = when && !isNaN(when.getTime()) ? ' · set ' + when.toISOString().slice(0, 10) : '';
-		return '<span class="anthropic-panel__status anthropic-panel__status--set">' + escapeHTML(kind) + escapeHTML(whenText) + '</span>';
-	}
-
 	// renderAnthropicAccountsPanel renders the Settings "Anthropic Accounts"
 	// panel's table (one row per stored account: name, kind, last updated,
 	// a Set-default button for non-default rows, a Remove button for every
@@ -1217,7 +1203,6 @@
 		renderTemplateBar: renderTemplateBar,
 		renderAgentInfo: renderAgentInfo,
 		renderSettingsOverlay: renderSettingsOverlay,
-		renderAnthropicStatus: renderAnthropicStatus,
 		renderAnthropicAccountsPanel: renderAnthropicAccountsPanel,
 		isDateTimeTag: isDateTimeTag,
 		newestDateTimeTag: newestDateTimeTag,

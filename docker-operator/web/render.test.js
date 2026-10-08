@@ -355,29 +355,6 @@ test('renderAgentInfo: missing input degrades to placeholders instead of throwin
 	assert.match(Render.renderAgentInfo(), /agent-info/);
 });
 
-test('renderAnthropicStatus: unset', () => {
-	const html = Render.renderAnthropicStatus({ configured: false });
-	assert.match(html, /No Anthropic credential/);
-	assert.match(html, /anthropic-panel__status--unset/);
-});
-
-test('renderAnthropicStatus: api key with a date', () => {
-	const html = Render.renderAnthropicStatus({ configured: true, kind: 'api_key', updated_at: '2026-09-05T12:00:00Z' });
-	assert.match(html, /API key/);
-	assert.match(html, /set 2026-09-05/);
-	assert.match(html, /anthropic-panel__status--set/);
-});
-
-test('renderAnthropicStatus: oauth token, missing date is tolerated', () => {
-	const html = Render.renderAnthropicStatus({ configured: true, kind: 'oauth' });
-	assert.match(html, /OAuth token/);
-	assert.doesNotMatch(html, /set /);
-});
-
-test('renderAnthropicStatus: null input degrades to unset', () => {
-	assert.match(Render.renderAnthropicStatus(null), /anthropic-panel__status--unset/);
-});
-
 // --- agent image tag helpers ---------------------------------------------
 
 test('isDateTimeTag: matches only YYYYMMDD-HHMMSS', () => {

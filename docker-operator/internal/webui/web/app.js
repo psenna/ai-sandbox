@@ -13,6 +13,7 @@
 	var state = {
 		agents: [],
 		maxAgents: 0,
+		anthropicAccounts: [],
 		selectedID: null,
 		defaults: { backend: 'ollama', model: '', fastModel: '', ollamaUrl: '', autoCompactThreshold: '', maxContextTokens: '', autoMode: 'on' },
 		// agentImage is render.js's by-harness map (harnessImageTags): one
@@ -105,6 +106,7 @@
 			autoCompactThreshold: data.default_auto_compact_threshold || '',
 			maxContextTokens: data.default_max_context_tokens || '',
 			autoMode: data.default_auto_mode || 'on',
+			defaultAnthropicAccountId: data.default_anthropic_account_id || '',
 		};
 		renderSidebar();
 		renderDashboardNow();
@@ -146,7 +148,7 @@
 	function currentForm() { return mainArea.querySelector('.create-form'); }
 
 	function buildFormDefaults() {
-		return Object.assign({}, state.defaults, { agentImage: state.agentImage });
+		return Object.assign({}, state.defaults, { agentImage: state.agentImage, anthropicAccounts: state.anthropicAccounts });
 	}
 
 	function currentBackendOf(form) {
@@ -264,6 +266,13 @@
 				body.fast_model = form.querySelector('.create-form__fast-model').value.trim();
 				var ollamaURL = form.querySelector('.create-form__ollama-url').value.trim();
 				if (ollamaURL) body.ollama_url = ollamaURL;
+			}
+			if (backend === 'anthropic') {
+				var accountSel = form.querySelector('.create-form__anthropic-account');
+				var defaultAccountId = state.defaults.defaultAnthropicAccountId || '';
+				if (accountSel && accountSel.value && accountSel.value !== defaultAccountId) {
+					body.account_id = accountSel.value;
+				}
 			}
 			errorEl.hidden = true;
 			submitBtn.disabled = true;
@@ -548,10 +557,10 @@
 		});
 		settingsOverlay = { root: root, onKey: onKey };
 
-		// Both sections refresh on open. The Anthropic status has no other
-		// refresh path; the image section repaints from state.agentImage, which
-		// the 3s poll keeps fresh whether or not this overlay was ever opened.
-		refreshAnthropicPanel();
+		// Both sections refresh on open. Each also repaints from its own
+		// state (state.anthropicAccounts / state.agentImage), which the 3s
+		// poll keeps fresh whether or not this overlay was ever opened.
+		refreshAnthropicAccounts();
 		refreshAgentImagePanel();
 		root.querySelector('.settings-overlay__nav-item').focus();
 	}
@@ -570,47 +579,119 @@
 		return settingsOverlay.root.querySelector('[data-settings-body="' + id + '"]');
 	}
 
-	function refreshAnthropicPanel() {
-		return fetchJSON('/api/anthropic/auth')
-			.then(renderAnthropicPanel)
+	// --- Settings section: Anthropic Accounts -------------------------------
+
+	var anthropicAccountBusy = false;
+	var anthropicAccountError = null;
+
+	function renderAnthropicAccountsPanelNow() {
+		var body = settingsBody('anthropic-account');
+		if (!body) return;
+		body.innerHTML = window.Render.renderAnthropicAccountsPanel(state.anthropicAccounts, {
+			busy: anthropicAccountBusy,
+			error: anthropicAccountError,
+		});
+		wireAnthropicAccountsPanel();
+	}
+
+	// refreshAnthropicAccounts ALWAYS updates state.anthropicAccounts (so the
+	// create/update forms' account <select> stays fresh via the 3s poll
+	// whether or not Settings is open), and only then repaints the section
+	// body if it is on screen -- the same division of labor
+	// refreshAgentImagePanel already uses for state.agentImage.
+	function refreshAnthropicAccounts() {
+		return fetchJSON('/api/anthropic/accounts')
+			.then(function (data) {
+				state.anthropicAccounts = (data && data.accounts) || [];
+				anthropicAccountError = null;
+				renderAnthropicAccountsPanelNow();
+			})
 			.catch(function (e) {
+				anthropicAccountError = 'unavailable: ' + e.message;
 				var body = settingsBody('anthropic-account');
-				if (!body) return; // Settings isn't open
-				body.innerHTML =
-					'<span class="anthropic-panel__status anthropic-panel__status--unset">' +
-					window.Render.escapeHTML('unavailable: ' + e.message) + '</span>';
+				if (!body) return;
+				renderAnthropicAccountsPanelNow();
 			});
 	}
 
-	function renderAnthropicPanel(status) {
+	function wireAnthropicAccountsPanel() {
 		var body = settingsBody('anthropic-account');
 		if (!body) return;
-		body.innerHTML =
-			window.Render.renderAnthropicStatus(status) +
-			'<div class="anthropic-panel__actions">' +
-				'<button class="anthropic-panel__apikey btn btn--ghost btn--sm" type="button">Set API key</button>' +
-				'<button class="anthropic-panel__login btn btn--ghost btn--sm" type="button">Log in</button>' +
-				(status && status.configured ? '<button class="anthropic-panel__remove btn btn--danger btn--sm" type="button">Remove</button>' : '') +
-			'</div>';
 
-		body.querySelector('.anthropic-panel__apikey').addEventListener('click', function () {
-			var key = window.prompt('Paste your Anthropic API key (starts with sk-ant-):');
+		var apikeyBtn = body.querySelector('.anthropic-accounts__add-apikey');
+		if (apikeyBtn) apikeyBtn.addEventListener('click', function () {
+			var name = window.prompt('Name this account:');
+			if (!name || !name.trim()) return;
+			var key = window.prompt('Paste the Anthropic API key (starts with sk-ant-):');
 			if (!key) return;
-			putAnthropicAuth({ kind: 'api_key', value: key.trim() });
+			createAnthropicAccount({ name: name.trim(), kind: 'api_key', value: key.trim() });
 		});
-		body.querySelector('.anthropic-panel__login').addEventListener('click', startAnthropicLogin);
-		var removeBtn = body.querySelector('.anthropic-panel__remove');
-		if (removeBtn) {
-			removeBtn.addEventListener('click', function () {
+
+		var loginBtn = body.querySelector('.anthropic-accounts__add-login');
+		if (loginBtn) loginBtn.addEventListener('click', function () {
+			var name = window.prompt('Name this account:');
+			if (!name || !name.trim()) return;
+			startAnthropicLogin(name.trim());
+		});
+
+		body.querySelectorAll('.anthropic-accounts__set-default').forEach(function (btn) {
+			btn.addEventListener('click', function () {
+				var id = btn.getAttribute('data-id');
+				fetchJSON('/api/anthropic/accounts/' + encodeURIComponent(id) + '/default', { method: 'PUT' })
+					.then(refreshAnthropicAccounts)
+					.catch(alertErr('Could not set the default account'));
+			});
+		});
+
+		body.querySelectorAll('.anthropic-accounts__remove').forEach(function (btn) {
+			btn.addEventListener('click', function () {
+				var id = btn.getAttribute('data-id');
+				var name = btn.getAttribute('data-name');
 				window.OperatorConfirm.show(
-					'Agents already created keep the copy they were given.',
-					{ title: 'Remove the stored Anthropic credential?', confirmLabel: 'Remove', danger: true }
+					'Agents already pinned to "' + name + '" will fail to start again (until repointed to a different account) the next time they restart or wake.',
+					{ title: 'Remove the account "' + name + '"?', confirmLabel: 'Remove', danger: true }
 				).then(function (confirmed) {
 					if (!confirmed) return;
-					fetchJSON('/api/anthropic/auth', { method: 'DELETE' }).then(refreshAnthropicPanel).catch(alertErr('Could not remove the credential'));
+					fetchJSON('/api/anthropic/accounts/' + encodeURIComponent(id), { method: 'DELETE' })
+						.then(refreshAnthropicAccounts)
+						.catch(alertErr('Could not remove the account'));
 				});
 			});
-		}
+		});
+	}
+
+	function createAnthropicAccount(payload) {
+		return fetchJSON('/api/anthropic/accounts', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload),
+		})
+			.then(refreshAnthropicAccounts)
+			.catch(alertErr('Could not create the account'));
+	}
+
+	function startAnthropicLogin(name) {
+		fetchJSON('/api/anthropic/login', { method: 'POST' })
+			.then(function () {
+				if (typeof window.renderAnthropicLogin === 'function') {
+					// The login terminal claims the main area, so the Settings
+					// modal has to come down first -- otherwise its scrim sits
+					// over the very terminal the user is meant to type into.
+					closeSettings();
+					window.renderAnthropicLogin(mainArea, {
+						submitToken: function (token) {
+							return createAnthropicAccount({ name: name, kind: 'oauth', value: token });
+						},
+						onClose: function () {
+							fetchJSON('/api/anthropic/login', { method: 'DELETE' }).catch(function () { /* best effort */ });
+							// Back to Settings, where the login was started --
+							// it shows the freshly-created account.
+							openSettings();
+						},
+					});
+				}
+			})
+			.catch(alertErr('Could not start the login helper'));
 	}
 
 	// --- agent image panel -------------------------------------------------
@@ -751,41 +832,6 @@
 			});
 	}
 
-	function putAnthropicAuth(payload) {
-		return fetchJSON('/api/anthropic/auth', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(payload),
-		})
-			.then(refreshAnthropicPanel)
-			.catch(alertErr('Could not store the credential'));
-	}
-
-	function startAnthropicLogin() {
-		fetchJSON('/api/anthropic/login', { method: 'POST' })
-			.then(function () {
-				if (typeof window.renderAnthropicLogin === 'function') {
-					// The login terminal claims the main area, so the Settings
-					// modal has to come down first -- otherwise its scrim sits
-					// over the very terminal the user is meant to type into.
-					closeSettings();
-					window.renderAnthropicLogin(mainArea, {
-						submitToken: function (token) {
-							return putAnthropicAuth({ kind: 'oauth', value: token });
-						},
-						onClose: function () {
-							fetchJSON('/api/anthropic/login', { method: 'DELETE' }).catch(function () { /* best effort */ });
-							// Back to Settings, where the login was started --
-							// it shows the freshly-set credential, unlike the
-							// bare placeholder.
-							openSettings();
-						},
-					});
-				}
-			})
-			.catch(alertErr('Could not start the login helper'));
-	}
-
 	function alertErr(prefix) {
 		return function (e) { window.alert(prefix + ': ' + e.message); };
 	}
@@ -889,16 +935,18 @@
 	// So terminal.js's openUpdateForm can reach the operator's create-form
 	// defaults (backend/model/... ) without a second /api/agents round-trip.
 	window.getAgentDefaults = function () { return state.defaults; };
+	window.getAnthropicAccounts = function () { return state.anthropicAccounts; };
 
 	refreshAgents().catch(function (e) {
 		sidebarList.innerHTML =
 			'<li class="agent-list__error">Failed to load agents: ' + window.Render.escapeHTML(e.message) + '</li>';
 	});
-	// Only the image tags are fetched at load time: the 3s poll below feeds
-	// state.agentImage for the create/update tag pickers, whether or not
-	// Settings is ever opened. The Anthropic status is fetched on open
-	// (openSettings) -- there is no sidebar panel holding it any more.
+	// The image tags and Anthropic accounts are both fetched at load time:
+	// the 3s poll below keeps feeding state.agentImage / state.anthropicAccounts
+	// for the create/update forms' pickers, whether or not Settings is ever
+	// opened.
 	refreshAgentImagePanel();
+	refreshAnthropicAccounts();
 
 	// Poll for status changes (creating -> running, an unexpected stop, etc.)
 	// every few seconds. Simplest correct approach for a V1 local tool with a
@@ -906,5 +954,6 @@
 	setInterval(function () {
 		refreshAgents().catch(function () { /* transient failure; retried next tick */ });
 		refreshAgentImagePanel().catch(function () { /* transient failure; retried next tick */ });
+		refreshAnthropicAccounts().catch(function () { /* transient failure; retried next tick */ });
 	}, 3000);
 })();
