@@ -270,3 +270,84 @@ func (s *Store) SetDefaultAnthropicAccount(ctx context.Context, id string) error
 		return sb.Put(keySettingsDefaultAnthropicAccount, []byte(id))
 	})
 }
+
+// migrateLegacyAnthropicAuth is a one-time step, run inside Open's own
+// bucket-creation transaction: it promotes the pre-accounts single shared
+// Anthropic credential (bucketSettings[keySettingsAnthropicAuth]) into the
+// first AnthropicAccount, named "Default" and marked default, then pins
+// every existing backend=anthropic agent that has no AnthropicAccountID yet
+// onto it. A store that already holds ANY account -- this one, from a
+// previous Open, or one the user created independently -- skips this
+// entirely, so it runs at most once ever, even across repeated restarts.
+func migrateLegacyAnthropicAuth(tx *bbolt.Tx, now func() time.Time) error {
+	accounts := tx.Bucket(bucketAnthropicAccounts)
+	settings := tx.Bucket(bucketSettings)
+	agents := tx.Bucket(bucketAgents)
+
+	if k, _ := accounts.Cursor().First(); k != nil {
+		return nil // already migrated, or the user already created an account
+	}
+	raw := settings.Get(keySettingsAnthropicAuth)
+	if raw == nil {
+		return nil // fresh store, nothing to migrate
+	}
+	var legacy struct {
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return fmt.Errorf("decoding the legacy Anthropic credential: %w", err)
+	}
+
+	id, err := newAnthropicAccountID()
+	if err != nil {
+		return fmt.Errorf("generating the migrated account id: %w", err)
+	}
+	t := now()
+	account := AnthropicAccount{ID: id, Name: "Default", Kind: legacy.Kind, Value: legacy.Value, CreatedAt: t, UpdatedAt: t}
+	accountRaw, err := json.Marshal(account)
+	if err != nil {
+		return fmt.Errorf("encoding the migrated anthropic account: %w", err)
+	}
+	if err := accounts.Put([]byte(id), accountRaw); err != nil {
+		return fmt.Errorf("writing the migrated anthropic account: %w", err)
+	}
+	if err := settings.Put(keySettingsDefaultAnthropicAccount, []byte(id)); err != nil {
+		return fmt.Errorf("setting the migrated account as default: %w", err)
+	}
+
+	// Pin every agent that was implicitly using the shared credential.
+	// Collected first, applied after: bbolt forbids mutating a bucket while
+	// ForEach is iterating it.
+	type pin struct{ key, value []byte }
+	var pins []pin
+	if err := agents.ForEach(func(k, v []byte) error {
+		var a Agent
+		if err := json.Unmarshal(v, &a); err != nil {
+			return fmt.Errorf("decoding agent %q during anthropic-account migration: %w", k, err)
+		}
+		// The literal "anthropic" (not config.BackendAnthropic): this
+		// package depends on no other internal package, the same reason
+		// harnessOpenCode above duplicates config.HarnessOpenCode's value.
+		if a.Backend != "anthropic" || a.AnthropicAccountID != "" {
+			return nil
+		}
+		a.AnthropicAccountID = id
+		raw, err := json.Marshal(a)
+		if err != nil {
+			return fmt.Errorf("encoding agent %q during anthropic-account migration: %w", k, err)
+		}
+		// k is only valid for the duration of this callback -- bbolt reuses
+		// the underlying buffer across ForEach -- so copy it before saving.
+		pins = append(pins, pin{key: append([]byte(nil), k...), value: raw})
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, p := range pins {
+		if err := agents.Put(p.key, p.value); err != nil {
+			return fmt.Errorf("pinning a migrated agent onto the Default anthropic account: %w", err)
+		}
+	}
+	return nil
+}

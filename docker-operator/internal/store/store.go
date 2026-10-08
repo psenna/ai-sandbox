@@ -234,6 +234,14 @@ type Agent struct {
 	ClaudeConfigVolume string `json:"claude_config_volume,omitempty"`
 	DindCacheVolume    string `json:"dind_cache_volume,omitempty"`
 
+	// AnthropicAccountID pins this agent to one stored AnthropicAccount
+	// (empty for a backend=ollama agent). Resolved and stamped once at
+	// create time (Manager.resolveBackend, Task 3), and changed afterward
+	// ONLY through Manager.Rename's PATCH path (Task 4) -- never through
+	// Update's full container recreate. See
+	// docs/superpowers/specs/2026-10-08-multi-anthropic-accounts-design.md.
+	AnthropicAccountID string `json:"anthropic_account_id,omitempty"`
+
 	// DependaproxyDinernetIP is the address IPAM gave the shared
 	// dependaproxy container on this agent's dinernet, read back at create
 	// time and templated into the agent container as
@@ -269,7 +277,7 @@ type CreateSpec struct {
 	// Description is the initial free-form description. May be empty.
 	Description string
 	// Backend, Model, FastModel, OllamaURL, Repo, AutoCompactThreshold,
-	// MaxContextTokens, AutoMode and Image are recorded on the new agent
+	// MaxContextTokens, AutoMode, AnthropicAccountID and Image are recorded on the new agent
 	// verbatim. internal/agent resolves them (request value or operator
 	// default) and validates them before calling Create; the store only
 	// persists what it is given.
@@ -282,6 +290,7 @@ type CreateSpec struct {
 	AutoCompactThreshold string
 	MaxContextTokens     string
 	AutoMode             string
+	AnthropicAccountID   string
 	Image                string
 }
 
@@ -402,7 +411,7 @@ func Open(path string, maxAgents int) (*Store, error) {
 				return fmt.Errorf("creating the %q bucket: %w", name, err)
 			}
 		}
-		return nil
+		return migrateLegacyAnthropicAuth(tx, func() time.Time { return time.Now().UTC() })
 	}); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialising %q: %w", path, err)
@@ -475,6 +484,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		AutoCompactThreshold: spec.AutoCompactThreshold,
 		MaxContextTokens:     spec.MaxContextTokens,
 		AutoMode:             spec.AutoMode,
+		AnthropicAccountID:   spec.AnthropicAccountID,
 		Image:                spec.Image,
 		Status:               StatusCreating,
 		CreatedAt:            now,
