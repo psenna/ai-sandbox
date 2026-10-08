@@ -624,13 +624,24 @@
 			if (!name || !name.trim()) return;
 			var key = window.prompt('Paste the Anthropic API key (starts with sk-ant-):');
 			if (!key) return;
-			createAnthropicAccount({ name: name.trim(), kind: 'api_key', value: key.trim() });
+			anthropicAccountBusy = true;
+			renderAnthropicAccountsPanelNow();
+			createAnthropicAccount({ name: name.trim(), kind: 'api_key', value: key.trim() })
+				.then(function () {
+					anthropicAccountBusy = false;
+					renderAnthropicAccountsPanelNow();
+				}, function () {
+					anthropicAccountBusy = false;
+					renderAnthropicAccountsPanelNow();
+				});
 		});
 
 		var loginBtn = body.querySelector('.anthropic-accounts__add-login');
 		if (loginBtn) loginBtn.addEventListener('click', function () {
 			var name = window.prompt('Name this account:');
 			if (!name || !name.trim()) return;
+			anthropicAccountBusy = true;
+			renderAnthropicAccountsPanelNow();
 			startAnthropicLogin(name.trim());
 		});
 
@@ -671,13 +682,15 @@
 	}
 
 	function startAnthropicLogin(name) {
-		fetchJSON('/api/anthropic/login', { method: 'POST' })
+		return fetchJSON('/api/anthropic/login', { method: 'POST' })
 			.then(function () {
 				if (typeof window.renderAnthropicLogin === 'function') {
 					// The login terminal claims the main area, so the Settings
 					// modal has to come down first -- otherwise its scrim sits
 					// over the very terminal the user is meant to type into.
 					closeSettings();
+					anthropicAccountBusy = false;
+					renderAnthropicAccountsPanelNow();
 					window.renderAnthropicLogin(mainArea, {
 						submitToken: function (token) {
 							return createAnthropicAccount({ name: name, kind: 'oauth', value: token });
@@ -691,7 +704,11 @@
 					});
 				}
 			})
-			.catch(alertErr('Could not start the login helper'));
+			.catch(function (e) {
+				anthropicAccountBusy = false;
+				renderAnthropicAccountsPanelNow();
+				window.alert('Could not start the login helper: ' + e.message);
+			});
 	}
 
 	// --- agent image panel -------------------------------------------------

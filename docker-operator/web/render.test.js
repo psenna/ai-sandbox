@@ -1186,6 +1186,13 @@ test('renderAnthropicAccountsPanel surfaces an error', () => {
 	assert.match(html, /boom/);
 });
 
+test('renderAnthropicAccountsPanel: opts.busy disables both Add buttons', () => {
+	const html = Render.renderAnthropicAccountsPanel([], { busy: true });
+	// Both Add buttons must be disabled while a request is in flight
+	assert.equal((html.match(/class="anthropic-accounts__add-apikey[^"]*"[^>]*type="button" disabled/g) || []).length, 1);
+	assert.equal((html.match(/class="anthropic-accounts__add-login[^"]*"[^>]*type="button" disabled/g) || []).length, 1);
+});
+
 test('renderCreateForm renders the anthropic account select, pre-selected to the default', () => {
 	const defaults = {
 		backend: 'anthropic',
