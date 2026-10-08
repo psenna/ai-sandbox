@@ -194,26 +194,32 @@ duplicate `Name` with a new sentinel (`ErrAnthropicAccountNameTaken` → 409 or
 
 ## Login / add-account flow
 
-`internal/agent/anthropiclogin.go` keeps the same singleton login container
-(`docker-operator-anthropic-login`) and idle janitor — only one add-account
-flow in flight across the whole web UI at a time, consistent with this being
-an admin action, not a per-agent one.
+`internal/agent/anthropiclogin.go` is **unchanged** — `StartAnthropicLogin`,
+`StopAnthropicLogin`, `AnthropicLoginActive`, `ReapStaleAnthropicLogin`, the
+singleton container name, and both existing routes
+(`GET/POST/DELETE /api/anthropic/login`) keep their current signatures
+verbatim. Tracing the actual call sites shows the name never needs to reach
+the backend before the credential does: the web UI's "Add account" modal
+collects it first (decision #5) and holds it in a plain JS variable across
+whichever sub-flow runs next (the paste prompt, or the OAuth terminal) —
+there is no server round-trip in between for it to be lost across. Only the
+*finish* step changes.
 
-Changes:
-
-- `StartAnthropicLogin` gains a `name string` parameter, stashed in-memory on
-  the `Manager` alongside the existing container-lifecycle state (not
-  persisted — if the operator restarts mid-login, the login is simply lost,
-  same as today's existing login-state handling implicitly assumes).
-- The finish step (today's `PUT /api/anthropic/auth` after a successful
-  paste-or-terminal flow) becomes "create a new account with the stashed
-  name, this kind, this value" via `store.CreateAnthropicAccount`, instead of
-  overwriting the old singleton via `SetAnthropicAuth`.
-- The direct-paste path (no terminal) also needs the name up front, since the
-  web UI's "Add account" modal asks for it before either sub-flow starts.
-- If this is the very first account ever created, it is automatically also
-  made the default (otherwise the create form would have nothing to
-  pre-fill).
+Today, both sub-flows finish by calling `PUT /api/anthropic/auth {kind,
+value}`, whose handler (`handleAnthropicAuthPut`,
+`internal/api/handlers.go:1096-1160`) does the shape checks (trim, reject
+interior whitespace, `sk-ant-`/`sk-ant-oat01-` prefix per kind), stores the
+credential, and best-effort tears down the login container
+(`StopAnthropicLogin`) since a stored credential means any in-flight login
+has done its job. The new `POST /api/anthropic/accounts {name, kind, value}`
+takes over this exact role for both sub-flows: same shape checks, plus a
+non-empty `name`; `store.CreateAnthropicAccount(name, kind, value)` instead
+of `SetAnthropicAuth`; the same best-effort `StopAnthropicLogin` call
+afterward (harmless no-op for the direct-paste path, necessary for the
+OAuth-finish path); response is the created account's public view (no
+`value`). If this is the very first account ever created,
+`CreateAnthropicAccount` automatically also makes it the default (otherwise
+the create form would have nothing to pre-fill).
 
 ## API (`internal/api/handlers.go`)
 
@@ -230,12 +236,12 @@ PUT    /api/anthropic/accounts/{id}/default -> 204, sets default
 `account_id` field in its body, alongside the existing `name`/`description`
 — see "Changing an existing agent's account" above. No new route.
 
-Unchanged shape, `name` added to the request body:
+Entirely unchanged (see "Login / add-account flow" above):
 
 ```
 GET    /api/anthropic/login               -> {active, ws}
-POST   /api/anthropic/login               <- {name}
-DELETE /api/anthropic/login               -> stop/remove (same as today)
+POST   /api/anthropic/login               (no body)
+DELETE /api/anthropic/login               -> stop/remove
 ```
 
 The list response's `is_default` is computed from
@@ -321,8 +327,10 @@ it. No separate CLI flag or manual step.
   valid/invalid `account_id`; omitted with/without a default; pin-at-creation
   (changing default afterward doesn't move an already-created agent).
   Mirrors existing `SetAnthropicAuth`/`IsNoAnthropicAuth` test patterns.
-- `internal/agent/anthropiclogin_test.go` additions: name flows through
-  start → finish → `CreateAnthropicAccount`; first-account auto-default.
+- `internal/agent/anthropiclogin_test.go`: unchanged, no new tests needed —
+  `anthropiclogin.go` itself does not change.
+- `internal/store/anthropicaccount_test.go` additions: first
+  `CreateAnthropicAccount` call auto-sets the default; subsequent ones don't.
 - `internal/agent/query_test.go` additions: `Rename` with a non-nil
   `accountID` — valid account on an anthropic agent (succeeds, no Docker
   calls); unknown account ID (400-mappable error); attempted on a
