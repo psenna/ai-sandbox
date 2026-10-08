@@ -628,6 +628,30 @@ html, body {
 	gap: 4px;
 }
 
+.anthropic-accounts__table { width: 100%; border-collapse: collapse; margin-bottom: var(--space-3); }
+.anthropic-accounts__table th {
+	text-align: left;
+	font-size: var(--font-xs);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--fg-dim);
+	padding: 2px 8px 6px 0;
+}
+.anthropic-accounts__table td { padding: 4px 8px 4px 0; vertical-align: middle; }
+.anthropic-accounts__table td:last-child,
+.anthropic-accounts__table td:nth-last-child(2) { text-align: right; white-space: nowrap; }
+.anthropic-accounts__default-badge {
+	font-size: var(--font-xs);
+	color: var(--status-running);
+	border: 1px solid var(--status-running);
+	border-radius: 3px;
+	padding: 0 4px;
+}
+.anthropic-accounts__empty { color: var(--fg-dim); font-style: italic; padding: 4px 0; }
+.anthropic-accounts__error { margin: 0 0 var(--space-3); color: var(--status-error); }
+.anthropic-accounts__actions { display: flex; flex-wrap: wrap; gap: 4px; }
+
 /* Only rendered when a caller does NOT pass opts.noTitle (the Settings page
    heads the section itself and does). */
 .agent-image-panel__title { color: var(--fg-dim); margin-bottom: 4px; }

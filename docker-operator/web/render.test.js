@@ -1104,7 +1104,7 @@ test('agentChangePolicy: an unknown kind degrades to sidebar-only', () => {
 
 test('renderCreateForm: the Anthropic note points at Settings, not a sidebar panel', () => {
 	const html = Render.renderCreateForm({ backend: 'anthropic' });
-	assert.match(html, /set it in Settings first/);
+	assert.match(html, /Manage accounts in Settings/);
 	assert.doesNotMatch(html, /in the sidebar first/);
 });
 
@@ -1181,6 +1181,58 @@ test('renderCreateForm: sentence help lives in help lines, not placeholders', ()
 test('renderCreateForm: the error line renders above the action bar', () => {
 	const html = Render.renderCreateForm();
 	assert.ok(html.indexOf('create-form__error') < html.indexOf('create-form__actions'));
+});
+
+test('renderAnthropicAccountsPanel lists accounts with a default marker', () => {
+	const html = Render.renderAnthropicAccountsPanel([
+		{ id: 'anc_1', name: 'Work', kind: 'api_key', updated_at: '2026-09-01T00:00:00Z', is_default: true },
+		{ id: 'anc_2', name: 'Personal', kind: 'oauth', updated_at: '2026-09-02T00:00:00Z', is_default: false },
+	], {});
+	assert.match(html, /Work/);
+	assert.match(html, /Personal/);
+	assert.match(html, /anthropic-accounts__default-badge/);
+	// The non-default row (Personal) gets a Set-default button; the default
+	// row (Work) does not.
+	assert.match(html, /class="[^"]*anthropic-accounts__set-default[^"]*"[^>]*type="button"[^>]*data-id="anc_2"/);
+	// Verify anc_1 (the default) does NOT have a set-default button
+	// (it may have a remove button, but not set-default)
+	assert.doesNotMatch(html, /<button[^>]*class="[^"]*anthropic-accounts__set-default[^"]*"[^>]*data-id="anc_1"/);
+});
+
+test('renderAnthropicAccountsPanel renders an empty state with no accounts', () => {
+	const html = Render.renderAnthropicAccountsPanel([], {});
+	assert.match(html, /No Anthropic accounts yet/);
+});
+
+test('renderAnthropicAccountsPanel surfaces an error', () => {
+	const html = Render.renderAnthropicAccountsPanel([], { error: 'boom' });
+	assert.match(html, /boom/);
+});
+
+test('renderCreateForm renders the anthropic account select, pre-selected to the default', () => {
+	const defaults = {
+		backend: 'anthropic',
+		anthropicAccounts: [
+			{ id: 'anc_1', name: 'Work' },
+			{ id: 'anc_2', name: 'Personal' },
+		],
+		defaultAnthropicAccountId: 'anc_2',
+	};
+	const html = Render.renderCreateForm(defaults, {});
+	assert.match(html, /create-form__anthropic-account/);
+	assert.match(html, /<option value="anc_2" selected>Personal<\/option>/);
+});
+
+test('renderCreateForm pre-selects the AGENT\'S pinned account on the update form, not the operator default', () => {
+	const defaults = {
+		anthropicAccounts: [
+			{ id: 'anc_1', name: 'Work' },
+			{ id: 'anc_2', name: 'Personal' },
+		],
+		defaultAnthropicAccountId: 'anc_2',
+	};
+	const html = Render.renderCreateForm(defaults, { values: { backend: 'anthropic', anthropic_account_id: 'anc_1' } });
+	assert.match(html, /<option value="anc_1" selected>Work<\/option>/);
 });
 
 // --- activity page (issue #217) -------------------------------------------
