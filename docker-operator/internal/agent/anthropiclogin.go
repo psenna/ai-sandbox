@@ -21,8 +21,8 @@ const AnthropicLoginContainerName = "docker-operator-anthropic-login"
 // carries LabelManaged but no agent-id: it belongs to no agent, and the
 // reconcile pass reports it (never auto-deletes it) like any other managed
 // infra it does not own -- the operator tears it down itself (on
-// PUT /api/anthropic/auth, DELETE /api/anthropic/login, an idle timeout, or
-// at startup).
+// POST /api/anthropic/accounts, DELETE /api/anthropic/login, an idle timeout,
+// or at startup).
 const RoleAnthropicLogin Role = "anthropic-login"
 
 // labelLoginStartedAt records the login container's start time as a Unix

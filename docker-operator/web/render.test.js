@@ -1219,6 +1219,23 @@ test('renderCreateForm pre-selects the AGENT\'S pinned account on the update for
 	assert.match(html, /<option value="anc_1" selected>Work<\/option>/);
 });
 
+test('renderCreateForm: a dangling pin (deleted account) shows a disabled placeholder and no real option is selected', () => {
+	const defaults = {
+		anthropicAccounts: [
+			{ id: 'anc_1', name: 'Work' },
+			{ id: 'anc_2', name: 'Personal' },
+		],
+		defaultAnthropicAccountId: 'anc_2',
+	};
+	const html = Render.renderCreateForm(defaults, { values: { backend: 'anthropic', anthropic_account_id: 'anc_deleted' } });
+	assert.match(html, /<option value="" selected disabled>\(pinned account no longer exists — pick one\)<\/option>/);
+	// No real account's <option> carries `selected`.
+	assert.doesNotMatch(html, /<option value="anc_1"[^>]*selected/);
+	assert.doesNotMatch(html, /<option value="anc_2"[^>]*selected/);
+	// The inline note is present, matching the form's existing .create-form__help convention.
+	assert.match(html, /create-form__help">This agent.s pinned account was removed\. Pick a different one before saving\.<\/span>/);
+});
+
 // --- activity page (issue #217) -------------------------------------------
 
 test('formatAgo: empty for falsy/unparseable, else coarse buckets', () => {

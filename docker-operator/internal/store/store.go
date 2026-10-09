@@ -295,8 +295,12 @@ type CreateSpec struct {
 }
 
 // bucketAgents holds every agent record, keyed by agent ID. bucketSettings
-// holds process-wide singletons that are not per-agent -- currently just the
-// shared Anthropic credential, under keySettingsAnthropicAuth.
+// holds process-wide singletons that are not per-agent -- the default
+// Anthropic account id (keySettingsDefaultAnthropicAccount), the agent-image
+// tag snapshot, and, legacy-only, the old shared-credential key
+// (keySettingsAnthropicAuth) that migration reads and deletes once on first
+// boot after this feature shipped. bucketAnthropicAccounts holds the named
+// Anthropic account records themselves, keyed by account ID.
 var (
 	bucketAgents            = []byte("agents")
 	bucketSettings          = []byte("settings")

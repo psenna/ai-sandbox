@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"go.etcd.io/bbolt"
 
@@ -81,6 +80,27 @@ func TestMigrateLegacyAnthropicAuth_PromotesToDefaultAccount(t *testing.T) {
 	if legacyAgent.AnthropicAccountID != got.ID {
 		t.Fatalf("legacy agent AnthropicAccountID = %q; want %q", legacyAgent.AnthropicAccountID, got.ID)
 	}
+
+	// The legacy key itself must be gone, not just superseded -- this branch
+	// removed the only code that will ever read or write it again, so a
+	// future regression here would otherwise be permanently silent.
+	if err := s.Close(); err != nil {
+		t.Fatalf("closing before inspecting the raw file: %v", err)
+	}
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatalf("opening a raw bbolt file: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.View(func(tx *bbolt.Tx) error {
+		settings := tx.Bucket([]byte("settings"))
+		if v := settings.Get([]byte("anthropic_auth")); v != nil {
+			t.Fatalf("legacy anthropic_auth key still present after migration: %q", v)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("inspecting raw bbolt file: %v", err)
+	}
 }
 
 // TestMigrateLegacyAnthropicAuth_IsIdempotent is a Review Focus case: a
@@ -148,5 +168,3 @@ func TestMigrateLegacyAnthropicAuth_NoLegacyDataIsANoop(t *testing.T) {
 		t.Fatalf("ListAnthropicAccounts on a fresh store = %v, %v; want empty, nil", accounts, err)
 	}
 }
-
-var _ = time.Time{} // keep the "time" import if later assertions need it

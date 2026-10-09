@@ -240,11 +240,11 @@ anything else on the same Docker host.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/agents` | List agents + `max_agents` + the operator's `default_backend` / `default_model` / `default_fast_model` / `default_ollama_url` / `default_repo` / `default_auto_mode` (so the create form needs no second request). Each agent record carries `upgrade_available` (the agent's own harness's registry has published a newer tag) and `upgrade_ready` (a newer tag of that same harness is already on this host — an instant, no-pull update); the two are independent, not one a subset of the other, so either alone is worth surfacing. Both are measured only on `:YYYYMMDD-HHMMSS` tags — an agent pinned to `:latest`, to any other non-date-time tag, or with no recorded `image` reports neither. |
-| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","harness":"claude-code"\|"opencode","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `harness` picks the CLI and defaults to `claude-code` (there is no operator-wide harness default); any other value is `400` (`invalid_param`, field `harness`, `"harness" must be "claude-code" or "opencode"`), and `"opencode"` requires the `ollama` backend — `opencode` against `anthropic`, named explicitly **or** inherited from a `DEFAULT_AGENT_BACKEND` of `anthropic`, is `400` (`invalid_param`, field `harness`, `the "opencode" harness requires the "ollama" backend`). See [Choosing a harness](#choosing-a-harness). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE_CLAUDECODE` — or `AGENT_IMAGE_OPENCODE` for an `opencode` agent, which is also the repository an `image_tag` is resolved against. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no credential is configured. |
+| `POST` | `/api/agents` | Create an agent. Body (all optional): `{"name","description","backend":"ollama"\|"anthropic","harness":"claude-code"\|"opencode","model","fast_model","ollama_url","repo","auto_mode":"on"\|"off","account_id"}`. `backend` defaults to the operator's `DEFAULT_AGENT_BACKEND`; `model`/`fast_model`/`ollama_url` are for `ollama` only (`400` with `anthropic`). `harness` picks the CLI and defaults to `claude-code` (there is no operator-wide harness default); any other value is `400` (`invalid_param`, field `harness`, `"harness" must be "claude-code" or "opencode"`), and `"opencode"` requires the `ollama` backend — `opencode` against `anthropic`, named explicitly **or** inherited from a `DEFAULT_AGENT_BACKEND` of `anthropic`, is `400` (`invalid_param`, field `harness`, `the "opencode" harness requires the "ollama" backend`). See [Choosing a harness](#choosing-a-harness). `ollama_url` is an `http(s)` URL (`400` otherwise) overriding the operator's `OLLAMA_URL` for this one agent; blank falls back to that default. `repo` is `owner/repo(.git)` (`400` otherwise) and falls back to the operator's `GITHUB_REPO` — blank on both means the agent boots as a bare terminal. `auto_mode` (`400` on any other value) overrides the operator's `AGENT_AUTO_MODE` for this one agent; blank falls back to that default. `account_id` pins this agent to a specific stored Anthropic account; omit to use the operator's current default. `image_tag` pins this agent to a tag of the operator's agent-image repository (`400` on a malformed tag; not required to be a discovered one); blank uses the operator's `AGENT_IMAGE_CLAUDECODE` — or `AGENT_IMAGE_OPENCODE` for an `opencode` agent, which is also the repository an `image_tag` is resolved against. `409` at capacity, or `409` (`no_anthropic_auth`) for an `anthropic` agent when no account is configured. |
 | `GET` | `/api/agents/{id}` | Get one agent's record (includes `backend`, `harness`, `model`, `fast_model`, `ollama_url`, `repo`, `auto_mode`). `harness` is omitted on records created before the field existed; the operator reads that as `claude-code`. |
-| `PATCH` | `/api/agents/{id}` | Rename and/or re-describe (`{"name","description"}`, either or both). |
+| `PATCH` | `/api/agents/{id}` | Rename, re-describe and/or re-pin the Anthropic account (`{"name","description","account_id"}`, any subset). `account_id` is a store-only field patch — no container recreate, applied on the agent's next natural restart/wake — and is rejected (`400`) for a non-`anthropic`-backend agent or an unknown account id. |
 | `DELETE` | `/api/agents/{id}` | Delete an agent and every resource it owns. Idempotent — always `200`. `?purge_files=true` also removes the agent's centralized file-store directory (default: files are kept); response carries `"files_purged"`. |
-| `POST` | `/api/agents/{id}/update` | In-place update: recreate **only** the agent container under the same agent ID. Body is the `POST /api/agents` body (every create-form field is editable here, including `backend` and `image_tag` — **except `harness`**, which is fixed at create time: a `harness` in the body is still validated, but never changes the stored record, and a body that would move an existing `opencode` agent onto `"backend":"anthropic"` is `400` on `harness`). The DinD sidecar, private network, dependaproxy attachment and the three volumes are kept — so `/workspace`, the harness config and the DinD cache all survive — but the running tmux/harness session ends; the new container resumes it with `--continue` (history is in the preserved config volume). Only a `running`/`stopped`/`error` agent is updatable (`409 not_updatable` otherwise); `404` if unknown; `400` on a bad field; a failure after the old container is gone leaves the agent `error` with its volumes intact for a retry (no auto-rollback). |
+| `POST` | `/api/agents/{id}/update` | In-place update: recreate **only** the agent container under the same agent ID. Body is the `POST /api/agents` body (every create-form field is editable here, including `backend` and `image_tag` — **except `harness`**, which is fixed at create time, and **except `account_id`**, which this route never reads at all: changing an agent's Anthropic account goes only through `PATCH /api/agents/{id}` above, never bundled into this recreate. A `harness` in the body is still validated, but never changes the stored record, and a body that would move an existing `opencode` agent onto `"backend":"anthropic"` is `400` on `harness`). The DinD sidecar, private network, dependaproxy attachment and the three volumes are kept — so `/workspace`, the harness config and the DinD cache all survive — but the running tmux/harness session ends; the new container resumes it with `--continue` (history is in the preserved config volume). Only a `running`/`stopped`/`error` agent is updatable (`409 not_updatable` otherwise); `404` if unknown; `400` on a bad field; a failure after the old container is gone leaves the agent `error` with its volumes intact for a retry (no auto-rollback). |
 | `GET` | `/api/files?path=` | List a file-store directory (`path=""` is the root). `501 filestore_disabled` when unconfigured. |
 | `DELETE` | `/api/files?path=` | Delete a file or directory tree. Already-gone is `200`. `""`, `"agents"` and `"shared"` are `400`. `501` when unconfigured. |
 | `GET` | `/api/files/download?path=` | Download one file (`application/octet-stream`). A directory is `400`. `501` when unconfigured. |
@@ -252,7 +252,10 @@ anything else on the same Docker host.
 | `POST` | `/api/files/mkdir` | Create a directory. Body `{"path":"…"}`. `501` when unconfigured. |
 | `GET` | `/api/agents/{id}/output?tail=N` | The agent's captured pane output (raw text, not JSON-wrapped). Drives the detail view's **View context** overlay (whole log, ANSI stripped, client-side search); also there for automation. |
 | `GET` | `/ws/agents/{id}/terminal` | WebSocket terminal bridge — binary frames are raw PTY bytes each way, a JSON text frame is `{"type":"resize","cols":N,"rows":N}`. |
-| `GET`/`PUT`/`DELETE` | `/api/anthropic/auth` | Read / set / clear the shared Anthropic credential. `PUT` body: `{"kind":"api_key"\|"oauth","value":"…"}`. No response ever carries the value — only `{"configured","kind","updated_at"}`. |
+| `GET` | `/api/anthropic/accounts` | List the stored Anthropic accounts: `[{"id","name","kind","created_at","updated_at","is_default"}]`. No response ever carries the credential value. |
+| `POST` | `/api/anthropic/accounts` | Add a named account. Body: `{"name","kind":"api_key"\|"oauth","value":"…"}`. The first account ever created automatically becomes the default. Response is the created account's public view (no `value`). |
+| `DELETE` | `/api/anthropic/accounts/{id}` | Remove an account. `200` always, idempotent — removing an absent id is still success. Unconditional: agents referencing the deleted account are not blocked or updated (they fail closed, `409`, the next time they need new env vars). |
+| `PUT` | `/api/anthropic/accounts/{id}/default` | Set this account as the operator's default (pre-fills the create form). `204`. |
 | `GET`/`POST`/`DELETE` | `/api/anthropic/login` | Status / start / stop the `claude setup-token` helper container. `POST` returns `{"active":true,"ws":"/ws/anthropic/login/terminal"}`. |
 | `GET` | `/api/agent-image/tags` | One entry per harness: `{"harnesses":{"claude-code":{"repo":"…","default_tag":"…","newest":"…","tags":[{"tag":"…","present":true\|false}],"checked_at":"…"\|null,"last_error":"…"},"opencode":{…}}}`. `newest` is the newest `:YYYYMMDD-HHMMSS` tag that harness's registry poll has seen (registry only — it ignores what the host holds), `checked_at` is `null` until that harness's first poll, and `last_error` is that harness's own, never a global one. `tags` is the offered set — the 5 newest published date-time tags, unioned with every tag already on this host (however old, date-time or not) and with `default_tag` itself, each flagged `present`; anything else is dropped. `default_tag` is the newest date-time tag already on the host, else the lexically greatest *other* tag on the host (a hand-tagged `:dev`, or the `:latest` a local `make agent-image` shadowed), else the newest published date-time tag, else `latest`. Polled on a timer (`AGENT_IMAGE_REFRESH_INTERVAL`, default `1h`, floored at `1m`), independently per harness — a slow/failing poll of one never delays or blocks the other's. |
 | `POST` | `/api/agent-image/refresh` | Force a registry poll now for every harness, then return the same body as `GET /api/agent-image/tags`. A poll failure for one harness is **not** fatal to the request or to the other harness's poll — still `200`, with that harness's last-known list kept and its own `last_error` populated. |
@@ -291,10 +294,12 @@ form:
   for the default/"opus" tier and the "sonnet"+"haiku" tiers; edit them per
   agent. The shared daemon authenticates `:cloud` models to ollama.com with
   the SSH keypair in `../.ollama` — no per-agent key.
-- **Anthropic** — the agent talks to the real Anthropic API using the
-  operator's **one shared credential** (see [Anthropic
-  login](#anthropic-login)). Creating an `anthropic` agent before a
-  credential is configured fails with `409 no_anthropic_auth`.
+- **Anthropic** — the agent talks to the real Anthropic API using one of the
+  operator's stored, named **Anthropic accounts** (see [Anthropic
+  login](#anthropic-login)). The create form's **Anthropic account** selector
+  pre-fills the operator's current default; pick a different stored account
+  to pin this agent to it instead. Creating an `anthropic` agent before any
+  account is configured fails with `409 no_anthropic_auth`.
 
 The backend, Ollama server and models are fixed once an agent is created
 (changing them would need the container's environment rebuilt).
@@ -392,10 +397,14 @@ serve (its `credentials.yaml`). The chosen repo rides in the container as
 
 ## Anthropic login
 
-The shared Anthropic credential is set from the sidebar's **Anthropic
-account** panel and used by **every** `anthropic` agent — injected into the
-container at create time (changing it later only affects agents created
-after). Two kinds:
+The operator stores any number of named **Anthropic accounts**, managed from
+the Settings overlay's **Anthropic Accounts** panel (table: name, kind,
+updated, a default marker, "Set default" and "Remove"). Each `anthropic`
+agent is pinned to one account at creation (or re-pinned later via the
+update form, applied on its next restart/wake); one account is marked the
+default, which pre-fills the create form's account selector. Two kinds, via
+the panel's **Add account** flow (name first, then a choice of credential
+flow):
 
 - **API key** — paste an `sk-ant-…` Anthropic Console key. Injected as
   `ANTHROPIC_API_KEY`. Pay-per-token Console billing.
@@ -404,8 +413,13 @@ after). Two kinds:
   terminal in the main area. Complete the sign-in in your browser, copy the
   token it prints, paste it into the field. Injected as
   `CLAUDE_CODE_OAUTH_TOKEN`; uses your Claude Pro/Max subscription. The
-  helper container is torn down once the token is stored, on an explicit
+  helper container is torn down once the account is stored, on an explicit
   cancel, after a 20-minute idle timeout, and at operator startup.
+
+Removing an account always succeeds immediately, even if it's the default or
+agents are pinned to it (no reference-counting); an agent whose pinned
+account was removed fails closed (`409`) the next time it needs new env
+vars, rather than silently falling back to whatever is currently default.
 
 Either value is whitespace-trimmed before it is stored; a paste that still
 contains interior whitespace (a token hard-wrapped by an 80-column terminal,
@@ -537,8 +551,8 @@ creates the two containers, three volumes and private network described in
 [Architecture](#architecture) above, then opens a live terminal running the
 agent's harness (`claude`, or `opencode` for an
 [opencode agent](#choosing-a-harness): `-d '{"harness":"opencode","backend":"ollama"}'`)
-inside a `tmux` session. For an `anthropic` agent, set the shared
-credential first (sidebar **Anthropic account** panel — see [Anthropic
+inside a `tmux` session. For an `anthropic` agent, add at least one account
+first (Settings overlay's **Anthropic Accounts** panel — see [Anthropic
 login](#anthropic-login)).
 
 Each harness has its own agent image **repository**, never a baked-in tag —

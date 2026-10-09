@@ -22,8 +22,12 @@ import (
 )
 
 // ErrNoAnthropicAuth is returned by Create for a backend=anthropic request
-// when no Anthropic credential has been stored yet. internal/api maps it to
-// a 409 ("configure the Anthropic account first").
+// when no Anthropic account has been stored yet; by Update, and by the
+// wake-agent path, when the resolved account id (an explicit pin, or the
+// operator default) still comes up empty; and for the dangling-pin case --
+// an agent's previously-valid AnthropicAccountID no longer names a stored
+// account (it was deleted after the agent was pinned to it). internal/api
+// maps it to a 409 ("configure the Anthropic account first").
 var ErrNoAnthropicAuth = errors.New("no Anthropic credential is configured")
 
 // ErrUnknownAnthropicAccount is returned by Create for an explicit
@@ -80,9 +84,10 @@ func IsUnknownAnthropicAccount(err error) bool { return errors.Is(err, ErrUnknow
 
 // resolvedBackend is everything about an agent's LLM backend that its
 // container environment needs, worked out once in Create from the request,
-// the operator config and -- for the anthropic backend -- the stored shared
-// credential. It is threaded through the build sequence rather than re-read,
-// so a credential change mid-create cannot half-apply.
+// the operator config and -- for the anthropic backend -- a named account
+// resolved from the Anthropic accounts store. It is threaded through the
+// build sequence rather than re-read, so an account change mid-create cannot
+// half-apply.
 type resolvedBackend struct {
 	kind      string // config.BackendOllama | config.BackendAnthropic
 	model     string // ollama only: the default/opus tier

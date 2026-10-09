@@ -245,11 +245,27 @@
 		var sortedAccounts = accounts.slice().sort(function (a, b) {
 			return String(a.name).localeCompare(String(b.name));
 		});
-		var accountOptionsHTML = sortedAccounts.length === 0
-			? '<option value="">(no accounts configured)</option>'
-			: sortedAccounts.map(function (a) {
-				return '<option value="' + escapeHTML(a.id) + '"' + (a.id === accountID ? ' selected' : '') + '>' + escapeHTML(a.name) + '</option>';
-			}).join('');
+		// A dangling pin: the update form opened on an agent whose stored
+		// anthropic_account_id no longer matches any live account (the account
+		// was deleted after the agent was pinned to it). Left alone, no
+		// <option> below would carry `selected` and the browser's unavoidable
+		// default -- select index 0, the alphabetically-first account -- would
+		// silently stand in for the user's actual choice. Per the spec's UI
+		// section (decision #3's fail-closed intent), render a disabled
+		// placeholder as the selected option instead, so nothing submits until
+		// the user actually picks a live account.
+		var danglingPin = !!(values.anthropic_account_id) &&
+			!sortedAccounts.some(function (a) { return a.id === values.anthropic_account_id; });
+		var accountOptionsHTML = danglingPin
+			? '<option value="" selected disabled>(pinned account no longer exists — pick one)</option>' +
+				sortedAccounts.map(function (a) {
+					return '<option value="' + escapeHTML(a.id) + '">' + escapeHTML(a.name) + '</option>';
+				}).join('')
+			: sortedAccounts.length === 0
+				? '<option value="">(no accounts configured)</option>'
+				: sortedAccounts.map(function (a) {
+					return '<option value="' + escapeHTML(a.id) + '"' + (a.id === accountID ? ' selected' : '') + '>' + escapeHTML(a.name) + '</option>';
+				}).join('');
 		// Harness has no operator-wide default (GET /api/agents has no
 		// default_harness, and internal/agent resolves an empty harness to
 		// claude-code), so unlike backend this reads opts.values only -- the
@@ -374,7 +390,9 @@
 						'<label class="create-form__row">Anthropic account' +
 							'<select class="create-form__anthropic-account">' + accountOptionsHTML + '</select>' +
 						'</label>' +
-						'<span class="create-form__help">Manage accounts in Settings.</span>' +
+						(danglingPin
+							? '<span class="create-form__help">This agent’s pinned account was removed. Pick a different one before saving.</span>'
+							: '<span class="create-form__help">Manage accounts in Settings.</span>') +
 					'</div>' +
 				'</section>' +
 
