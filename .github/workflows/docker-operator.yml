@@ -16,12 +16,23 @@ permissions:
   contents: read
 
 env:
-  # Kept in lockstep with operator.yml's GO_VERSION for the same reason:
-  # govulncheck flags vulnerabilities fixed in the Go toolchain itself, and
-  # actions/setup-go resolves a floating "1.25" to whatever patch was
-  # current when the runner image was built. Bump alongside GOLANG_IMAGE in
-  # docker-operator/Makefile when a new patch lands.
-  GO_VERSION: "1.25.13"
+  # Pinned to an exact patch, not floating "1.26": govulncheck flags
+  # vulnerabilities fixed in the Go toolchain itself, and actions/setup-go
+  # resolves a floating minor version to whatever patch was current when the
+  # runner image was built -- which can lag behind. Bump alongside
+  # GOLANG_IMAGE in docker-operator/Makefile and GO_VERSION in
+  # docker-operator/Dockerfile when a new patch lands.
+  #
+  # Bumped 1.25.13 -> 1.26.9 (a minor version, not a patch) because
+  # GO-2026-6603..6617 (net/http, net/textproto, crypto/tls, os) are fixed
+  # only in go1.26.9 -- no 1.25.x patch fixes them. This module's own
+  # go.mod `go` directive was bumped to match (go.mod's directive is a
+  # floor, but keep it truthful to what CI actually runs). This
+  # deliberately puts docker-operator OUT of lockstep with operator.yml's
+  # GO_VERSION (still 1.25.13 as of this change) -- the two modules are
+  # bumped independently as each needs it, not as a pair; see operator.yml's
+  # own comment for its half of this.
+  GO_VERSION: "1.26.9"
 
 defaults:
   run:

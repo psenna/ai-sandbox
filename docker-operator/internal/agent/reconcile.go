@@ -469,15 +469,17 @@ func (m *Manager) markWakeUpdating(ctx context.Context, id string) (bool, error)
 }
 
 // resolveBackendFromAgent re-derives a's resolvedBackend (the model routing
-// and, for the anthropic backend, the CURRENT shared credential) from the
-// agent record's already-resolved fields, for the one path that recreates an
-// agent container with no caller-supplied CreateRequest: wakeAgent. It is
-// exactly what resolveBackend computes for a create/update request that
-// changed none of these fields, so re-resolving is idempotent.
+// and, for the anthropic backend, the record's existing Anthropic account
+// pin) from the agent record's already-resolved fields, for the one path
+// that recreates an agent container with no caller-supplied CreateRequest:
+// wakeAgent. It is exactly what resolveBackend computes for a create/update
+// request that changed none of these fields, so re-resolving is idempotent
+// -- and, critically, it preserves a.AnthropicAccountID rather than
+// re-resolving against whatever is currently default, exactly like Update.
 func (m *Manager) resolveBackendFromAgent(ctx context.Context, a store.Agent) (resolvedBackend, error) {
 	return m.resolveBackend(ctx, CreateRequest{
 		Backend: a.Backend, Model: a.Model, FastModel: a.FastModel, OllamaURL: a.OllamaURL,
-	})
+	}, a.AnthropicAccountID)
 }
 
 // markWakeError settles a failed wake-up attempt the same way failUpdate

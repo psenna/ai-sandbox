@@ -240,6 +240,32 @@
 		// values.* (the agent record, snake_case) wins over defaults.* (the
 		// operator config) so an update form opens on the agent's own settings.
 		var pick = function (v, d) { return (v === undefined || v === null || v === '') ? (d || '') : v; };
+		var accountID = pick(values.anthropic_account_id, defaults.defaultAnthropicAccountId);
+		var accounts = defaults.anthropicAccounts || [];
+		var sortedAccounts = accounts.slice().sort(function (a, b) {
+			return String(a.name).localeCompare(String(b.name));
+		});
+		// A dangling pin: the update form opened on an agent whose stored
+		// anthropic_account_id no longer matches any live account (the account
+		// was deleted after the agent was pinned to it). Left alone, no
+		// <option> below would carry `selected` and the browser's unavoidable
+		// default -- select index 0, the alphabetically-first account -- would
+		// silently stand in for the user's actual choice. Per the spec's UI
+		// section (decision #3's fail-closed intent), render a disabled
+		// placeholder as the selected option instead, so nothing submits until
+		// the user actually picks a live account.
+		var danglingPin = !!(values.anthropic_account_id) &&
+			!sortedAccounts.some(function (a) { return a.id === values.anthropic_account_id; });
+		var accountOptionsHTML = danglingPin
+			? '<option value="" selected disabled>(pinned account no longer exists — pick one)</option>' +
+				sortedAccounts.map(function (a) {
+					return '<option value="' + escapeHTML(a.id) + '">' + escapeHTML(a.name) + '</option>';
+				}).join('')
+			: sortedAccounts.length === 0
+				? '<option value="">(no accounts configured)</option>'
+				: sortedAccounts.map(function (a) {
+					return '<option value="' + escapeHTML(a.id) + '"' + (a.id === accountID ? ' selected' : '') + '>' + escapeHTML(a.name) + '</option>';
+				}).join('');
 		// Harness has no operator-wide default (GET /api/agents has no
 		// default_harness, and internal/agent resolves an empty harness to
 		// claude-code), so unlike backend this reads opts.values only -- the
@@ -360,7 +386,14 @@
 						'<label class="create-form__row">Opus-tier model<input class="create-form__model" type="text" value="' + model + '"></label>' +
 						'<label class="create-form__row">Sonnet &amp; Haiku-tier model<input class="create-form__fast-model" type="text" value="' + fastModel + '"></label>' +
 					'</div>' +
-					'<p class="create-form__anthropic-note" hidden>Uses the shared Anthropic login (set it in Settings first).</p>' +
+					'<div class="create-form__anthropic-note" hidden>' +
+						'<label class="create-form__row">Anthropic account' +
+							'<select class="create-form__anthropic-account">' + accountOptionsHTML + '</select>' +
+						'</label>' +
+						(danglingPin
+							? '<span class="create-form__help">This agent’s pinned account was removed. Pick a different one before saving.</span>'
+							: '<span class="create-form__help">Manage accounts in Settings.</span>') +
+					'</div>' +
 				'</section>' +
 
 				// 4. Advanced: collapsed, but every field stays in the DOM even
@@ -512,7 +545,7 @@
 	// point -- a future sandbox setting is one entry here, one body renderer,
 	// and its wiring in app.js; nothing about the shell changes.
 	var SETTINGS_SECTIONS = [
-		{ id: 'anthropic-account', title: 'Anthropic account' },
+		{ id: 'anthropic-account', title: 'Anthropic Accounts' },
 		{ id: 'agent-image', title: 'Agent image' },
 	];
 
@@ -558,18 +591,52 @@
 		);
 	}
 
-	// renderAnthropicStatus renders the sidebar Anthropic-account panel's
-	// one-line status from GET /api/anthropic/auth's body
-	// ({configured, kind, updated_at}).
-	function renderAnthropicStatus(status) {
-		status = status || {};
-		if (!status.configured) {
-			return '<span class="anthropic-panel__status anthropic-panel__status--unset">No Anthropic credential</span>';
-		}
-		var kind = status.kind === 'oauth' ? 'OAuth token' : 'API key';
-		var when = status.updated_at ? new Date(status.updated_at) : null;
-		var whenText = when && !isNaN(when.getTime()) ? ' · set ' + when.toISOString().slice(0, 10) : '';
-		return '<span class="anthropic-panel__status anthropic-panel__status--set">' + escapeHTML(kind) + escapeHTML(whenText) + '</span>';
+	// renderAnthropicAccountsPanel renders the Settings "Anthropic Accounts"
+	// panel's table (one row per stored account: name, kind, last updated,
+	// a Set-default button for non-default rows, a Remove button for every
+	// row) plus the two "Add account" buttons. opts.error, if set, is shown
+	// above the table (a failed list/create/delete/set-default); opts.busy
+	// disables the add buttons while one of those requests is in flight.
+	function renderAnthropicAccountsPanel(accounts, opts) {
+		opts = opts || {};
+		accounts = accounts || [];
+		// Sorted for DISPLAY only -- the store itself stays ID-ordered, the
+		// same division of labor renderTemplateBar already uses for templates.
+		var sorted = accounts.slice().sort(function (a, b) {
+			return String(a.name).localeCompare(String(b.name));
+		});
+		var rows = sorted.map(function (a) {
+			var kindLabel = a.kind === 'oauth' ? 'OAuth token' : 'API key';
+			var when = a.updated_at ? new Date(a.updated_at) : null;
+			var whenText = when && !isNaN(when.getTime()) ? when.toISOString().slice(0, 10) : '—';
+			return (
+				'<tr class="anthropic-accounts__row">' +
+					'<td>' + escapeHTML(a.name) +
+						(a.is_default ? ' <span class="anthropic-accounts__default-badge">Default</span>' : '') +
+					'</td>' +
+					'<td>' + escapeHTML(kindLabel) + '</td>' +
+					'<td>' + escapeHTML(whenText) + '</td>' +
+					'<td>' + (a.is_default ? '' :
+						'<button class="anthropic-accounts__set-default btn btn--ghost btn--sm" type="button" data-id="' + escapeHTML(a.id) + '">Set default</button>'
+					) + '</td>' +
+					'<td><button class="anthropic-accounts__remove btn btn--danger btn--sm" type="button" data-id="' + escapeHTML(a.id) + '" data-name="' + escapeHTML(a.name) + '">Remove</button></td>' +
+				'</tr>'
+			);
+		}).join('');
+		var empty = accounts.length === 0
+			? '<tr><td colspan="5" class="anthropic-accounts__empty">No Anthropic accounts yet.</td></tr>'
+			: '';
+		return (
+			(opts.error ? '<p class="anthropic-accounts__error" role="alert">' + escapeHTML(opts.error) + '</p>' : '') +
+			'<table class="anthropic-accounts__table">' +
+				'<thead><tr><th>Name</th><th>Kind</th><th>Updated</th><th></th><th></th></tr></thead>' +
+				'<tbody>' + rows + empty + '</tbody>' +
+			'</table>' +
+			'<div class="anthropic-accounts__actions">' +
+				'<button class="anthropic-accounts__add-apikey btn btn--ghost btn--sm" type="button"' + (opts.busy ? ' disabled' : '') + '>Add via API key</button>' +
+				'<button class="anthropic-accounts__add-login btn btn--ghost btn--sm" type="button"' + (opts.busy ? ' disabled' : '') + '>Add via login</button>' +
+			'</div>'
+		);
 	}
 
 	// --- agent image tags ---------------------------------------------------
@@ -1154,7 +1221,7 @@
 		renderTemplateBar: renderTemplateBar,
 		renderAgentInfo: renderAgentInfo,
 		renderSettingsOverlay: renderSettingsOverlay,
-		renderAnthropicStatus: renderAnthropicStatus,
+		renderAnthropicAccountsPanel: renderAnthropicAccountsPanel,
 		isDateTimeTag: isDateTimeTag,
 		newestDateTimeTag: newestDateTimeTag,
 		upgradeAvailable: upgradeAvailable,

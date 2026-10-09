@@ -54,13 +54,12 @@ type fakeManager struct {
 
 	dockerRuntime string
 
-	anthropicKind      string
-	anthropicValue     string
-	anthropicUpdatedAt time.Time
-	anthropicSet       bool
-	anthropicGetErr    error
-	anthropicSetErr    error
-	anthropicClearErr  error
+	anthropicAccounts      []store.AnthropicAccount
+	anthropicDefaultID     string
+	anthropicListErr       error
+	anthropicCreateErr     error
+	anthropicDeleteErr     error
+	anthropicSetDefaultErr error
 
 	loginActive   bool
 	loginStartErr error
@@ -198,6 +197,26 @@ func (f *fakeManager) Update(_ context.Context, id string, req agent.UpdateReque
 	a.MaxContextTokens = req.MaxContextTokens
 	a.AutoMode = req.AutoMode
 	a.Status = store.StatusRunning
+	// Model the same account-resolution precedence the real
+	// agent.resolveBackend uses, so a test that smuggles an account_id
+	// into the update body (via createAgentRequest's embedding into
+	// updateAgentRequest -- see TestUpdateAgent_AccountIDInBodyIsIgnoredLandsOnDefault)
+	// can actually be caught here instead of only at the DTO layer: the
+	// agent's EXISTING pin wins if it already has one; else the request's
+	// AccountID if non-empty; else the store's default. An ollama backend
+	// never carries an account.
+	if a.Backend == config.BackendAnthropic {
+		switch {
+		case a.AnthropicAccountID != "":
+			// existing pin wins; leave it as-is.
+		case req.AccountID != "":
+			a.AnthropicAccountID = req.AccountID
+		default:
+			a.AnthropicAccountID = f.anthropicDefaultID
+		}
+	} else {
+		a.AnthropicAccountID = ""
+	}
 	f.agents[id] = a
 	return a, nil
 }
@@ -362,45 +381,78 @@ func (f *fakeManager) PullLatestAgentImage(_ context.Context, harness string) ag
 	return agent.AgentImagePullReport{Harness: h}
 }
 
-func (f *fakeManager) AnthropicAuthStatus(_ context.Context) (string, time.Time, bool, error) {
+func (f *fakeManager) ListAnthropicAccounts(_ context.Context) ([]store.AnthropicAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.anthropicGetErr != nil {
-		return "", time.Time{}, false, f.anthropicGetErr
+	if f.anthropicListErr != nil {
+		return nil, f.anthropicListErr
 	}
-	if !f.anthropicSet {
-		return "", time.Time{}, false, nil
-	}
-	return f.anthropicKind, f.anthropicUpdatedAt, true, nil
+	out := make([]store.AnthropicAccount, len(f.anthropicAccounts))
+	copy(out, f.anthropicAccounts)
+	return out, nil
 }
 
-func (f *fakeManager) SetAnthropicAuth(_ context.Context, kind, value string) error {
+func (f *fakeManager) CreateAnthropicAccount(_ context.Context, name, kind, value string) (store.AnthropicAccount, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.anthropicSetErr != nil {
-		return f.anthropicSetErr
+	if f.anthropicCreateErr != nil {
+		return store.AnthropicAccount{}, f.anthropicCreateErr
 	}
-	if !store.ValidAnthropicKind(kind) || value == "" {
-		return fmt.Errorf("fakeManager: bad SetAnthropicAuth args kind=%q value-empty=%v", kind, value == "")
+	for _, a := range f.anthropicAccounts {
+		if a.Name == name {
+			return store.AnthropicAccount{}, fmt.Errorf("creating anthropic account %q: %w", name, store.ErrAnthropicAccountNameTaken)
+		}
 	}
-	f.anthropicKind = kind
-	f.anthropicValue = value
-	f.anthropicUpdatedAt = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	f.anthropicSet = true
+	a := store.AnthropicAccount{
+		ID:   fmt.Sprintf("anc_fake%d", len(f.anthropicAccounts)+1),
+		Name: name, Kind: kind, Value: value,
+		UpdatedAt: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC),
+	}
+	f.anthropicAccounts = append(f.anthropicAccounts, a)
+	if f.anthropicDefaultID == "" {
+		f.anthropicDefaultID = a.ID
+	}
+	return a, nil
+}
+
+func (f *fakeManager) DeleteAnthropicAccount(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicDeleteErr != nil {
+		return f.anthropicDeleteErr
+	}
+	kept := f.anthropicAccounts[:0]
+	for _, a := range f.anthropicAccounts {
+		if a.ID != id {
+			kept = append(kept, a)
+		}
+	}
+	f.anthropicAccounts = kept
+	if f.anthropicDefaultID == id {
+		f.anthropicDefaultID = ""
+	}
 	return nil
 }
 
-func (f *fakeManager) ClearAnthropicAuth(_ context.Context) error {
+func (f *fakeManager) DefaultAnthropicAccountID(_ context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.anthropicClearErr != nil {
-		return f.anthropicClearErr
+	return f.anthropicDefaultID, nil
+}
+
+func (f *fakeManager) SetDefaultAnthropicAccount(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.anthropicSetDefaultErr != nil {
+		return f.anthropicSetDefaultErr
 	}
-	f.anthropicSet = false
-	f.anthropicKind = ""
-	f.anthropicValue = ""
-	f.anthropicUpdatedAt = time.Time{}
-	return nil
+	for _, a := range f.anthropicAccounts {
+		if a.ID == id {
+			f.anthropicDefaultID = id
+			return nil
+		}
+	}
+	return fmt.Errorf("setting default anthropic account %q: %w", id, store.ErrAnthropicAccountNotFound)
 }
 
 func (f *fakeManager) StartAnthropicLogin(_ context.Context) error {
@@ -429,12 +481,28 @@ func (f *fakeManager) AnthropicLoginActive(_ context.Context) (bool, error) {
 	return f.loginActive, nil
 }
 
-func (f *fakeManager) Rename(_ context.Context, id string, name, description *string) (store.Agent, error) {
+func (f *fakeManager) Rename(_ context.Context, id string, name, description, accountID *string) (store.Agent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	a, ok := f.agents[id]
 	if !ok {
 		return store.Agent{}, fmt.Errorf("renaming agent %q: %w", id, store.ErrNotFound)
+	}
+	if accountID != nil {
+		if a.Backend != config.BackendAnthropic {
+			return store.Agent{}, fmt.Errorf("renaming agent %q: %w", id, agent.ErrAgentNotAnthropic)
+		}
+		found := false
+		for _, acc := range f.anthropicAccounts {
+			if acc.ID == *accountID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return store.Agent{}, fmt.Errorf("renaming agent %q: %w: %q", id, agent.ErrUnknownAnthropicAccount, *accountID)
+		}
+		a.AnthropicAccountID = *accountID
 	}
 	if name != nil {
 		a.Name = *name
@@ -879,6 +947,36 @@ func TestCreate_AtCapacity(t *testing.T) {
 	}
 }
 
+func TestCreateAgent_WithExplicitAccountID(t *testing.T) {
+	mgr := newFakeManager(5)
+	acc := store.AnthropicAccount{ID: "anc_personal", Name: "Personal", Kind: "api_key", Value: "sk-ant-personal"}
+	mgr.anthropicAccounts = []store.AnthropicAccount{acc}
+	mgr.anthropicDefaultID = acc.ID
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Backend: "anthropic", AccountID: "anc_personal"})
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /api/agents status = %d, body = %s; want 201", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreate_UnknownAccountIs400(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.createErr = fmt.Errorf("creating agent: %w: %q", agent.ErrUnknownAnthropicAccount, "anc_missing")
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents", createAgentRequest{Backend: "anthropic", AccountID: "anc_missing"})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "account_id" {
+		t.Errorf("error = %+v, want invalid_param on field \"account_id\"", env.Error)
+	}
+}
+
 func TestCreate_UnexpectedErrorIs500(t *testing.T) {
 	mgr := newFakeManager(5)
 	mgr.createErr = errors.New("the docker daemon is on fire")
@@ -950,6 +1048,22 @@ func TestList(t *testing.T) {
 	}
 	if resp.DefaultAutoMode != "off" {
 		t.Errorf("DefaultAutoMode = %q, want %q", resp.DefaultAutoMode, "off")
+	}
+}
+
+func TestListAgents_IncludesDefaultAnthropicAccountID(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.anthropicDefaultID = "anc_work"
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents", nil)
+
+	var body agentListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.DefaultAnthropicAccountID != "anc_work" {
+		t.Fatalf("DefaultAnthropicAccountID = %q; want anc_work", body.DefaultAnthropicAccountID)
 	}
 }
 
@@ -1997,6 +2111,61 @@ func TestRename_NotFound(t *testing.T) {
 	}
 }
 
+func TestPatchAgent_AccountID(t *testing.T) {
+	mgr := newFakeManager(5)
+	acc := store.AnthropicAccount{ID: "anc_work", Name: "Work", Kind: "api_key", Value: "sk-ant-work"}
+	mgr.anthropicAccounts = []store.AnthropicAccount{acc}
+	mgr.anthropicDefaultID = acc.ID
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "anthropic", AnthropicAccountID: acc.ID, Status: store.StatusRunning})
+
+	other := store.AnthropicAccount{ID: "anc_personal", Name: "Personal", Kind: "api_key", Value: "sk-ant-personal"}
+	mgr.anthropicAccounts = append(mgr.anthropicAccounts, other)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/agents/agt_1", map[string]any{"account_id": "anc_personal"})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH account_id status = %d, body = %s; want 200", rec.Code, rec.Body.String())
+	}
+	a := decodeAgent(t, rec)
+	if a.AnthropicAccountID != "anc_personal" {
+		t.Fatalf("AnthropicAccountID = %q; want anc_personal", a.AnthropicAccountID)
+	}
+}
+
+// TestPatchAgent_AccountIDOnOllamaAgentIs400 is a Review Focus case.
+func TestPatchAgent_AccountIDOnOllamaAgentIs400(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "ollama", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/agents/agt_1", map[string]any{"account_id": "anc_work"})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH account_id on an ollama agent status = %d, body = %s; want 400", rec.Code, rec.Body.String())
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "account_id" {
+		t.Errorf("error = %+v, want invalid_param on field \"account_id\"", env.Error)
+	}
+}
+
+func TestPatchAgent_UnknownAccountIs400(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "anthropic", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "PATCH", "/api/agents/agt_1", map[string]any{"account_id": "anc_missing"})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Error.Code != CodeInvalidParam || env.Error.Field != "account_id" {
+		t.Errorf("error = %+v, want invalid_param on field \"account_id\"", env.Error)
+	}
+}
+
 // --- POST /api/agents/{id}/update -----------------------------------------
 
 func TestHandleUpdate_OK(t *testing.T) {
@@ -2016,6 +2185,58 @@ func TestHandleUpdate_OK(t *testing.T) {
 	}
 	if len(mgr.updateReqs) != 1 || mgr.updateReqs[0].ImageTag != "20260101-000000" {
 		t.Errorf("updateReqs = %+v, want one call carrying the image tag", mgr.updateReqs)
+	}
+}
+
+// TestUpdateAgent_AccountIDInBodyIsIgnoredLandsOnDefault is a Review Focus
+// case: Task 6's controller ruling requires that POST
+// /api/agents/{id}/update NEVER honor an "account_id" in the request body,
+// even though updateAgentRequest embeds createAgentRequest (which now has
+// an AccountID field for the create path) and so Go's JSON field promotion
+// would otherwise let a client smuggle one through here. This matters most
+// for an ollama->anthropic switch, since that is the one case where the
+// real Manager's resolveBackend has no existing account pinned on the
+// record to fall back to -- req.AccountID would otherwise be load-bearing
+// there.
+//
+// Unlike an earlier version of this test, which only inspected the DTO
+// (mgr.updateReqs[0].AccountID) captured before any resolution happened,
+// this one seeds TWO distinct Anthropic accounts -- a default and a
+// different, explicitly-named one -- and asserts the actually RESOLVED
+// account on the returned agent is the default, never the one smuggled in
+// the body. fakeManager.Update models the same existing-pin > request >
+// default precedence as the real agent.resolveBackend, so this test would
+// fail if handleUpdate's `createReq.AccountID = ""` guard were ever
+// reverted or bypassed.
+func TestUpdateAgent_AccountIDInBodyIsIgnoredLandsOnDefault(t *testing.T) {
+	mgr := newFakeManager(5)
+	def := store.AnthropicAccount{ID: "anc_default", Name: "Default", Kind: "api_key", Value: "sk-ant-default"}
+	other := store.AnthropicAccount{ID: "anc_smuggled", Name: "Smuggled", Kind: "api_key", Value: "sk-ant-smuggled"}
+	mgr.anthropicAccounts = []store.AnthropicAccount{def, other}
+	mgr.anthropicDefaultID = def.ID
+	mgr.seed(store.Agent{ID: "agt_1", Backend: "ollama", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/update", updateAgentRequest{
+		createAgentRequest: createAgentRequest{Backend: "anthropic", AccountID: other.ID},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+
+	var got store.Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got.AnthropicAccountID != def.ID {
+		t.Fatalf("AnthropicAccountID = %q, want the default %q -- an ollama->anthropic switch with a smuggled account_id in the update body must still land on the operator's current default, never the account named in the body", got.AnthropicAccountID, def.ID)
+	}
+
+	if len(mgr.updateReqs) != 1 {
+		t.Fatalf("updateReqs = %+v, want exactly one call", mgr.updateReqs)
+	}
+	if forwarded := mgr.updateReqs[0].AccountID; forwarded != "" {
+		t.Errorf("AccountID passed to Manager.Update = %q, want \"\" -- the update path must never forward account_id from the request body", forwarded)
 	}
 }
 

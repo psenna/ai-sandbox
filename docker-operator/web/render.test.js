@@ -355,29 +355,6 @@ test('renderAgentInfo: missing input degrades to placeholders instead of throwin
 	assert.match(Render.renderAgentInfo(), /agent-info/);
 });
 
-test('renderAnthropicStatus: unset', () => {
-	const html = Render.renderAnthropicStatus({ configured: false });
-	assert.match(html, /No Anthropic credential/);
-	assert.match(html, /anthropic-panel__status--unset/);
-});
-
-test('renderAnthropicStatus: api key with a date', () => {
-	const html = Render.renderAnthropicStatus({ configured: true, kind: 'api_key', updated_at: '2026-09-05T12:00:00Z' });
-	assert.match(html, /API key/);
-	assert.match(html, /set 2026-09-05/);
-	assert.match(html, /anthropic-panel__status--set/);
-});
-
-test('renderAnthropicStatus: oauth token, missing date is tolerated', () => {
-	const html = Render.renderAnthropicStatus({ configured: true, kind: 'oauth' });
-	assert.match(html, /OAuth token/);
-	assert.doesNotMatch(html, /set /);
-});
-
-test('renderAnthropicStatus: null input degrades to unset', () => {
-	assert.match(Render.renderAnthropicStatus(null), /anthropic-panel__status--unset/);
-});
-
 // --- agent image tag helpers ---------------------------------------------
 
 test('isDateTimeTag: matches only YYYYMMDD-HHMMSS', () => {
@@ -1104,7 +1081,7 @@ test('agentChangePolicy: an unknown kind degrades to sidebar-only', () => {
 
 test('renderCreateForm: the Anthropic note points at Settings, not a sidebar panel', () => {
 	const html = Render.renderCreateForm({ backend: 'anthropic' });
-	assert.match(html, /set it in Settings first/);
+	assert.match(html, /Manage accounts in Settings/);
 	assert.doesNotMatch(html, /in the sidebar first/);
 });
 
@@ -1181,6 +1158,82 @@ test('renderCreateForm: sentence help lives in help lines, not placeholders', ()
 test('renderCreateForm: the error line renders above the action bar', () => {
 	const html = Render.renderCreateForm();
 	assert.ok(html.indexOf('create-form__error') < html.indexOf('create-form__actions'));
+});
+
+test('renderAnthropicAccountsPanel lists accounts with a default marker', () => {
+	const html = Render.renderAnthropicAccountsPanel([
+		{ id: 'anc_1', name: 'Work', kind: 'api_key', updated_at: '2026-09-01T00:00:00Z', is_default: true },
+		{ id: 'anc_2', name: 'Personal', kind: 'oauth', updated_at: '2026-09-02T00:00:00Z', is_default: false },
+	], {});
+	assert.match(html, /Work/);
+	assert.match(html, /Personal/);
+	assert.match(html, /anthropic-accounts__default-badge/);
+	// The non-default row (Personal) gets a Set-default button; the default
+	// row (Work) does not.
+	assert.match(html, /class="[^"]*anthropic-accounts__set-default[^"]*"[^>]*type="button"[^>]*data-id="anc_2"/);
+	// Verify anc_1 (the default) does NOT have a set-default button
+	// (it may have a remove button, but not set-default)
+	assert.doesNotMatch(html, /<button[^>]*class="[^"]*anthropic-accounts__set-default[^"]*"[^>]*data-id="anc_1"/);
+});
+
+test('renderAnthropicAccountsPanel renders an empty state with no accounts', () => {
+	const html = Render.renderAnthropicAccountsPanel([], {});
+	assert.match(html, /No Anthropic accounts yet/);
+});
+
+test('renderAnthropicAccountsPanel surfaces an error', () => {
+	const html = Render.renderAnthropicAccountsPanel([], { error: 'boom' });
+	assert.match(html, /boom/);
+});
+
+test('renderAnthropicAccountsPanel: opts.busy disables both Add buttons', () => {
+	const html = Render.renderAnthropicAccountsPanel([], { busy: true });
+	// Both Add buttons must be disabled while a request is in flight
+	assert.equal((html.match(/class="anthropic-accounts__add-apikey[^"]*"[^>]*type="button" disabled/g) || []).length, 1);
+	assert.equal((html.match(/class="anthropic-accounts__add-login[^"]*"[^>]*type="button" disabled/g) || []).length, 1);
+});
+
+test('renderCreateForm renders the anthropic account select, pre-selected to the default', () => {
+	const defaults = {
+		backend: 'anthropic',
+		anthropicAccounts: [
+			{ id: 'anc_1', name: 'Work' },
+			{ id: 'anc_2', name: 'Personal' },
+		],
+		defaultAnthropicAccountId: 'anc_2',
+	};
+	const html = Render.renderCreateForm(defaults, {});
+	assert.match(html, /create-form__anthropic-account/);
+	assert.match(html, /<option value="anc_2" selected>Personal<\/option>/);
+});
+
+test('renderCreateForm pre-selects the AGENT\'S pinned account on the update form, not the operator default', () => {
+	const defaults = {
+		anthropicAccounts: [
+			{ id: 'anc_1', name: 'Work' },
+			{ id: 'anc_2', name: 'Personal' },
+		],
+		defaultAnthropicAccountId: 'anc_2',
+	};
+	const html = Render.renderCreateForm(defaults, { values: { backend: 'anthropic', anthropic_account_id: 'anc_1' } });
+	assert.match(html, /<option value="anc_1" selected>Work<\/option>/);
+});
+
+test('renderCreateForm: a dangling pin (deleted account) shows a disabled placeholder and no real option is selected', () => {
+	const defaults = {
+		anthropicAccounts: [
+			{ id: 'anc_1', name: 'Work' },
+			{ id: 'anc_2', name: 'Personal' },
+		],
+		defaultAnthropicAccountId: 'anc_2',
+	};
+	const html = Render.renderCreateForm(defaults, { values: { backend: 'anthropic', anthropic_account_id: 'anc_deleted' } });
+	assert.match(html, /<option value="" selected disabled>\(pinned account no longer exists — pick one\)<\/option>/);
+	// No real account's <option> carries `selected`.
+	assert.doesNotMatch(html, /<option value="anc_1"[^>]*selected/);
+	assert.doesNotMatch(html, /<option value="anc_2"[^>]*selected/);
+	// The inline note is present, matching the form's existing .create-form__help convention.
+	assert.match(html, /create-form__help">This agent.s pinned account was removed\. Pick a different one before saving\.<\/span>/);
 });
 
 // --- activity page (issue #217) -------------------------------------------

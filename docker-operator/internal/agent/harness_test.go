@@ -18,7 +18,7 @@ func TestResolveSpec_Harness(t *testing.T) {
 
 	t.Run("omitted harness defaults to claude-code", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		rs, err := m.resolveSpec(ctx, CreateRequest{})
+		rs, err := m.resolveSpec(ctx, CreateRequest{}, "")
 		if err != nil {
 			t.Fatalf("resolveSpec: %v", err)
 		}
@@ -29,7 +29,7 @@ func TestResolveSpec_Harness(t *testing.T) {
 
 	t.Run("opencode with ollama is ok", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		rs, err := m.resolveSpec(ctx, CreateRequest{Harness: config.HarnessOpenCode, Backend: config.BackendOllama})
+		rs, err := m.resolveSpec(ctx, CreateRequest{Harness: config.HarnessOpenCode, Backend: config.BackendOllama}, "")
 		if err != nil {
 			t.Fatalf("resolveSpec: %v", err)
 		}
@@ -42,10 +42,10 @@ func TestResolveSpec_Harness(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
 		// Seed a credential so the only possible failure reason is the
 		// harness/backend rule, not a missing Anthropic credential.
-		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
-			t.Fatalf("SetAnthropicAuth: %v", err)
+		if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
+			t.Fatalf("CreateAnthropicAccount: %v", err)
 		}
-		_, err := m.resolveSpec(ctx, CreateRequest{Harness: config.HarnessOpenCode, Backend: config.BackendAnthropic})
+		_, err := m.resolveSpec(ctx, CreateRequest{Harness: config.HarnessOpenCode, Backend: config.BackendAnthropic}, "")
 		if !IsIncompatibleHarness(err) {
 			t.Fatalf("resolveSpec err = %v, want IsIncompatibleHarness", err)
 		}
@@ -55,14 +55,14 @@ func TestResolveSpec_Harness(t *testing.T) {
 		cfg := testConfig(5)
 		cfg.DefaultBackend = config.BackendAnthropic
 		m, _, st := newTestManagerCfg(t, cfg)
-		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
-			t.Fatalf("SetAnthropicAuth: %v", err)
+		if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
+			t.Fatalf("CreateAnthropicAccount: %v", err)
 		}
 		// This is exactly the case internal/api's early request-only check
 		// cannot catch: the request names no backend at all, and only the
 		// RESOLVED pair (opencode + the operator's anthropic default) is
 		// incompatible.
-		_, err := m.resolveSpec(ctx, CreateRequest{Harness: config.HarnessOpenCode})
+		_, err := m.resolveSpec(ctx, CreateRequest{Harness: config.HarnessOpenCode}, "")
 		if !IsIncompatibleHarness(err) {
 			t.Fatalf("resolveSpec err = %v, want IsIncompatibleHarness", err)
 		}
@@ -70,7 +70,7 @@ func TestResolveSpec_Harness(t *testing.T) {
 
 	t.Run("an unknown harness is IsInvalidHarness", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		_, err := m.resolveSpec(ctx, CreateRequest{Harness: "vertex-code"})
+		_, err := m.resolveSpec(ctx, CreateRequest{Harness: "vertex-code"}, "")
 		if !IsInvalidHarness(err) {
 			t.Fatalf("resolveSpec err = %v, want IsInvalidHarness", err)
 		}
@@ -142,8 +142,8 @@ func TestCreate_PersistsHarness(t *testing.T) {
 
 	t.Run("opencode with anthropic: IsIncompatibleHarness, nothing created", func(t *testing.T) {
 		m, f, st := newTestManager(t, 5)
-		if err := st.SetAnthropicAuth(ctx, store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
-			t.Fatalf("SetAnthropicAuth: %v", err)
+		if _, err := st.CreateAnthropicAccount(ctx, "test", store.AnthropicKindAPIKey, "apikey-xyz"); err != nil {
+			t.Fatalf("CreateAnthropicAccount: %v", err)
 		}
 		before := snapshotCounts(f)
 		_, err := m.Create(ctx, CreateRequest{Harness: config.HarnessOpenCode, Backend: config.BackendAnthropic})

@@ -22,9 +22,19 @@ import (
 )
 
 // ErrNoAnthropicAuth is returned by Create for a backend=anthropic request
-// when no Anthropic credential has been stored yet. internal/api maps it to
-// a 409 ("configure the Anthropic account first").
+// when no Anthropic account has been stored yet; by Update, and by the
+// wake-agent path, when the resolved account id (an explicit pin, or the
+// operator default) still comes up empty; and for the dangling-pin case --
+// an agent's previously-valid AnthropicAccountID no longer names a stored
+// account (it was deleted after the agent was pinned to it). internal/api
+// maps it to a 409 ("configure the Anthropic account first").
 var ErrNoAnthropicAuth = errors.New("no Anthropic credential is configured")
+
+// ErrUnknownAnthropicAccount is returned by Create for an explicit
+// CreateRequest.AccountID that names no stored account, and by Rename for a
+// PATCH account_id that names no stored account. internal/api maps it to a
+// 400.
+var ErrUnknownAnthropicAccount = errors.New("unknown anthropic account")
 
 // ErrInvalidBackend is returned by Create for a backend that is neither
 // config.BackendOllama nor config.BackendAnthropic.
@@ -69,13 +79,15 @@ func IsInvalidOllamaURL(err error) bool    { return errors.Is(err, ErrInvalidOll
 func IsInvalidAutoCompactThreshold(err error) bool {
 	return errors.Is(err, ErrInvalidAutoCompactThreshold)
 }
-func IsInvalidAutoMode(err error) bool { return errors.Is(err, ErrInvalidAutoMode) }
+func IsInvalidAutoMode(err error) bool         { return errors.Is(err, ErrInvalidAutoMode) }
+func IsUnknownAnthropicAccount(err error) bool { return errors.Is(err, ErrUnknownAnthropicAccount) }
 
 // resolvedBackend is everything about an agent's LLM backend that its
 // container environment needs, worked out once in Create from the request,
-// the operator config and -- for the anthropic backend -- the stored shared
-// credential. It is threaded through the build sequence rather than re-read,
-// so a credential change mid-create cannot half-apply.
+// the operator config and -- for the anthropic backend -- a named account
+// resolved from the Anthropic accounts store. It is threaded through the
+// build sequence rather than re-read, so an account change mid-create cannot
+// half-apply.
 type resolvedBackend struct {
 	kind      string // config.BackendOllama | config.BackendAnthropic
 	model     string // ollama only: the default/opus tier
@@ -84,6 +96,7 @@ type resolvedBackend struct {
 	// anthropic only: exactly one is non-empty.
 	apiKey     string
 	oauthToken string
+	accountID  string // anthropic only
 }
 
 // dindInitScript is scripts/dind-init.sh, embedded so the operator can hand it
@@ -399,6 +412,16 @@ type CreateRequest struct {
 	// backend-agnostic. Create validates it (config.ValidAutoMode) and stores
 	// the resolved value on store.Agent.AutoMode.
 	AutoMode string
+
+	// AccountID pins this one agent to a specific stored Anthropic account
+	// (store.AnthropicAccount.ID). Only meaningful for the anthropic
+	// backend; ignored for ollama. Empty means "use the operator's current
+	// default account" -- Create resolves and stamps a CONCRETE id onto the
+	// record at creation time (never "follow the default forever"). An
+	// existing agent's account is changed through Rename instead -- Update
+	// never reads this field (see resolveBackend's existingAccountID
+	// parameter).
+	AccountID string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -450,7 +473,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 	// because a per-agent tag substitution needs the record's own repository).
 	// An empty ImageTag now also makes resolveAgentImageRef query the local
 	// daemon for what it already holds before picking a default tag.
-	rs, err := m.resolveSpec(ctx, req)
+	rs, err := m.resolveSpec(ctx, req, "")
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating an agent: %w", err)
 	}
@@ -472,6 +495,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		MaxContextTokens:     rs.maxContextTokens,
 		AutoMode:             rs.autoMode,
 		Image:                imageRef,
+		AnthropicAccountID:   rs.rb.accountID,
 	})
 	if err != nil {
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
@@ -501,10 +525,10 @@ type resolvedSpec struct {
 // can map to a 4xx (ErrInvalidBackend, ErrNoAnthropicAuth, ErrInvalidRepo,
 // ErrInvalidOllamaURL, ErrInvalidAutoCompactThreshold). It mutates nothing --
 // it is called before either flow reserves a slot or touches Docker.
-func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest) (resolvedSpec, error) {
+func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest, existingAccountID string) (resolvedSpec, error) {
 	// The backend, from the request + operator config + (for anthropic) the
-	// stored shared credential.
-	rb, err := m.resolveBackend(ctx, req)
+	// resolved Anthropic account.
+	rb, err := m.resolveBackend(ctx, req, existingAccountID)
 	if err != nil {
 		return resolvedSpec{}, err
 	}
@@ -556,10 +580,20 @@ func (m *Manager) resolveSpec(ctx context.Context, req CreateRequest) (resolvedS
 	return resolvedSpec{rb: rb, harness: harness, repo: repo, autoCompact: autoCompact, maxContextTokens: maxContextTokens, autoMode: autoMode}, nil
 }
 
-// resolveBackend turns a CreateRequest's backend fields + the operator config
-// + the stored Anthropic credential into a resolvedBackend, or an error the
-// caller can map to a 4xx (ErrInvalidBackend, ErrNoAnthropicAuth).
-func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest) (resolvedBackend, error) {
+// resolveBackend turns a CreateRequest's backend fields + the operator
+// config + the resolved Anthropic account into a resolvedBackend, or an
+// error the caller can map to a 4xx (ErrInvalidBackend, ErrNoAnthropicAuth,
+// ErrUnknownAnthropicAccount).
+//
+// existingAccountID is the account already pinned on the record, or "" when
+// there is none yet: Create always passes "" (no record exists yet); Update
+// passes the record's current AnthropicAccountID, so an in-place update
+// NEVER changes which account an agent is pinned to -- that happens through
+// Rename's separate, no-recreate PATCH path instead -- except when the
+// update is switching the agent from ollama to anthropic for the first
+// time, where there is no existing pin to preserve and this falls through
+// to the same default-resolution Create uses.
+func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest, existingAccountID string) (resolvedBackend, error) {
 	kind := req.Backend
 	if kind == "" {
 		kind = m.cfg.DefaultBackend
@@ -578,20 +612,44 @@ func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest) (resolv
 			return resolvedBackend{}, fmt.Errorf("%w: %q", ErrInvalidOllamaURL, rb.ollamaURL)
 		}
 	case config.BackendAnthropic:
-		auth, ok, err := m.store.GetAnthropicAuth(ctx)
-		if err != nil {
-			return resolvedBackend{}, fmt.Errorf("reading the stored Anthropic credential: %w", err)
+		accountID := existingAccountID
+		fromRequest := false
+		if accountID == "" {
+			accountID = req.AccountID
+			fromRequest = accountID != ""
 		}
-		if !ok {
+		if accountID == "" {
+			id, err := m.store.DefaultAnthropicAccountID(ctx)
+			if err != nil {
+				return resolvedBackend{}, fmt.Errorf("reading the default Anthropic account: %w", err)
+			}
+			accountID = id
+		}
+		if accountID == "" {
 			return resolvedBackend{}, ErrNoAnthropicAuth
 		}
-		switch auth.Kind {
+		account, err := m.store.GetAnthropicAccount(ctx, accountID)
+		if err != nil {
+			if store.IsAnthropicAccountNotFound(err) {
+				if fromRequest {
+					return resolvedBackend{}, fmt.Errorf("%w: %q", ErrUnknownAnthropicAccount, accountID)
+				}
+				// existingAccountID (or the resolved default) no longer
+				// exists -- the dangling-pin case: fail exactly like "no
+				// credential configured" rather than silently falling back
+				// to whatever the CURRENT default happens to be.
+				return resolvedBackend{}, fmt.Errorf("%w: the pinned account %q no longer exists", ErrNoAnthropicAuth, accountID)
+			}
+			return resolvedBackend{}, fmt.Errorf("reading the Anthropic account %q: %w", accountID, err)
+		}
+		rb.accountID = accountID
+		switch account.Kind {
 		case store.AnthropicKindAPIKey:
-			rb.apiKey = auth.Value
+			rb.apiKey = account.Value
 		case store.AnthropicKindOAuth:
-			rb.oauthToken = auth.Value
+			rb.oauthToken = account.Value
 		default:
-			return resolvedBackend{}, fmt.Errorf("the stored Anthropic credential has an unknown kind %q", auth.Kind)
+			return resolvedBackend{}, fmt.Errorf("the Anthropic account %q has an unknown kind %q", accountID, account.Kind)
 		}
 	}
 	return rb, nil

@@ -234,6 +234,14 @@ type Agent struct {
 	ClaudeConfigVolume string `json:"claude_config_volume,omitempty"`
 	DindCacheVolume    string `json:"dind_cache_volume,omitempty"`
 
+	// AnthropicAccountID pins this agent to one stored AnthropicAccount
+	// (empty for a backend=ollama agent). Resolved and stamped once at
+	// create time (Manager.resolveBackend, Task 3), and changed afterward
+	// ONLY through Manager.Rename's PATCH path (Task 4) -- never through
+	// Update's full container recreate. See
+	// docs/superpowers/specs/2026-10-08-multi-anthropic-accounts-design.md.
+	AnthropicAccountID string `json:"anthropic_account_id,omitempty"`
+
 	// DependaproxyDinernetIP is the address IPAM gave the shared
 	// dependaproxy container on this agent's dinernet, read back at create
 	// time and templated into the agent container as
@@ -269,7 +277,7 @@ type CreateSpec struct {
 	// Description is the initial free-form description. May be empty.
 	Description string
 	// Backend, Model, FastModel, OllamaURL, Repo, AutoCompactThreshold,
-	// MaxContextTokens, AutoMode and Image are recorded on the new agent
+	// MaxContextTokens, AutoMode, AnthropicAccountID and Image are recorded on the new agent
 	// verbatim. internal/agent resolves them (request value or operator
 	// default) and validates them before calling Create; the store only
 	// persists what it is given.
@@ -282,18 +290,31 @@ type CreateSpec struct {
 	AutoCompactThreshold string
 	MaxContextTokens     string
 	AutoMode             string
+	AnthropicAccountID   string
 	Image                string
 }
 
 // bucketAgents holds every agent record, keyed by agent ID. bucketSettings
-// holds process-wide singletons that are not per-agent -- currently just the
-// shared Anthropic credential, under keySettingsAnthropicAuth.
+// holds process-wide singletons that are not per-agent -- the default
+// Anthropic account id (keySettingsDefaultAnthropicAccount), the agent-image
+// tag snapshot, and, legacy-only, the old shared-credential key
+// (keySettingsAnthropicAuth) that migration reads and deletes once on first
+// boot after this feature shipped. bucketAnthropicAccounts holds the named
+// Anthropic account records themselves, keyed by account ID.
 var (
-	bucketAgents   = []byte("agents")
-	bucketSettings = []byte("settings")
+	bucketAgents            = []byte("agents")
+	bucketSettings          = []byte("settings")
+	bucketAnthropicAccounts = []byte("anthropic_accounts")
 
-	keySettingsAnthropicAuth  = []byte("anthropic_auth")
-	keySettingsAgentImageTags = []byte("agent_image_tags")
+	// keySettingsAnthropicAuth is the LEGACY single shared credential this
+	// feature replaces. It is read (and deleted) exactly once, by
+	// migrateLegacyAnthropicAuth in Open -- nothing else reads or writes it.
+	keySettingsAnthropicAuth = []byte("anthropic_auth")
+	// keySettingsDefaultAnthropicAccount holds the id (a bucketAnthropicAccounts
+	// key) of the account that pre-fills the create form. Empty/missing means
+	// no default is set.
+	keySettingsDefaultAnthropicAccount = []byte("default_anthropic_account_id")
+	keySettingsAgentImageTags          = []byte("agent_image_tags")
 
 	// The agent-image tag snapshot is per harness. claude-code deliberately
 	// keeps the ORIGINAL, harness-less key, so the snapshot written by every
@@ -389,12 +410,12 @@ func Open(path string, maxAgents int) (*Store, error) {
 		return nil, fmt.Errorf("opening the state database %q: %w", path, err)
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bucketAgents, bucketSettings, bucketTemplates} {
+		for _, name := range [][]byte{bucketAgents, bucketSettings, bucketTemplates, bucketAnthropicAccounts} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("creating the %q bucket: %w", name, err)
 			}
 		}
-		return nil
+		return migrateLegacyAnthropicAuth(tx, func() time.Time { return time.Now().UTC() })
 	}); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialising %q: %w", path, err)
@@ -467,6 +488,7 @@ func (s *Store) Create(ctx context.Context, spec CreateSpec) (Agent, error) {
 		AutoCompactThreshold: spec.AutoCompactThreshold,
 		MaxContextTokens:     spec.MaxContextTokens,
 		AutoMode:             spec.AutoMode,
+		AnthropicAccountID:   spec.AnthropicAccountID,
 		Image:                spec.Image,
 		Status:               StatusCreating,
 		CreatedAt:            now,
@@ -606,91 +628,6 @@ const (
 // kinds.
 func ValidAnthropicKind(kind string) bool {
 	return kind == AnthropicKindAPIKey || kind == AnthropicKindOAuth
-}
-
-// AnthropicAuth is the operator's shared Anthropic credential -- one value,
-// used by every BackendAnthropic agent. Value is a secret: the store returns
-// it (internal/agent needs the plaintext to put on a container's
-// environment), but no layer above serialises it to a client.
-type AnthropicAuth struct {
-	Kind      string    `json:"kind"`
-	Value     string    `json:"value"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// GetAnthropicAuth returns the stored Anthropic credential. The bool is
-// false (and AnthropicAuth is the zero value) when none is configured --
-// distinct from a stored credential with an empty Value, which cannot
-// happen because SetAnthropicAuth rejects it.
-func (s *Store) GetAnthropicAuth(ctx context.Context) (AnthropicAuth, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return AnthropicAuth{}, false, err
-	}
-	var (
-		auth AnthropicAuth
-		ok   bool
-	)
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bucketSettings)
-		if b == nil {
-			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
-		}
-		raw := b.Get(keySettingsAnthropicAuth)
-		if raw == nil {
-			return nil
-		}
-		if err := json.Unmarshal(raw, &auth); err != nil {
-			return fmt.Errorf("decoding the stored Anthropic credential: %w", err)
-		}
-		ok = true
-		return nil
-	})
-	if err != nil {
-		return AnthropicAuth{}, false, err
-	}
-	return auth, ok, nil
-}
-
-// SetAnthropicAuth stores (replacing any existing) the shared Anthropic
-// credential. kind must be AnthropicKindAPIKey or AnthropicKindOAuth and
-// value must be non-empty; format checks beyond that are the API layer's
-// job. UpdatedAt is stamped from the store's clock.
-func (s *Store) SetAnthropicAuth(ctx context.Context, kind, value string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if !ValidAnthropicKind(kind) {
-		return fmt.Errorf("setting the Anthropic credential: %q is not a valid kind (want %q or %q)", kind, AnthropicKindAPIKey, AnthropicKindOAuth)
-	}
-	if value == "" {
-		return errors.New("setting the Anthropic credential: the value must not be empty")
-	}
-	raw, err := json.Marshal(AnthropicAuth{Kind: kind, Value: value, UpdatedAt: s.now()})
-	if err != nil {
-		return fmt.Errorf("encoding the Anthropic credential: %w", err)
-	}
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bucketSettings)
-		if b == nil {
-			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
-		}
-		return b.Put(keySettingsAnthropicAuth, raw)
-	})
-}
-
-// ClearAnthropicAuth removes the stored Anthropic credential. It is
-// idempotent -- clearing when none is set is success.
-func (s *Store) ClearAnthropicAuth(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket(bucketSettings)
-		if b == nil {
-			return fmt.Errorf("the %q bucket is missing from the state database %q", bucketSettings, s.path)
-		}
-		return b.Delete(keySettingsAnthropicAuth)
-	})
 }
 
 // AgentImageTags is the operator's last-known snapshot of the agent image's

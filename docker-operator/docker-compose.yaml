@@ -211,8 +211,8 @@ services:
       # "ollama" agent's opus tier and its sonnet+haiku tiers. Overridable
       # per agent on the create form / via the POST /api/agents body. An
       # "anthropic" agent ignores these and OLLAMA_URL entirely -- it uses
-      # the shared Anthropic credential (web UI "Anthropic account" panel /
-      # PUT /api/anthropic/auth).
+      # one of the stored, named Anthropic accounts (web UI Settings'
+      # "Anthropic Accounts" panel / POST /api/anthropic/accounts).
       OLLAMA_URL: "http://ollama:11434"
       AGENT_MODEL: "${OLLAMA_MODEL:-glm-5.3:cloud}"
       AGENT_FAST_MODEL: "${OLLAMA_FAST_MODEL:-deepseek-v4.1-flash:cloud}"
