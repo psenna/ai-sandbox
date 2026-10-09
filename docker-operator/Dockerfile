@@ -16,7 +16,7 @@
 # TLS-fronted Docker daemon or, later, an HTTPS registry -- this sandbox's own
 # daemon is plain HTTP, but the image should not assume every deployment is).
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 FROM golang:${GO_VERSION} AS build
 
 # Overridable so a build behind an internal proxy (this repo's own

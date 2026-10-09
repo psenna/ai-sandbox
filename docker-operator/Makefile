@@ -12,7 +12,7 @@
 # This is the operator/Makefile build pattern trimmed to the essentials; the
 # e2e/kind/helm/envtest/controller-gen machinery there has no analog here.
 
-GOLANG_IMAGE   ?= golang:1.25
+GOLANG_IMAGE   ?= golang:1.26
 NODE_IMAGE     ?= node:22
 DOCKER         ?= docker
 IN_CONTAINER   ?= 0
