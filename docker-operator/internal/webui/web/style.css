@@ -618,16 +618,6 @@ html, body {
 	color: var(--fg-dim);
 }
 
-.anthropic-panel__status { display: block; margin-bottom: 6px; }
-.anthropic-panel__status--set { color: var(--status-running); }
-.anthropic-panel__status--unset { color: var(--fg-dim); font-style: italic; }
-
-.anthropic-panel__actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px;
-}
-
 .anthropic-accounts__table { width: 100%; border-collapse: collapse; margin-bottom: var(--space-3); }
 .anthropic-accounts__table th {
 	text-align: left;

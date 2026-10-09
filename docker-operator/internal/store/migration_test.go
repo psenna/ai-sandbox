@@ -22,7 +22,7 @@ func seedLegacyAnthropicAuth(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("opening a raw bbolt file: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	raw := `{"kind":"api_key","value":"sk-ant-legacy","updated_at":"2026-01-01T00:00:00Z"}`
 	if err := db.Update(func(tx *bbolt.Tx) error {
 		settings, err := tx.CreateBucketIfNotExists([]byte("settings"))
@@ -54,7 +54,7 @@ func TestMigrateLegacyAnthropicAuth_PromotesToDefaultAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { _ = s.Close() })
 
 	ctx := context.Background()
 	accounts, err := s.ListAnthropicAccounts(ctx)
@@ -119,7 +119,7 @@ func TestMigrateLegacyAnthropicAuth_IsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
-	defer s2.Close()
+	t.Cleanup(func() { _ = s2.Close() })
 
 	accounts, err = s2.ListAnthropicAccounts(ctx)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestMigrateLegacyAnthropicAuth_NoLegacyDataIsANoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { _ = s.Close() })
 	accounts, err := s.ListAnthropicAccounts(context.Background())
 	if err != nil || len(accounts) != 0 {
 		t.Fatalf("ListAnthropicAccounts on a fresh store = %v, %v; want empty, nil", accounts, err)
