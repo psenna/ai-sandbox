@@ -35,7 +35,7 @@ func TestArchiveTranscript_ClaudeCode(t *testing.T) {
 	}
 
 	dir := filepath.Join(cfg.FilestoreDir, "transcripts", a.ID)
-	got, err := os.ReadFile(filepath.Join(dir, "projects", "enc-cwd", "session-1.jsonl"))
+	got, err := os.ReadFile(filepath.Join(dir, "projects", "enc-cwd", "session-1.jsonl")) //nolint:gosec // G304: test reads back a file archiveTranscript itself just wrote under a t.TempDir() root
 	if err != nil {
 		t.Fatalf("reading archived transcript: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestArchiveTranscript_ClaudeCode(t *testing.T) {
 		t.Errorf("archived content = %q, want the seeded session content", got)
 	}
 
-	metaBytes, err := os.ReadFile(filepath.Join(dir, "metadata.json"))
+	metaBytes, err := os.ReadFile(filepath.Join(dir, "metadata.json")) //nolint:gosec // G304: test reads back a file archiveTranscript itself just wrote under a t.TempDir() root
 	if err != nil {
 		t.Fatalf("reading metadata.json: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestArchiveTranscript_OpenCode(t *testing.T) {
 	}
 
 	dir := filepath.Join(cfg.FilestoreDir, "transcripts", a.ID)
-	got, err := os.ReadFile(filepath.Join(dir, "output.log"))
+	got, err := os.ReadFile(filepath.Join(dir, "output.log")) //nolint:gosec // G304: test reads back a file archiveTranscript itself just wrote under a t.TempDir() root
 	if err != nil {
 		t.Fatalf("reading archived output.log: %v", err)
 	}

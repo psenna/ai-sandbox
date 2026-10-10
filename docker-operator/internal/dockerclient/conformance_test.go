@@ -801,7 +801,7 @@ func findVolumeUsage(list []dockerclient.VolumeUsage, name string) (dockerclient
 // content wantContent.
 func assertTarEntry(t *testing.T, r io.ReadCloser, wantName, wantContent string) {
 	t.Helper()
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()

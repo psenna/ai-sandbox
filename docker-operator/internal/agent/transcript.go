@@ -102,7 +102,7 @@ func (m *Manager) archiveTranscript(ctx context.Context, a store.Agent) {
 		// failure worth a warning.
 		return
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	if err := extract(rc); err != nil {
 		m.log.WarnContext(ctx, "archiving transcript: extracting archive", "agent_id", a.ID, "error", err)
