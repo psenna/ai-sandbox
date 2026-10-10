@@ -454,7 +454,7 @@ func (s *Store) Remove(rel string) error {
 	if len(segs) == 0 {
 		return fmt.Errorf("refusing to remove the store root: %w", ErrInvalidPath)
 	}
-	if len(segs) == 1 && (segs[0] == AgentsDir || segs[0] == SharedDir) {
+	if len(segs) == 1 && (segs[0] == AgentsDir || segs[0] == SharedDir || segs[0] == TranscriptsDir) {
 		return fmt.Errorf("refusing to remove the top-level %q directory: %w", segs[0], ErrInvalidPath)
 	}
 	if err := s.r.RemoveAll(openName(segs)); err != nil {

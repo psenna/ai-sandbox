@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path"
 	"strings"
@@ -21,6 +22,12 @@ import (
 // archive -- generous for a session JSONL file or the raw output log, but
 // not unbounded against a corrupted or hostile tar stream.
 const maxTranscriptFileBytes = 512 << 20
+
+// transcriptArchiveTimeout bounds the CopyFromContainer call and the
+// extraction read that follows it, so a slow or stuck daemon cannot stall
+// Delete (or create-rollback, or reconcile cleanup) indefinitely. Generous
+// for a real session history, which is small text relative to this.
+const transcriptArchiveTimeout = 30 * time.Second
 
 // transcriptMetadata is written as transcripts/<id>/metadata.json: once an
 // agent is deleted its bare ID tells you nothing, so this is the only
@@ -43,11 +50,29 @@ type transcriptMetadata struct {
 // Warn and swallowed, so an archiving failure can never hold up Delete. See
 // docs/superpowers/specs/2026-10-10-agent-transcript-archive-design.md.
 //
-// a must already have its derived names filled in (withDerivedNames) --
-// teardown calls this after that step, so the container reference below
-// mirrors teardown's own firstNonEmpty(a.ContainerID, a.ContainerName)
-// pattern.
+// teardown calls this after withDerivedNames, so through that path a
+// always has a non-empty ContainerName by the time this runs -- a record
+// that crashed before Create stamped anything still resolves safely, just
+// through CopyFromContainer's IsNotFound below, since the derived name
+// resolves to no real container. The ref == "" guard just below never
+// fires on that path; it exists for any OTHER caller (a direct unit test,
+// or a future one) that passes a bare record without deriving it first.
+//
+// Two more guarantees back the "never blocks Delete" contract beyond a
+// logged-and-swallowed error: a recover so a panic anywhere below (today:
+// none found, but the contract is asserted absolutely, so this is cheap
+// insurance against tomorrow's) cannot propagate through teardown and
+// leave the record stuck in deleting with every Docker resource intact;
+// and transcriptArchiveTimeout, bounding the copy so a slow or stuck
+// daemon cannot stall Delete, create-rollback or reconcile cleanup
+// indefinitely (the same pattern internal/api already uses for its own
+// slow reads -- see diskUsageReadTimeout/activityReadTimeout).
 func (m *Manager) archiveTranscript(ctx context.Context, a store.Agent) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.log.WarnContext(ctx, "archiving transcript: recovered from a panic", "agent_id", a.ID, "panic", r)
+		}
+	}()
 	if m.files == nil {
 		return
 	}
@@ -56,6 +81,8 @@ func (m *Manager) archiveTranscript(ctx context.Context, a store.Agent) {
 	}
 	ref := firstNonEmpty(a.ContainerID, a.ContainerName)
 	if ref == "" {
+		// Unreachable via teardown (see the doc comment above); kept for a
+		// caller that passes a bare record directly, with nothing derived.
 		return
 	}
 
@@ -92,7 +119,9 @@ func (m *Manager) archiveTranscript(ctx context.Context, a store.Agent) {
 		extract = func(r io.Reader) error { return m.extractTranscriptDir(r, dest) }
 	}
 
-	rc, err := m.docker.CopyFromContainer(ctx, ref, srcPath)
+	copyCtx, cancel := context.WithTimeout(ctx, transcriptArchiveTimeout)
+	defer cancel()
+	rc, err := m.docker.CopyFromContainer(copyCtx, ref, srcPath)
 	if err != nil {
 		if !dockerclient.IsNotFound(err) {
 			m.log.WarnContext(ctx, "archiving transcript: copying from container", "agent_id", a.ID, "path", srcPath, "error", err)
@@ -124,38 +153,48 @@ func (m *Manager) saveTranscriptMetadata(dest string, meta transcriptMetadata) e
 // conformance case for the exact entry-naming convention this depends on)
 // and writes every regular-file entry into the file store under destRoot,
 // preserving the tar's own relative paths. Non-regular entries (directory
-// headers, symlinks) are skipped, and so is any entry whose cleaned name
-// tries to climb above destRoot (a leading ".." after path.Clean, which
-// fully resolves any internal "a/../.." redundancy) -- the agent that
+// headers, symlinks) are skipped, and so is any entry whose cleaned name is
+// "." or tries to climb above destRoot (a leading ".." after path.Clean,
+// which fully resolves any internal "a/../.." redundancy) -- the agent that
 // produced this tar controls every name under its own
 // $CLAUDE_CONFIG_DIR/projects/, so a crafted name must be assumed possible,
 // not dismissed as something only a well-behaved process would write.
 // destRoot's parent must already exist; Mkdir(path.Dir(...)) per file
 // creates every other directory as needed, so an empty tar is a correct
 // no-op.
+//
+// One bad entry (an invalid name, an oversized file, anything
+// filestore.Save/Mkdir rejects) is logged into the returned error and
+// SKIPPED, never aborts the rest of the walk: tar order is the daemon's
+// readdir order, and a single unlucky or hostile early entry must not
+// truncate every entry after it. Only a malformed tar stream itself
+// (tr.Next failing outright) ends the walk early.
 func (m *Manager) extractTranscriptDir(r io.Reader, destRoot string) error {
 	tr := tar.NewReader(r)
+	var errs []error
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			return errors.Join(errs...)
 		}
 		if err != nil {
-			return err
+			return errors.Join(append(errs, err)...)
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		rel := path.Clean(hdr.Name)
-		if rel == ".." || strings.HasPrefix(rel, "../") {
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 			continue
 		}
 		dest := path.Join(destRoot, rel)
 		if err := m.files.Mkdir(path.Dir(dest)); err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		if _, err := m.files.Save(dest, tr, maxTranscriptFileBytes); err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 	}
 }
