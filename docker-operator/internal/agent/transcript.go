@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
@@ -123,9 +124,15 @@ func (m *Manager) saveTranscriptMetadata(dest string, meta transcriptMetadata) e
 // conformance case for the exact entry-naming convention this depends on)
 // and writes every regular-file entry into the file store under destRoot,
 // preserving the tar's own relative paths. Non-regular entries (directory
-// headers, symlinks) are skipped. destRoot's parent must already exist;
-// Mkdir(path.Dir(...)) per file creates every other directory as needed, so
-// an empty tar is a correct no-op.
+// headers, symlinks) are skipped, and so is any entry whose cleaned name
+// tries to climb above destRoot (a leading ".." after path.Clean, which
+// fully resolves any internal "a/../.." redundancy) -- the agent that
+// produced this tar controls every name under its own
+// $CLAUDE_CONFIG_DIR/projects/, so a crafted name must be assumed possible,
+// not dismissed as something only a well-behaved process would write.
+// destRoot's parent must already exist; Mkdir(path.Dir(...)) per file
+// creates every other directory as needed, so an empty tar is a correct
+// no-op.
 func (m *Manager) extractTranscriptDir(r io.Reader, destRoot string) error {
 	tr := tar.NewReader(r)
 	for {
@@ -139,7 +146,11 @@ func (m *Manager) extractTranscriptDir(r io.Reader, destRoot string) error {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		dest := path.Join(destRoot, path.Clean(hdr.Name))
+		rel := path.Clean(hdr.Name)
+		if rel == ".." || strings.HasPrefix(rel, "../") {
+			continue
+		}
+		dest := path.Join(destRoot, rel)
 		if err := m.files.Mkdir(path.Dir(dest)); err != nil {
 			return err
 		}

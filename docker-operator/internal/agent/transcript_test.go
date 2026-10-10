@@ -267,3 +267,38 @@ func TestExtractTranscriptDir_EmptyTarIsNoop(t *testing.T) {
 		t.Fatalf("extractTranscriptDir(empty): %v, want nil", err)
 	}
 }
+
+// TestExtractTranscriptDir_RejectsPathEscape guards against a tar-slip: a
+// crafted entry name like "../../escaped.txt" must never land outside
+// destRoot. A malicious or compromised agent controls every file under its
+// own $CLAUDE_CONFIG_DIR/projects/, so a crafted name here must be assumed
+// possible, not dismissed as something only a well-behaved Claude Code
+// process would ever write.
+func TestExtractTranscriptDir_RejectsPathEscape(t *testing.T) {
+	cfg := testConfigWithFilestore(t, 5)
+	m, _, _ := newTestManagerCfg(t, cfg)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	// One level up from destRoot: lands at transcripts/escaped.txt, a
+	// sibling of every agent's own subdirectory -- a real, silent escape
+	// (no error), unlike a name that resolves above the file-store root
+	// entirely, which filestore's own path validation happens to reject.
+	_ = tw.WriteHeader(&tar.Header{Name: "../escaped.txt", Typeflag: tar.TypeReg, Mode: 0o644, Size: 5})
+	_, _ = tw.Write([]byte("pwned"))
+	_ = tw.Close()
+
+	if err := m.files.Mkdir("transcripts/agt_victim"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.extractTranscriptDir(&buf, "transcripts/agt_victim"); err != nil {
+		t.Fatalf("extractTranscriptDir: %v, want nil (a hostile entry is skipped, not a hard failure)", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(cfg.FilestoreDir, "transcripts", "escaped.txt")); !os.IsNotExist(err) {
+		t.Errorf("escaped.txt written outside transcripts/agt_victim/, at transcripts/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.FilestoreDir, "transcripts", "agt_victim", "escaped.txt")); !os.IsNotExist(err) {
+		t.Errorf("escaped.txt landed inside destRoot unexpectedly: %v", err)
+	}
+}
