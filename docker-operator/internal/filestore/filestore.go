@@ -56,10 +56,15 @@ func IsNotDir(err error) bool { return errors.Is(err, ErrNotDir) }
 // AgentsDir is the top-level directory under the store root that holds every
 // agent's private files, at AgentsDir/<id>/. SharedDir is the other top-level
 // directory: a common area mounted read-only into every agent and writable
-// only by the operator (through this package's own API).
+// only by the operator (through this package's own API). TranscriptsDir is a
+// third, separate top-level directory, at TranscriptsDir/<id>/, holding a
+// deleted agent's archived session history -- deliberately NOT inside
+// AgentsDir, so `purge_files=true` (which only ever reaches AgentsDir/<id>/)
+// can never delete it.
 const (
-	AgentsDir = "agents"
-	SharedDir = "shared"
+	AgentsDir      = "agents"
+	SharedDir      = "shared"
+	TranscriptsDir = "transcripts"
 )
 
 // maxSegmentLen and maxPathLen bound a single path segment and the whole
