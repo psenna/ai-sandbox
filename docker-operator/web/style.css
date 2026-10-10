@@ -382,6 +382,18 @@ html, body {
 	flex-direction: column;
 	min-width: 0;
 	min-height: 0;
+	/* The backstop for any view that doesn't manage its own full-height +
+	   inner-overflow pair (.activity-page/.activity-page__body, .detail do).
+	   .create-form is a plain top-to-bottom form with no height of its own
+	   -- without this, content taller than the viewport (e.g. the Anthropic
+	   account picker pushing the Model section past one screen) has nothing
+	   here to clip it, so it bleeds past #main-area into the document and
+	   the whole page -- sidebar included -- becomes the scroll container
+	   instead of just this element. Harmless for views that already
+	   self-contain (height:100% is relative to this box's own size either
+	   way), so this is additive, not a replacement for their own handling.
+	   See docker-operator/CLAUDE.md -- mirror into internal/webui/web/. */
+	overflow-y: auto;
 }
 
 .placeholder {
