@@ -26,7 +26,19 @@
 # a bare "--continue" instead -- there is now always a local, in-container
 # conversation to continue -- while keeping "--permission-mode auto" if it
 # was present, so auto mode doesn't silently disappear after a crash.
+#
+# A ONE-SHOT first invocation ("-p <task>", used by scheduled runs) is
+# never restarted at all: resuming it would drop into an interactive
+# `--continue` session that waits for input forever, never writing either
+# sentinel, leaking the run and its agent slot. Instead a one-shot run
+# writes /workspace/.task-complete on exit 0 or /workspace/.task-failed on
+# any non-zero exit, and the script exits with claude's own status.
 set -u
+
+is_oneshot=0
+case " $* " in
+	*" -p "*) is_oneshot=1 ;;
+esac
 
 is_auto=0
 case " $* " in
@@ -50,6 +62,14 @@ window_start=$(date +%s)
 
 claude "$@"
 status=$?
+
+if [ "$is_oneshot" -eq 1 ] && [ "$status" -ne 0 ]; then
+	echo "claude-supervisor: one-shot claude exited $status; not resuming a one-shot run" >&2
+	# Read by internal/agent.CheckScheduledRunStatus, which finalizes the
+	# ScheduleRun as an error.
+	touch /workspace/.task-failed
+	exit "$status"
+fi
 
 while [ "$status" -ne 0 ]; do
 	now=$(date +%s)

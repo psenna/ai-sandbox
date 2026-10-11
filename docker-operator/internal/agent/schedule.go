@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -17,6 +18,18 @@ import (
 // /workspace/.agent-output.log.
 const taskCompleteSentinelPath = "/workspace/.task-complete"
 
+// taskFailedSentinelPath is the file claude-supervisor.sh writes when a
+// one-shot (`-p`) claude exits non-zero -- the supervisor never resumes a
+// one-shot run, so this is final.
+const taskFailedSentinelPath = "/workspace/.task-failed"
+
+// scheduledRunCheckCmd prints "complete" or "failed" for whichever
+// sentinel is present (complete wins if somehow both are), or nothing
+// while the task is still running.
+var scheduledRunCheckCmd = []string{"sh", "-c",
+	"if [ -f '" + taskCompleteSentinelPath + "' ]; then echo complete; " +
+		"elif [ -f '" + taskFailedSentinelPath + "' ]; then echo failed; fi"}
+
 // ParseSchedule parses a standard 5-field cron expression. Used both by
 // the ticker (via TemplateDue, below) and by internal/api's template
 // validation, so a Template's Schedule is checked with the exact same
@@ -26,8 +39,11 @@ func ParseSchedule(expr string) (cron.Schedule, error) {
 }
 
 // TemplateDue reports whether tmpl's schedule has a fire time in
-// (anchor, now], where anchor is lastRun's StartedAt if non-nil, else
-// tmpl.CreatedAt. A disabled or unscheduled template is never due. An
+// (anchor, now], where anchor is the most recent of tmpl.CreatedAt,
+// tmpl.UpdatedAt and lastRun's StartedAt (if non-nil). UpdatedAt matters:
+// adding a schedule to an old template, or re-enabling a paused one, must
+// wait for the next real cron fire, not fire immediately off a stale
+// CreatedAt whose Next() is long past. A disabled or unscheduled template is never due. An
 // unparseable Schedule (should not happen past internal/api's validation,
 // but this function makes no assumption about that) is treated as never
 // due, not a panic.
@@ -40,7 +56,10 @@ func TemplateDue(tmpl store.Template, lastRun *store.ScheduleRun, now time.Time)
 		return false
 	}
 	anchor := tmpl.CreatedAt
-	if lastRun != nil {
+	if tmpl.UpdatedAt.After(anchor) {
+		anchor = tmpl.UpdatedAt
+	}
+	if lastRun != nil && lastRun.StartedAt.After(anchor) {
 		anchor = lastRun.StartedAt
 	}
 	next := sched.Next(anchor)
@@ -71,12 +90,17 @@ func (m *Manager) CreateFromTemplate(ctx context.Context, tmpl store.Template) (
 }
 
 // CheckScheduledRunStatus reports what state run's agent is actually in,
-// by execing a check for taskCompleteSentinelPath via execOneShot:
+// by execing a check for taskCompleteSentinelPath / taskFailedSentinelPath
+// via execOneShot:
 //
-//   - "running": the agent exists and the sentinel is not there yet.
-//   - "done": the sentinel is present -- the one-shot task finished cleanly.
-//   - "gone": the agent or container no longer exists (deleted out-of-band,
-//     or by an earlier, crashed OnComplete pass).
+//   - "running": the agent exists and neither sentinel is there yet.
+//   - "done": the completion sentinel is present -- the one-shot task
+//     finished cleanly.
+//   - "failed": the failure sentinel is present -- the one-shot claude
+//     exited non-zero (the supervisor never resumes a one-shot run).
+//   - "gone": the container no longer exists, or exists but is not running
+//     (deleted or stopped out-of-band, or by an earlier, crashed OnComplete
+//     pass) -- either way nothing is going to finish this task.
 //
 // "gone" is reported with a nil error, deliberately: it is NOT a transient
 // failure worth retrying, it is the ticker's cue to finalize that
@@ -86,22 +110,31 @@ func (m *Manager) CreateFromTemplate(ctx context.Context, tmpl store.Template) (
 // re-checked every tick with nothing ever finalizing it.
 func (m *Manager) CheckScheduledRunStatus(ctx context.Context, run store.ScheduleRun) (string, error) {
 	ref := agentContainerName(run.AgentID)
-	cmd := []string{"sh", "-c", "[ -f '" + taskCompleteSentinelPath + "' ] && echo present"}
-	out, err := m.execOneShot(ctx, ref, cmd)
+	out, err := m.execOneShot(ctx, ref, scheduledRunCheckCmd)
 	if err != nil {
-		if dockerclient.IsNotFound(err) {
+		// A stopped-but-present container answers exec with a conflict,
+		// not a not-found, so inspect to tell "gone" from a real failure.
+		c, ierr := m.docker.ContainerInspect(ctx, ref)
+		if dockerclient.IsNotFound(ierr) || (ierr == nil && c.State != dockerclient.StateRunning) {
 			return "gone", nil
 		}
 		return "", err
 	}
-	if len(out) > 0 {
+	switch strings.TrimSpace(string(out)) {
+	case "complete":
 		return "done", nil
+	case "failed":
+		return "failed", nil
+	default:
+		return "running", nil
 	}
-	return "running", nil
 }
 
 // ApplyOnComplete runs tmpl's completion policy for run's agent: "stop"
-// (ContainerStop, left inspectable), "delete" (Delete, which archives the
+// (record marked StatusStopped first, then ContainerStop, left
+// inspectable -- the shield keeps the container's `die` event, which
+// MarkUnexpectedExit applies only to a StatusRunning record, from turning
+// a deliberate stop into a false StatusError), "delete" (Delete, which archives the
 // transcript first per the already-shipped internal/agent/transcript.go,
 // regardless of this feature), or "leave" (nothing further). An unknown or
 // empty OnComplete is treated as "leave" -- the safest no-op default,
@@ -109,6 +142,12 @@ func (m *Manager) CheckScheduledRunStatus(ctx context.Context, run store.Schedul
 func (m *Manager) ApplyOnComplete(ctx context.Context, tmpl store.Template, run store.ScheduleRun) error {
 	switch tmpl.OnComplete {
 	case "stop":
+		if _, err := m.store.Update(ctx, run.AgentID, func(a *store.Agent) error {
+			a.Status = store.StatusStopped
+			return nil
+		}); err != nil {
+			return err
+		}
 		return m.docker.ContainerStop(ctx, agentContainerName(run.AgentID), m.opts.StopTimeout)
 	case "delete":
 		return m.Delete(ctx, run.AgentID)

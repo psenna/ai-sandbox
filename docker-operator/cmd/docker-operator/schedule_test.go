@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -18,9 +20,12 @@ type fakeSchedulingDeps struct {
 	runsByTemplate map[string][]store.ScheduleRun
 	runningRuns    []store.ScheduleRun
 	created        []string          // template IDs CreateFromTemplate was called for
-	statuses       map[string]string // run ID -> "running" | "done" | "gone"
+	statuses       map[string]string // run ID -> "running" | "done" | "failed" | "gone"
 	completed      []string          // run IDs ApplyOnComplete was called for
 	finished       map[string]string // run ID -> status FinishScheduleRun was called with
+	checked        []string          // run IDs CheckScheduledRunStatus was called for
+	createErr      map[string]error  // template ID -> error CreateFromTemplate returns
+	recorded       []store.ScheduleRun
 }
 
 func (f *fakeSchedulingDeps) ListTemplates(ctx context.Context) ([]store.Template, error) {
@@ -35,8 +40,21 @@ func (f *fakeSchedulingDeps) ListScheduleRunsByStatus(ctx context.Context, statu
 	}
 	return nil, nil
 }
+
+// CreateScheduleRun also prepends the new run to runsByTemplate (newest
+// first, matching ListScheduleRunsByTemplate's contract), so a later tick
+// sees it as the template's last run -- exactly what TemplateDue anchors on.
 func (f *fakeSchedulingDeps) CreateScheduleRun(ctx context.Context, templateID, agentID string) (store.ScheduleRun, error) {
-	return store.ScheduleRun{ID: "run_" + templateID, TemplateID: templateID, AgentID: agentID, Status: store.ScheduleRunStatusRunning}, nil
+	run := store.ScheduleRun{
+		ID: fmt.Sprintf("run_%s_%d", templateID, len(f.recorded)), TemplateID: templateID, AgentID: agentID,
+		StartedAt: time.Now(), Status: store.ScheduleRunStatusRunning,
+	}
+	f.recorded = append(f.recorded, run)
+	if f.runsByTemplate == nil {
+		f.runsByTemplate = map[string][]store.ScheduleRun{}
+	}
+	f.runsByTemplate[templateID] = append([]store.ScheduleRun{run}, f.runsByTemplate[templateID]...)
+	return run, nil
 }
 func (f *fakeSchedulingDeps) FinishScheduleRun(ctx context.Context, id, status string) (store.ScheduleRun, error) {
 	if f.finished == nil {
@@ -47,9 +65,13 @@ func (f *fakeSchedulingDeps) FinishScheduleRun(ctx context.Context, id, status s
 }
 func (f *fakeSchedulingDeps) CreateFromTemplate(ctx context.Context, tmpl store.Template) (store.Agent, error) {
 	f.created = append(f.created, tmpl.ID)
+	if err := f.createErr[tmpl.ID]; err != nil {
+		return store.Agent{}, err
+	}
 	return store.Agent{ID: "agt_for_" + tmpl.ID}, nil
 }
 func (f *fakeSchedulingDeps) CheckScheduledRunStatus(ctx context.Context, run store.ScheduleRun) (string, error) {
+	f.checked = append(f.checked, run.ID)
 	return f.statuses[run.ID], nil
 }
 func (f *fakeSchedulingDeps) ApplyOnComplete(ctx context.Context, tmpl store.Template, run store.ScheduleRun) error {
@@ -115,7 +137,7 @@ func TestRunSchedulingTickOnce_FiresAllDueInOneTick(t *testing.T) {
 
 func TestRunSchedulingTickOnce_ChecksCompletionAndApplies(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1"}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "done"},
 		templates:   []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
 	}
@@ -131,7 +153,7 @@ func TestRunSchedulingTickOnce_ChecksCompletionAndApplies(t *testing.T) {
 
 func TestRunSchedulingTickOnce_LeavesIncompleteRunsAlone(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1"}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "running"},
 		templates:   []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
 	}
@@ -150,7 +172,7 @@ func TestRunSchedulingTickOnce_LeavesIncompleteRunsAlone(t *testing.T) {
 // as an error, not left "running" forever and not retried.
 func TestRunSchedulingTickOnce_FinalizesGoneAgentAsError(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1"}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "gone"},
 		templates:   []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
 	}
@@ -191,7 +213,7 @@ func TestRunSchedulingTickOnce_SkipsOpenCodeTemplate(t *testing.T) {
 // is gone.
 func TestRunSchedulingTickOnce_DeletedTemplateStillFinalizesRun(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_deleted", AgentID: "agt_1"}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_deleted", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "done"},
 		// No templates at all: tpl_deleted has been removed.
 	}
@@ -202,5 +224,81 @@ func TestRunSchedulingTickOnce_DeletedTemplateStillFinalizesRun(t *testing.T) {
 	}
 	if deps.finished["run_1"] != store.ScheduleRunStatusSuccess {
 		t.Errorf("finished[run_1] = %q, want %q", deps.finished["run_1"], store.ScheduleRunStatusSuccess)
+	}
+}
+
+// TestRunSchedulingTickOnce_FailedRunAppliesPolicyAndErrors pins Fix 1:
+// a one-shot task whose claude exited non-zero ("failed", via the
+// /workspace/.task-failed sentinel) still runs the template's cleanup
+// policy, but is finalized as an error, not success.
+func TestRunSchedulingTickOnce_FailedRunAppliesPolicyAndErrors(t *testing.T) {
+	deps := &fakeSchedulingDeps{
+		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
+		statuses:    map[string]string{"run_1": "failed"},
+		templates:   []store.Template{{ID: "tpl_1", OnComplete: "delete"}},
+	}
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+
+	if len(deps.completed) != 1 || deps.completed[0] != "run_1" {
+		t.Errorf("completed = %v, want [run_1] (OnComplete still applies to a failed run)", deps.completed)
+	}
+	if deps.finished["run_1"] != store.ScheduleRunStatusError {
+		t.Errorf("finished[run_1] = %q, want %q", deps.finished["run_1"], store.ScheduleRunStatusError)
+	}
+}
+
+// TestRunSchedulingTickOnce_TimesOutStuckRun pins Fix 1's backstop: a run
+// in flight longer than maxScheduledRunDuration is treated as failed
+// without even checking its status.
+func TestRunSchedulingTickOnce_TimesOutStuckRun(t *testing.T) {
+	deps := &fakeSchedulingDeps{
+		runningRuns: []store.ScheduleRun{{
+			ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1",
+			StartedAt: time.Now().Add(-maxScheduledRunDuration - time.Minute),
+		}},
+		statuses:  map[string]string{"run_1": "running"},
+		templates: []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
+	}
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+
+	if len(deps.checked) != 0 {
+		t.Errorf("checked = %v, want none (a timed-out run skips the exec check)", deps.checked)
+	}
+	if len(deps.completed) != 1 || deps.completed[0] != "run_1" {
+		t.Errorf("completed = %v, want [run_1] (OnComplete still applies to a timed-out run)", deps.completed)
+	}
+	if deps.finished["run_1"] != store.ScheduleRunStatusError {
+		t.Errorf("finished[run_1] = %q, want %q", deps.finished["run_1"], store.ScheduleRunStatusError)
+	}
+}
+
+// TestRunSchedulingTickOnce_CreateFailureRecordsErrorRun pins Fix 3: a
+// CreateFromTemplate failure still produces a ScheduleRun finalized as an
+// error (visible in run history), and because that run advances
+// TemplateDue's anchor, the very next tick does not retry it.
+func TestRunSchedulingTickOnce_CreateFailureRecordsErrorRun(t *testing.T) {
+	deps := &fakeSchedulingDeps{
+		templates: []store.Template{{
+			ID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
+			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		createErr: map[string]error{"tpl_1": errors.New("image pull failed")},
+	}
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+
+	if len(deps.recorded) != 1 {
+		t.Fatalf("recorded runs = %+v, want exactly one for the failed attempt", deps.recorded)
+	}
+	run := deps.recorded[0]
+	if run.TemplateID != "tpl_1" || run.AgentID != "" {
+		t.Errorf("recorded run = %+v, want TemplateID tpl_1 and an empty AgentID", run)
+	}
+	if deps.finished[run.ID] != store.ScheduleRunStatusError {
+		t.Errorf("finished[%s] = %q, want %q", run.ID, deps.finished[run.ID], store.ScheduleRunStatusError)
+	}
+
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+	if len(deps.created) != 1 {
+		t.Errorf("CreateFromTemplate called %d times across two ticks, want 1 (anchor advanced past the failure)", len(deps.created))
 	}
 }

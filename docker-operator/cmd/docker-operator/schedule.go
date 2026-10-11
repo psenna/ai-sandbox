@@ -11,6 +11,12 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
+// maxScheduledRunDuration is a backstop independent of the completion
+// sentinels: a run in flight longer than this is finalized as an error
+// (after its OnComplete policy runs), so no failure mode -- a hung claude,
+// a sentinel never written -- can leak a run and its agent slot forever.
+const maxScheduledRunDuration = 2 * time.Hour
+
 // schedulingDeps is the Manager/Store surface runSchedulingTickOnce needs,
 // as an interface seam -- the same role reconciler plays for
 // startPeriodicReconcile -- so schedule_test.go can drive it with an
@@ -106,12 +112,21 @@ func fireDueTemplates(ctx context.Context, deps schedulingDeps, log *slog.Logger
 
 		a, err := deps.CreateFromTemplate(ctx, tmpl)
 		if err != nil {
-			// Deliberately no ScheduleRun for this attempt: there is no
-			// agent to ever check for completion, so a run record here
-			// would need its own special-cased "has no AgentID" handling
-			// everywhere else a ScheduleRun is read -- not worth it for a
-			// failure this log line already surfaces.
+			// A failed attempt still gets a ScheduleRun (with an empty
+			// AgentID), finalized as an error right away: it shows up in
+			// the run history, and it advances TemplateDue's anchor so a
+			// persistently-failing template is retried at its next cron
+			// fire, not on every single tick. It is never "running", so
+			// checkRunningSchedules never sees its empty AgentID.
 			log.Warn("scheduling tick: creating agent from template", "template_id", tmpl.ID, "error", err)
+			run, rerr := deps.CreateScheduleRun(ctx, tmpl.ID, "")
+			if rerr != nil {
+				log.Warn("scheduling tick: recording a failed schedule run", "template_id", tmpl.ID, "error", rerr)
+				continue
+			}
+			if _, ferr := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusError); ferr != nil {
+				log.Warn("scheduling tick: finalizing a failed schedule run", "run_id", run.ID, "error", ferr)
+			}
 			continue
 		}
 		if _, err := deps.CreateScheduleRun(ctx, tmpl.ID, a.ID); err != nil {
@@ -127,6 +142,12 @@ func checkRunningSchedules(ctx context.Context, deps schedulingDeps, log *slog.L
 		return
 	}
 	for _, run := range runs {
+		if time.Since(run.StartedAt) > maxScheduledRunDuration {
+			log.Warn("scheduling tick: run exceeded the maximum duration; finalizing as error", "run_id", run.ID, "started_at", run.StartedAt)
+			finishScheduledRun(ctx, deps, log, run, store.ScheduleRunStatusError)
+			continue
+		}
+
 		status, err := deps.CheckScheduledRunStatus(ctx, run)
 		if err != nil {
 			log.Warn("scheduling tick: checking run status", "run_id", run.ID, "error", err)
@@ -135,6 +156,11 @@ func checkRunningSchedules(ctx context.Context, deps schedulingDeps, log *slog.L
 
 		switch status {
 		case "running":
+			continue
+		case "failed":
+			// The one-shot task exited non-zero. The template's cleanup
+			// policy still applies; only the run's outcome differs.
+			finishScheduledRun(ctx, deps, log, run, store.ScheduleRunStatusError)
 			continue
 		case "gone":
 			// The agent is gone (deleted out-of-band, or by an earlier,
@@ -147,24 +173,30 @@ func checkRunningSchedules(ctx context.Context, deps schedulingDeps, log *slog.L
 			continue
 		}
 		// status == "done"
+		finishScheduledRun(ctx, deps, log, run, store.ScheduleRunStatusSuccess)
+	}
+}
 
-		// A template deleted while this run was in flight -- allowed, since
-		// a template's own lifecycle is independent of both its runs and
-		// their agents -- leaves tmpl as the zero value here, whose
-		// OnComplete ("") ApplyOnComplete's switch treats as "leave" (its
-		// safest no-op default). The run still gets finalized below either
-		// way; only the cleanup policy silently becomes "leave" instead of
-		// whatever the deleted template specified.
-		tmpl, err := deps.GetTemplate(ctx, run.TemplateID)
-		if err != nil && !store.IsTemplateNotFound(err) {
-			log.Warn("scheduling tick: loading template for completed run", "run_id", run.ID, "template_id", run.TemplateID, "error", err)
-			continue
-		}
-		if err := deps.ApplyOnComplete(ctx, tmpl, run); err != nil {
-			log.Warn("scheduling tick: applying on-complete policy", "run_id", run.ID, "error", err)
-		}
-		if _, err := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusSuccess); err != nil {
-			log.Warn("scheduling tick: finalizing schedule run", "run_id", run.ID, "error", err)
-		}
+// finishScheduledRun applies run's template's OnComplete policy, then
+// finalizes run with status. Shared by the done, failed and timed-out
+// paths, which differ only in that final status.
+func finishScheduledRun(ctx context.Context, deps schedulingDeps, log *slog.Logger, run store.ScheduleRun, status string) {
+	// A template deleted while this run was in flight -- allowed, since a
+	// template's own lifecycle is independent of both its runs and their
+	// agents -- leaves tmpl as the zero value here, whose OnComplete ("")
+	// ApplyOnComplete's switch treats as "leave" (its safest no-op
+	// default). The run still gets finalized below either way; only the
+	// cleanup policy silently becomes "leave" instead of whatever the
+	// deleted template specified.
+	tmpl, err := deps.GetTemplate(ctx, run.TemplateID)
+	if err != nil && !store.IsTemplateNotFound(err) {
+		log.Warn("scheduling tick: loading template for finished run", "run_id", run.ID, "template_id", run.TemplateID, "error", err)
+		return
+	}
+	if err := deps.ApplyOnComplete(ctx, tmpl, run); err != nil {
+		log.Warn("scheduling tick: applying on-complete policy", "run_id", run.ID, "error", err)
+	}
+	if _, err := deps.FinishScheduleRun(ctx, run.ID, status); err != nil {
+		log.Warn("scheduling tick: finalizing schedule run", "run_id", run.ID, "error", err)
 	}
 }
