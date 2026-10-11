@@ -169,7 +169,10 @@ recovers on its own instead of sitting on a dead pane. A deliberate, clean exit
 (`/exit`) is left alone. If `claude` keeps failing (more than 5 times in a
 rolling 60s window), the supervisor gives up and `tmux-boot.sh`'s
 `remain-on-exit` takes over, leaving the pane dead-but-readable for inspection,
-same as before this wrapper existed. An [opencode](#choosing-a-harness) agent
+same as before this wrapper existed. A one-shot `claude -p` run (a scheduled
+template's task) is never restarted: it writes `/workspace/.task-complete` on
+a clean exit or `/workspace/.task-failed` on a non-zero one, which the
+scheduler reads to finalize the run. An [opencode](#choosing-a-harness) agent
 runs `agent-opencode/opencode-supervisor.sh` instead (selected by the image's
 own `AGENT_SUPERVISOR` env var, which `tmux-boot.sh` reads): same job and the
 same 5-per-60s budget, but it restarts on **any** exit — a killed `opencode`

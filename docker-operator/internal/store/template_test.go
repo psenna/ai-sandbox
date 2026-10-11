@@ -425,3 +425,59 @@ func TestCorruptTemplateRecordSurfacesAsAnError(t *testing.T) {
 		t.Error("CreateTemplate with a corrupt record present (uniqueness scan) returned nil, want an error")
 	}
 }
+
+func TestTemplate_ScheduleFieldsRoundTrip(t *testing.T) {
+	st := newStore(t, 1)
+	ctx := context.Background()
+
+	tmpl, err := st.CreateTemplate(ctx, TemplateCreateSpec{
+		ID:         "tpl_sched1",
+		Name:       "daily report",
+		Harness:    "claude-code",
+		Schedule:   "0 9 * * *",
+		Enabled:    true,
+		Task:       "write today's report",
+		OnComplete: "delete",
+	})
+	if err != nil {
+		t.Fatalf("CreateTemplate: %v", err)
+	}
+	if tmpl.Harness != "claude-code" || tmpl.Schedule != "0 9 * * *" || !tmpl.Enabled ||
+		tmpl.Task != "write today's report" || tmpl.OnComplete != "delete" {
+		t.Errorf("Template = %+v, want the five new fields set verbatim", tmpl)
+	}
+
+	got, err := st.GetTemplate(ctx, tmpl.ID)
+	if err != nil {
+		t.Fatalf("GetTemplate: %v", err)
+	}
+	if got != tmpl {
+		t.Errorf("GetTemplate = %+v, want %+v", got, tmpl)
+	}
+}
+
+// TestTemplate_PreScheduleRecordDecodesInert pins the Review Focus item: a
+// template saved before these fields existed (no schedule/task/on_complete/
+// harness keys in its JSON at all) must decode with them all zero-valued,
+// which this feature's "empty Schedule means not scheduled" rule already
+// treats as fully inert.
+func TestTemplate_PreScheduleRecordDecodesInert(t *testing.T) {
+	st := newStore(t, 1)
+	ctx := context.Background()
+
+	err := st.updateTemplates(ctx, func(b *bbolt.Bucket) error {
+		raw := []byte(`{"id":"tpl_old1","name":"old template","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`)
+		return b.Put([]byte("tpl_old1"), raw)
+	})
+	if err != nil {
+		t.Fatalf("seeding a pre-schedule record: %v", err)
+	}
+
+	got, err := st.GetTemplate(ctx, "tpl_old1")
+	if err != nil {
+		t.Fatalf("GetTemplate: %v", err)
+	}
+	if got.Harness != "" || got.Schedule != "" || got.Enabled || got.Task != "" || got.OnComplete != "" {
+		t.Errorf("pre-schedule record decoded as %+v, want every new field zero-valued", got)
+	}
+}

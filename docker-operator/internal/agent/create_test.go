@@ -500,6 +500,27 @@ func TestAutoModeArgs(t *testing.T) {
 	}
 }
 
+func TestOneShotInvocationArgs(t *testing.T) {
+	args := oneShotInvocationArgs(store.Agent{}, "do the thing")
+	want := []string{"-p", "do the thing"}
+	if len(args) != len(want) || args[0] != want[0] || args[1] != want[1] {
+		t.Errorf("oneShotInvocationArgs = %v, want %v", args, want)
+	}
+}
+
+func TestOneShotInvocationArgs_AutoMode(t *testing.T) {
+	args := oneShotInvocationArgs(store.Agent{AutoMode: config.AutoModeOn}, "do the thing")
+	want := []string{"--permission-mode", "auto", "-p", "do the thing"}
+	if len(args) != len(want) {
+		t.Fatalf("oneShotInvocationArgs = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("oneShotInvocationArgs = %v, want %v", args, want)
+		}
+	}
+}
+
 // TestCreate_AutoMode_ResolvesAndValidates covers the three shapes a create
 // request's AutoMode can take: no override (inherits the operator's
 // DefaultAutoMode), an explicit override, and an invalid value (rejected

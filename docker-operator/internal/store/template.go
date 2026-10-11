@@ -97,6 +97,32 @@ type Template struct {
 	ImageTag             string `json:"image_tag,omitempty"`
 	AutoMode             string `json:"auto_mode,omitempty"`
 
+	// Harness is the CLI harness a scheduled run uses: config.HarnessClaudeCode
+	// or config.HarnessOpenCode. Unlike every other field above, this one has
+	// no agent-creation-form analog recorded verbatim -- templates had no
+	// Harness field before this feature, since a human always picked it
+	// separately in the create form even after applying a template. A cron
+	// trigger has no human present to make that choice.
+	Harness string `json:"harness,omitempty"`
+
+	// Schedule is a standard 5-field cron expression ("0 9 * * *"), parsed
+	// with github.com/robfig/cron/v3's ParseStandard. Empty means this
+	// template is NOT a scheduled job -- it behaves exactly as every
+	// template did before this feature, a pure create-form prefill.
+	Schedule string `json:"schedule,omitempty"`
+	// Enabled gates whether a non-empty Schedule actually fires. Ignored
+	// when Schedule is empty.
+	Enabled bool `json:"enabled,omitempty"`
+	// Task is the prompt text passed to the harness's one-shot invocation
+	// (`claude -p <Task>`) on each triggered run. Required (enforced by
+	// internal/api, not the store) when Schedule is non-empty; ignored
+	// otherwise.
+	Task string `json:"task,omitempty"`
+	// OnComplete decides what happens to a scheduled run's agent once its
+	// task finishes: "stop", "delete", or "leave". Required (enforced by
+	// internal/api) when Schedule is non-empty; ignored otherwise.
+	OnComplete string `json:"on_complete,omitempty"`
+
 	// CreatedAt is when CreateTemplate inserted the record, in UTC.
 	// Immutable.
 	CreatedAt time.Time `json:"created_at"`
@@ -124,6 +150,12 @@ type TemplateCreateSpec struct {
 	MaxContextTokens     string
 	ImageTag             string
 	AutoMode             string
+
+	Harness    string
+	Schedule   string
+	Enabled    bool
+	Task       string
+	OnComplete string
 }
 
 // NewTemplateID returns a fresh template ID of the form "tpl_7f3a9c2d",
@@ -158,6 +190,11 @@ func (s *Store) CreateTemplate(ctx context.Context, spec TemplateCreateSpec) (Te
 		MaxContextTokens:     spec.MaxContextTokens,
 		ImageTag:             spec.ImageTag,
 		AutoMode:             spec.AutoMode,
+		Harness:              spec.Harness,
+		Schedule:             spec.Schedule,
+		Enabled:              spec.Enabled,
+		Task:                 spec.Task,
+		OnComplete:           spec.OnComplete,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}

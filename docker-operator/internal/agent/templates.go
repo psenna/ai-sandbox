@@ -54,6 +54,11 @@ func (m *Manager) UpdateTemplate(ctx context.Context, id string, spec store.Temp
 		t.MaxContextTokens = spec.MaxContextTokens
 		t.ImageTag = spec.ImageTag
 		t.AutoMode = spec.AutoMode
+		t.Harness = spec.Harness
+		t.Schedule = spec.Schedule
+		t.Enabled = spec.Enabled
+		t.Task = spec.Task
+		t.OnComplete = spec.OnComplete
 		return nil
 	})
 }

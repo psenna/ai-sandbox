@@ -149,6 +149,9 @@ func run(log *slog.Logger) error {
 	stopPeriodicReconcile := startPeriodicReconcile(mgr, periodicReconcileInterval, periodicReconcileTimeout, log)
 	defer stopPeriodicReconcile()
 
+	stopSchedulingTicker := startSchedulingTicker(mgr, schedulingTickInterval, log)
+	defer stopSchedulingTicker()
+
 	// A login helper container must never outlive the operator process that
 	// started it -- it is a transient `claude setup-token` shell. Clear any
 	// leftover from a previous run, then run a janitor that ages out one a
@@ -424,6 +427,12 @@ const periodicReconcileInterval = 15 * time.Minute
 // every agent it has to wake -- and must not be cut short where the startup
 // pass would not have been.
 const periodicReconcileTimeout = 30 * time.Minute
+
+// schedulingTickInterval is how often the scheduling ticker checks for due
+// templates and completed runs -- roughly cron's own granularity (a minute),
+// since nothing finer-grained than a minute is expressible in a standard
+// 5-field cron expression anyway.
+const schedulingTickInterval = 1 * time.Minute
 
 // reconciler is the one Manager method startPeriodicReconcile needs, as an
 // interface seam so main_test.go can drive it with a counting/blocking fake.

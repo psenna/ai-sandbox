@@ -130,6 +130,12 @@ type AgentManager interface {
 	CreateTemplate(ctx context.Context, spec store.TemplateCreateSpec) (store.Template, error)
 	UpdateTemplate(ctx context.Context, id string, spec store.TemplateCreateSpec) (store.Template, error)
 	DeleteTemplate(ctx context.Context, id string) error
+
+	// ListScheduleRunsByTemplate backs GET /api/templates/{id}/runs, a
+	// template's ScheduleRun history (newest first). An unknown templateID
+	// is not an error -- it reads back as an empty list, matching every
+	// other list response's never-nil convention.
+	ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error)
 }
 
 // anthropicLoginWSPath is the WebSocket route cmd/docker-operator wires to
@@ -211,6 +217,7 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("POST /api/templates", h.handleCreateTemplate)
 	mux.HandleFunc("PUT /api/templates/{id}", h.handleUpdateTemplate)
 	mux.HandleFunc("DELETE /api/templates/{id}", h.handleDeleteTemplate)
+	mux.HandleFunc("GET /api/templates/{id}/runs", h.handleListScheduleRuns)
 
 	mux.HandleFunc("GET /api/anthropic/accounts", h.handleAnthropicAccountsList)
 	mux.HandleFunc("POST /api/anthropic/accounts", h.handleAnthropicAccountsCreate)
@@ -241,6 +248,7 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("/api/agent-image/tags/{harness}/{tag}", methodNotAllowed)
 	mux.HandleFunc("/api/templates", methodNotAllowed)
 	mux.HandleFunc("/api/templates/{id}", methodNotAllowed)
+	mux.HandleFunc("/api/templates/{id}/runs", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/accounts", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/accounts/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/accounts/{id}/default", methodNotAllowed)
