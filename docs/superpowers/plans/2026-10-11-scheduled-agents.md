@@ -119,7 +119,7 @@ exists per the current `Template` test coverage):
 
 ```go
 func TestTemplate_ScheduleFieldsRoundTrip(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	tmpl, err := st.CreateTemplate(ctx, TemplateCreateSpec{
@@ -154,7 +154,7 @@ func TestTemplate_ScheduleFieldsRoundTrip(t *testing.T) {
 // which this feature's "empty Schedule means not scheduled" rule already
 // treats as fully inert.
 func TestTemplate_PreScheduleRecordDecodesInert(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	err := st.updateTemplates(ctx, func(b *bbolt.Bucket) error {
@@ -186,7 +186,7 @@ import (
 )
 
 func TestScheduleRun_CreateAndFinish(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	run, err := st.CreateScheduleRun(ctx, "tpl_1", "agt_1")
@@ -224,7 +224,7 @@ func TestScheduleRun_CreateAndFinish(t *testing.T) {
 }
 
 func TestScheduleRun_FinishMissingIsNotFound(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	_, err := st.FinishScheduleRun(ctx, "run_missing", ScheduleRunStatusError)
@@ -236,7 +236,7 @@ func TestScheduleRun_FinishMissingIsNotFound(t *testing.T) {
 // TestScheduleRun_ListByTemplateNewestFirst backs the UI's run-history list
 // and the ticker's "anchor on the most recent run" lookup.
 func TestScheduleRun_ListByTemplateNewestFirst(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	first, err := st.CreateScheduleRun(ctx, "tpl_a", "agt_1")
@@ -261,7 +261,7 @@ func TestScheduleRun_ListByTemplateNewestFirst(t *testing.T) {
 }
 
 func TestScheduleRun_ListByStatus(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	running, err := st.CreateScheduleRun(ctx, "tpl_a", "agt_1")
@@ -290,7 +290,7 @@ func TestScheduleRun_ListByStatus(t *testing.T) {
 // the same way a transcript outlives its agent -- DeleteTemplate must not
 // take ScheduleRun records down with it.
 func TestDeleteTemplate_DoesNotCascadeScheduleRuns(t *testing.T) {
-	st := newTestStoreForTemplates(t)
+	st := newStore(t, 1)
 	ctx := context.Background()
 
 	tmpl, err := st.CreateTemplate(ctx, TemplateCreateSpec{ID: "tpl_doomed", Name: "doomed"})
@@ -316,9 +316,9 @@ func TestDeleteTemplate_DoesNotCascadeScheduleRuns(t *testing.T) {
 }
 ```
 
-(`newTestStoreForTemplates` is this package's existing BoltDB-in-a-tempdir
-test helper already used by `template_test.go` — if its exact name differs,
-use whatever `template_test.go`'s own tests already call; do not invent a
+(`newStore(t, maxAgents int)` is `template_test.go`'s own existing
+BoltDB-in-a-tempdir test helper, confirmed from its current tests — e.g.
+`TestCreateTemplate_InsertsARecord` calls `newStore(t, 1)`. Do not invent a
 second one.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -749,9 +749,14 @@ EOF
   rather than leaving the run stuck "running" forever — see Step 8);
   `(m *Manager) ApplyOnComplete(ctx context.Context, tmpl
   store.Template, run store.ScheduleRun) error` (stop/delete/leave,
-  dispatched on `tmpl.OnComplete`); `CreateRequest.OneShotTask string` (new
-  field: when non-empty, the agent's first invocation runs
-  `claude -p "<OneShotTask>"` instead of an interactive session).
+  dispatched on `tmpl.OnComplete`); `(m *Manager)
+  ListScheduleRunsByTemplate(ctx context.Context, templateID string)
+  ([]store.ScheduleRun, error)` (thin pass-through to `m.store`'s own
+  method, mirroring `ListTemplates`'s shape — added here rather than in
+  Task 4 because Task 3's `schedulingDeps` interface needs it on `Manager`
+  first); `CreateRequest.OneShotTask string` (new field: when non-empty,
+  the agent's first invocation runs `claude -p "<OneShotTask>"` instead of
+  an interactive session).
 - Produces (constant): `taskCompleteSentinelPath = "/workspace/.task-complete"`.
 
 - [ ] **Step 1: Add the `robfig/cron/v3` dependency**
@@ -1040,6 +1045,26 @@ func TestApplyOnComplete_Leave(t *testing.T) {
 		t.Errorf("container state = %v, want still running (leave)", c.State)
 	}
 }
+
+func TestListScheduleRunsByTemplate(t *testing.T) {
+	m, _, st := newTestManager(t, 5)
+	ctx := context.Background()
+
+	if _, err := st.CreateScheduleRun(ctx, "tpl_1", "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateScheduleRun(ctx, "tpl_2", "agt_2"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := m.ListScheduleRunsByTemplate(ctx, "tpl_1")
+	if err != nil {
+		t.Fatalf("ListScheduleRunsByTemplate: %v", err)
+	}
+	if len(got) != 1 || got[0].TemplateID != "tpl_1" {
+		t.Errorf("ListScheduleRunsByTemplate(tpl_1) = %+v, want exactly tpl_1's run", got)
+	}
+}
 ```
 
 Add `"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"`
@@ -1233,6 +1258,16 @@ func (m *Manager) ApplyOnComplete(ctx context.Context, tmpl store.Template, run 
 	default:
 		return nil
 	}
+}
+
+// ListScheduleRunsByTemplate returns every run for templateID, newest
+// first, mirroring ListTemplates's thin pass-through shape. Added here,
+// not in internal/api's task, because cmd/docker-operator's
+// schedulingDeps interface (next task) needs this on Manager before that
+// task ever runs -- internal/api's own task only calls it, it does not
+// define it.
+func (m *Manager) ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error) {
+	return m.store.ListScheduleRunsByTemplate(ctx, templateID)
 }
 ```
 
@@ -1836,27 +1871,33 @@ EOF
 - Modify: `internal/api/templates.go` (extend `templateRequest`,
   `validateTemplateFields`, `toTemplateCreateSpec`; add
   `handleListScheduleRuns`)
-- Modify: `internal/api/handlers.go` (register the new route, ~line 213)
-- Modify: `internal/agent/templates.go` (add `ListScheduleRunsByTemplate`
-  pass-through, mirroring `ListTemplates`'s own)
+- Modify: `internal/api/handlers.go` (add `ListScheduleRunsByTemplate` to
+  the `AgentManager` interface, ~line 132; register the new route, ~line
+  213)
+- Modify: `internal/api/handlers_test.go` (add `scheduleRuns` to
+  `fakeManager` and implement `ListScheduleRunsByTemplate` on it, ~line 86
+  and ~line 539)
+- Modify: `internal/api/templates_test.go` (the new tests)
 
 **Interfaces:**
-- Consumes: `agent.ParseSchedule` (Task 2); `store.Template`'s five new
-  fields, `store.ScheduleRun`, `(*store.Store)
-  ListScheduleRunsByTemplate` (Task 1); `config.ValidHarness`,
-  `config.HarnessOpenCode` (already exist).
+- Consumes: `agent.ParseSchedule`, `(m *Manager) ListScheduleRunsByTemplate`
+  (both Task 2 — the latter exists on the REAL `*agent.Manager` already by
+  this point, added there rather than here because Task 3's
+  `schedulingDeps` interface needs it on `Manager` before this task ever
+  runs; this task still has to declare it on the `AgentManager` interface
+  `internal/api` actually programs against, and implement it on the
+  package's own `fakeManager` test double — neither of those exists yet);
+  `store.Template`'s five new fields, `store.ScheduleRun` (Task 1);
+  `config.ValidHarness`, `config.HarnessOpenCode` (already exist).
 - Produces: `GET /api/templates/{id}/runs` → `{"runs": [store.ScheduleRun,
-  ...]}`; `(m *Manager) ListScheduleRunsByTemplate(ctx, templateID string)
-  ([]store.ScheduleRun, error)` (thin pass-through, mirrors `ListTemplates`
-  exactly).
+  ...]}`; `AgentManager.ListScheduleRunsByTemplate` (interface method);
+  `(*fakeManager) ListScheduleRunsByTemplate` (test double).
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `internal/api`'s existing template-handler test file (wherever
-`handleCreateTemplate`'s current tests live — `internal/api/templates_test.go`
-if it exists as its own file, else the relevant section of
-`internal/api/handlers_test.go`; follow whichever this repo already uses,
-do not create a third):
+Add to `internal/api/templates_test.go` (confirmed: this is where
+`TestCreateTemplate`/`TestCreateTemplate_MissingName`/
+`TestCreateTemplate_InvalidBackend` already live):
 
 ```go
 func TestValidateTemplateFields_ScheduleRequiresHarnessTaskOnComplete(t *testing.T) {
@@ -1916,40 +1957,51 @@ func TestValidateTemplateFields_NoScheduleIgnoresTheRest(t *testing.T) {
 }
 ```
 
-Add a handler-level test alongside this package's existing
-`handleListTemplates`-style tests:
+Add a handler-level test to `internal/api/templates_test.go`, in this
+package's own established style (`newFakeManager`/`newTestHandler`/
+`doJSON`, confirmed from its existing `TestCreateTemplate*` tests — never
+calling a handler method directly, always through the real mux):
 
 ```go
 func TestHandleListScheduleRuns(t *testing.T) {
-	h, mgr := newTestHandler(t) // this package's existing test-handler helper
-	ctx := context.Background()
+	mgr := newFakeManager(5)
+	mgr.scheduleRuns = map[string][]store.ScheduleRun{
+		"tpl_1": {{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", Status: store.ScheduleRunStatusSuccess}},
+	}
+	h := newTestHandler(mgr, dockerclienttest.New())
 
-	tmpl, err := mgr.CreateTemplate(ctx, store.TemplateCreateSpec{Name: "x"})
-	if err != nil {
-		t.Fatalf("CreateTemplate: %v", err)
+	rec := doJSON(t, h, "GET", "/api/templates/tpl_1/runs", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
 	}
 
-	req := httptest.NewRequest("GET", "/api/templates/"+tmpl.ID+"/runs", nil)
-	req.SetPathValue("id", tmpl.ID)
-	w := httptest.NewRecorder()
-	h.handleListScheduleRuns(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	var body scheduleRunListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
 	}
-	var body struct{ Runs []store.ScheduleRun `json:"runs"` }
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+	if len(body.Runs) != 1 || body.Runs[0].ID != "run_1" {
+		t.Errorf("Runs = %+v, want [run_1]", body.Runs)
+	}
+}
+
+func TestHandleListScheduleRuns_EmptyForUnknownTemplate(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/templates/tpl_missing/runs", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	var body scheduleRunListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
 	if body.Runs == nil {
-		t.Error("Runs = nil, want [] for a template with no runs yet")
+		t.Error("Runs = nil, want [] (not null) for a template with no runs")
 	}
 }
 ```
-
-(`newTestHandler` is this package's existing test-setup helper used by
-every other handler test — use whatever it is actually called; do not
-invent a new one.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2037,21 +2089,61 @@ func validateTemplateFields(req templateRequest) *apiErr {
 }
 ```
 
-Add the `"github.com/psenna/ai-sandbox/docker-operator/internal/config"`
-and `".../internal/agent"` imports to this file if not already present
-(`config` almost certainly already is, via `validateAgentFields`'s own
-file; `agent` is new to this specific file — check `internal/api`'s other
-files for the existing import alias/path before adding a duplicate).
+Add both
+`"github.com/psenna/ai-sandbox/docker-operator/internal/config"` and
+`"github.com/psenna/ai-sandbox/docker-operator/internal/agent"` to this
+file's import block. Confirmed: `internal/api/templates.go`'s current
+imports are only `"net/http"`, `"strings"`, and this package's own
+`store` — neither `config` nor `agent` is already there (Go imports are
+per-file, not per-package; `validateAgentFields`'s own use of `config`
+lives in the separate `internal/api/handlers.go`, which does not help
+this file).
 
-- [ ] **Step 5: Add the run-history handler and `Manager` pass-through**
+- [ ] **Step 5: Add `ListScheduleRunsByTemplate` to `AgentManager` and the run-history handler**
 
-In `internal/agent/templates.go`, mirroring `ListTemplates` exactly:
+`(m *Manager) ListScheduleRunsByTemplate` already exists on the REAL
+`*agent.Manager` by this point — Task 2 added it, since
+`cmd/docker-operator`'s `schedulingDeps` interface (Task 3) needs it on
+`Manager` before Task 4 ever runs. But `internal/api`'s handlers call
+`h.mgr`, which is typed as the `AgentManager` interface
+(`internal/api/handlers.go`), not `*agent.Manager` directly — so the
+interface itself still needs this method declared, or `h.mgr.
+ListScheduleRunsByTemplate` will not compile even though the real Manager
+already has it.
+
+In `internal/api/handlers.go`, add to the `AgentManager` interface
+(next to the other `ListTemplates`/`CreateTemplate`/`UpdateTemplate`/
+`DeleteTemplate` declarations, ~line 129-132):
 
 ```go
-// ListScheduleRunsByTemplate returns every run for templateID, newest
-// first, mirroring ListTemplates's thin pass-through shape.
-func (m *Manager) ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error) {
-	return m.store.ListScheduleRunsByTemplate(ctx, templateID)
+	ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error)
+```
+
+`internal/api`'s own tests drive every handler through this interface
+with an in-memory `fakeManager` (`internal/api/handlers_test.go`), never
+the real `*agent.Manager` — so `fakeManager` needs its own
+implementation too. Add a field to `fakeManager`'s struct (next to its
+existing `templates map[string]store.Template`, ~line 86):
+
+```go
+	scheduleRuns map[string][]store.ScheduleRun
+```
+
+And an implementation (next to `fakeManager`'s other `*Template*`
+methods):
+
+```go
+// ListScheduleRunsByTemplate mirrors ListTemplates's style: a nil map
+// entry (the common case -- a template with no scheduled runs yet)
+// reads as an empty, never-nil slice, matching the real Store's own
+// never-nil-list convention.
+func (f *fakeManager) ListScheduleRunsByTemplate(_ context.Context, templateID string) ([]store.ScheduleRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	runs := f.scheduleRuns[templateID]
+	out := make([]store.ScheduleRun, len(runs))
+	copy(out, runs)
+	return out, nil
 }
 ```
 
@@ -2107,7 +2199,7 @@ Expected: `gofmt -l` prints nothing, no vet warnings, all `PASS`.
 ```bash
 cd /workspace/ai-sandbox
 git add docker-operator/internal/api/templates.go docker-operator/internal/api/handlers.go \
-  docker-operator/internal/agent/templates.go
+  docker-operator/internal/api/handlers_test.go docker-operator/internal/api/templates_test.go
 git commit -m "$(cat <<'EOF'
 feat(api): validate scheduled-template fields, expose run history
 
@@ -2459,8 +2551,18 @@ Add near `renderTemplateBar` in `web/render.js`:
 	}
 ```
 
-Add the three new functions to this file's `window.Render = {...}` export
-object (wherever `renderTemplateBar` is already listed there).
+Add the three new functions to the `Render` object literal near the
+bottom of the file (confirmed: not a literal `window.Render = {...}`
+assignment — it is a plain object named `Render`, later exported via
+`global.Render = Render` inside the file's closing IIFE). Add three new
+entries right next to the existing `renderTemplateBar: renderTemplateBar,`
+line:
+
+```js
+		renderTemplatesPage: renderTemplatesPage,
+		renderTemplateForm: renderTemplateForm,
+		renderScheduleRunList: renderScheduleRunList,
+```
 
 - [ ] **Step 5: Run the render tests and verify they pass**
 
