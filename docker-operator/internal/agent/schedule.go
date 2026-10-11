@@ -67,10 +67,31 @@ func (m *Manager) CreateFromCronAgent(ctx context.Context, ca store.CronAgent) (
 	})
 }
 
+// CheckScheduledRunStatus reports what state run's agent is actually in,
+// by execing a check for taskCompleteSentinelPath / taskFailedSentinelPath
+// via execOneShot:
+//
+//   - "running": the agent exists and neither sentinel is there yet.
+//   - "done": the completion sentinel is present -- the one-shot task
+//     finished cleanly.
+//   - "failed": the failure sentinel is present -- the one-shot claude
+//     exited non-zero (the supervisor never resumes a one-shot run).
+//   - "gone": the container no longer exists, or exists but is not running
+//     (deleted or stopped out-of-band, or by an earlier, crashed OnComplete
+//     pass) -- either way nothing is going to finish this task.
+//
+// "gone" is reported with a nil error, deliberately: it is NOT a transient
+// failure worth retrying, it is the ticker's cue to finalize that
+// ScheduleRun as an error itself -- collapsing it into the same result as
+// "running" (as an earlier draft of this function did, returning a bare
+// bool) would leave a run whose agent is gone stuck "running" forever,
+// re-checked every tick with nothing ever finalizing it.
 func (m *Manager) CheckScheduledRunStatus(ctx context.Context, run store.ScheduleRun) (string, error) {
 	ref := agentContainerName(run.AgentID)
 	out, err := m.execOneShot(ctx, ref, scheduledRunCheckCmd)
 	if err != nil {
+		// A stopped-but-present container answers exec with a conflict,
+		// not a not-found, so inspect to tell "gone" from a real failure.
 		c, ierr := m.docker.ContainerInspect(ctx, ref)
 		if dockerclient.IsNotFound(ierr) || (ierr == nil && c.State != dockerclient.StateRunning) {
 			return "gone", nil
@@ -120,6 +141,14 @@ func (m *Manager) FinishScheduleRun(ctx context.Context, id, status string) (sto
 	return m.store.FinishScheduleRun(ctx, id, status)
 }
 
+// execOneShot runs cmd inside the container named ref via one exec,
+// bounded by its own timeout (m.opts.ExecTimeout), and returns everything
+// the command wrote to stdout/stderr. A missing container satisfies
+// dockerclient.IsNotFound. Deliberately independent of waitTmuxSession's
+// own exec-and-poll-ExecInspect shape (internal/agent/create.go) rather
+// than refactored out of it: that function's exit-status polling is more
+// than this helper's callers need, and changing it risks a regression in
+// an already-working path for no benefit this feature requires.
 func (m *Manager) execOneShot(ctx context.Context, ref string, cmd []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.opts.ExecTimeout)
 	defer cancel()
