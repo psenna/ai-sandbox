@@ -82,18 +82,43 @@
 
 		function openForm(template) {
 			showDetail(window.Render.renderTemplateForm(template));
-			if (template && template.id) loadRuns(template.id);
+			if (template && template.id) loadRuns(template.id, template.on_complete);
 			bindDetail(template);
 		}
 
-		function loadRuns(templateID) {
+		function loadRuns(templateID, onComplete) {
 			fetchJSON('/api/templates/' + encodeURIComponent(templateID) + '/runs')
 				.then(function (data) {
 					var detail = container.querySelector('.templates-page__detail');
 					if (!detail) return;
-					detail.insertAdjacentHTML('beforeend', window.Render.renderScheduleRunList(data.runs || []));
+					detail.insertAdjacentHTML('beforeend', window.Render.renderScheduleRunList(data.runs || [], onComplete));
+					bindRuns();
 				})
 				.catch(function () { /* run history is best-effort for this view */ });
+		}
+
+		// openFiles swaps this page for the Files browser, where an archived
+		// transcript lives (transcripts/<id>/). renderFileBrowser always
+		// opens at the store root.
+		function openFiles() {
+			if (typeof window.renderFileBrowser === 'function') window.renderFileBrowser(container);
+		}
+
+		// bindRuns wires the run-history links: "Open agent" jumps to the
+		// agent via app.js's window.openAgent (false when the agent is no
+		// longer in the list, e.g. deleted out-of-band -- then Files is the
+		// next best place to look), and the transcript button opens Files.
+		function bindRuns() {
+			container.querySelectorAll('.schedule-run-list__open-agent').forEach(function (btn) {
+				btn.addEventListener('click', function () {
+					var id = btn.getAttribute('data-agent-id');
+					if (typeof window.openAgent === 'function' && window.openAgent(id)) return;
+					openFiles();
+				});
+			});
+			container.querySelectorAll('.schedule-run-list__open-files').forEach(function (btn) {
+				btn.addEventListener('click', openFiles);
+			});
 		}
 
 		function bindDetail(template) {
@@ -125,9 +150,15 @@
 			container.querySelectorAll('.templates-page__delete').forEach(function (btn) {
 				btn.addEventListener('click', function () {
 					var id = btn.closest('[data-template-id]').getAttribute('data-template-id');
-					fetchJSON('/api/templates/' + encodeURIComponent(id), { method: 'DELETE' })
-						.then(load)
-						.catch(function (e) { showError('Could not delete template: ' + e.message); });
+					window.OperatorConfirm.show(
+						'Deleting this template permanently removes its configuration, including any cron schedule, task text and completion policy. This cannot be undone.',
+						{ title: 'Delete this template?', confirmLabel: 'Delete', danger: true }
+					).then(function (confirmed) {
+						if (!confirmed) return;
+						fetchJSON('/api/templates/' + encodeURIComponent(id), { method: 'DELETE' })
+							.then(load)
+							.catch(function (e) { showError('Could not delete template: ' + e.message); });
+					});
 				});
 			});
 		}

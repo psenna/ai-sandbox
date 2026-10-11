@@ -875,6 +875,16 @@
 		refreshAgents().then(function () { selectAgent(id); }).catch(function () { selectAgent(id); });
 	};
 
+	// openAgent lets templates.js's run history jump to a scheduled run's
+	// agent exactly as a sidebar click would. Returns false (doing nothing)
+	// when id is not in the current agent list -- deleted, or never existed
+	// -- so the caller can fall back to somewhere else.
+	window.openAgent = function (id) {
+		if (!state.agents.some(function (a) { return a.id === id; })) return false;
+		selectAgent(id);
+		return true;
+	};
+
 	// So terminal.js's openUpdateForm can reach the operator's create-form
 	// defaults (backend/model/... ) without a second /api/agents round-trip.
 	window.getAgentDefaults = function () { return state.defaults; };

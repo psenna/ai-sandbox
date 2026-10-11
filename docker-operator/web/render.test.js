@@ -1039,6 +1039,44 @@ test('renderScheduleRunList renders status and timestamps, newest first', () => 
 	assert.match(html, /success/);
 });
 
+test('renderScheduleRunList: "stop"/"leave" rows get an Open agent button', () => {
+	for (const policy of ['stop', 'leave']) {
+		const html = Render.renderScheduleRunList([
+			{ id: 'run_1', agent_id: 'agt_1', status: 'success', started_at: '2026-01-01T09:00:00Z' },
+		], policy);
+		assert.match(html, /<button class="schedule-run-list__open-agent[^"]*" type="button" data-agent-id="agt_1">Open agent<\/button>/, policy);
+		assert.doesNotMatch(html, /schedule-run-list__open-files/, policy);
+	}
+});
+
+test('renderScheduleRunList: a finished "delete" row points at its archived transcript in Files', () => {
+	const html = Render.renderScheduleRunList([
+		{ id: 'run_1', agent_id: 'agt_1', status: 'success', started_at: '2026-01-01T09:00:00Z' },
+	], 'delete');
+	assert.match(html, /<button class="schedule-run-list__open-files[^"]*" type="button" data-agent-id="agt_1"/);
+	assert.match(html, /transcripts\/agt_1\//);
+	assert.doesNotMatch(html, /schedule-run-list__open-agent/);
+});
+
+test('renderScheduleRunList: a still-running "delete" row links to the live agent', () => {
+	const html = Render.renderScheduleRunList([
+		{ id: 'run_1', agent_id: 'agt_1', status: 'running', started_at: '2026-01-01T09:00:00Z' },
+	], 'delete');
+	assert.match(html, /schedule-run-list__open-agent/);
+});
+
+test('renderScheduleRunList: a failed-create row (no agent) has no link, and escapes ids', () => {
+	const none = Render.renderScheduleRunList([
+		{ id: 'run_1', agent_id: '', status: 'error', started_at: '2026-01-01T09:00:00Z' },
+	], 'stop');
+	assert.doesNotMatch(none, /<button/);
+	assert.match(none, /schedule-run-list__no-agent/);
+	const evil = Render.renderScheduleRunList([
+		{ id: 'r', agent_id: '"><script>', status: 'success', started_at: '' },
+	], 'delete');
+	assert.doesNotMatch(evil, /<script>/);
+});
+
 // --- the Settings overlay ---------------------------------------------------
 
 test('renderSettingsOverlay: a dialog panel with one nav item and one section per entry', () => {

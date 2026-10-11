@@ -597,17 +597,34 @@
 
 	// renderScheduleRunList renders a template's run history, newest first
 	// (the API already returns it in that order -- see
-	// ListScheduleRunsByTemplate). Each row links to the live agent (still
-	// around for OnComplete "stop"/"leave") or, once it no longer exists,
-	// nothing further here -- the Files browser is where an archived
-	// transcript lives, and this list does not re-derive that link.
-	function renderScheduleRunList(runs) {
+	// ListScheduleRunsByTemplate). onComplete is the template's completion
+	// policy, which decides each row's link:
+	//   - still running, or OnComplete "stop"/"leave" (the agent likely still
+	//     exists): an "Open agent" button (templates.js jumps to it, falling
+	//     back to the Files browser if it is gone after all);
+	//   - finished with OnComplete "delete": a button opening the Files
+	//     browser, where the archived transcript lives at transcripts/<id>/
+	//     (named in the label -- renderFileBrowser has no initial-path
+	//     parameter, so this opens the store root, not a deep link);
+	//   - no agent at all (CreateFromTemplate failed): no link.
+	function renderScheduleRunList(runs, onComplete) {
 		var rows = (runs || []).map(function (r) {
+			var link;
+			var agentID = escapeHTML(r.agent_id || '');
+			if (!r.agent_id) {
+				link = '<span class="schedule-run-list__no-agent">no agent (create failed)</span>';
+			} else if (r.status === 'running' || onComplete !== 'delete') {
+				link = '<button class="schedule-run-list__open-agent btn btn--ghost btn--sm" type="button" data-agent-id="' + agentID + '">Open agent</button>';
+			} else {
+				link = '<button class="schedule-run-list__open-files btn btn--ghost btn--sm" type="button" data-agent-id="' + agentID + '"' +
+					' title="Archived transcript: transcripts/' + agentID + '/">Transcript in Files (transcripts/' + agentID + '/)</button>';
+			}
 			return (
-				'<li class="schedule-run-list__row" data-run-id="' + escapeHTML(r.id) + '" data-agent-id="' + escapeHTML(r.agent_id) + '">' +
+				'<li class="schedule-run-list__row" data-run-id="' + escapeHTML(r.id) + '" data-agent-id="' + agentID + '">' +
 					'<span class="schedule-run-list__status schedule-run-list__status--' + escapeHTML(r.status) + '">' + escapeHTML(r.status) + '</span>' +
 					'<span class="schedule-run-list__started">' + escapeHTML(r.started_at || '') + '</span>' +
 					'<span class="schedule-run-list__finished">' + escapeHTML(r.finished_at || '—') + '</span>' +
+					link +
 				'</li>'
 			);
 		}).join('');
