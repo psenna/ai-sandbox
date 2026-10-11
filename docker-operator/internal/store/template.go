@@ -105,24 +105,6 @@ type Template struct {
 	// trigger has no human present to make that choice.
 	Harness string `json:"harness,omitempty"`
 
-	// Schedule is a standard 5-field cron expression ("0 9 * * *"), parsed
-	// with github.com/robfig/cron/v3's ParseStandard. Empty means this
-	// template is NOT a scheduled job -- it behaves exactly as every
-	// template did before this feature, a pure create-form prefill.
-	Schedule string `json:"schedule,omitempty"`
-	// Enabled gates whether a non-empty Schedule actually fires. Ignored
-	// when Schedule is empty.
-	Enabled bool `json:"enabled,omitempty"`
-	// Task is the prompt text passed to the harness's one-shot invocation
-	// (`claude -p <Task>`) on each triggered run. Required (enforced by
-	// internal/api, not the store) when Schedule is non-empty; ignored
-	// otherwise.
-	Task string `json:"task,omitempty"`
-	// OnComplete decides what happens to a scheduled run's agent once its
-	// task finishes: "stop", "delete", or "leave". Required (enforced by
-	// internal/api) when Schedule is non-empty; ignored otherwise.
-	OnComplete string `json:"on_complete,omitempty"`
-
 	// CreatedAt is when CreateTemplate inserted the record, in UTC.
 	// Immutable.
 	CreatedAt time.Time `json:"created_at"`
@@ -151,11 +133,7 @@ type TemplateCreateSpec struct {
 	ImageTag             string
 	AutoMode             string
 
-	Harness    string
-	Schedule   string
-	Enabled    bool
-	Task       string
-	OnComplete string
+	Harness string
 }
 
 // NewTemplateID returns a fresh template ID of the form "tpl_7f3a9c2d",
@@ -191,10 +169,6 @@ func (s *Store) CreateTemplate(ctx context.Context, spec TemplateCreateSpec) (Te
 		ImageTag:             spec.ImageTag,
 		AutoMode:             spec.AutoMode,
 		Harness:              spec.Harness,
-		Schedule:             spec.Schedule,
-		Enabled:              spec.Enabled,
-		Task:                 spec.Task,
-		OnComplete:           spec.OnComplete,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -298,11 +272,59 @@ func (s *Store) UpdateTemplate(ctx context.Context, id string, mutate func(*Temp
 	return updated, nil
 }
 
-// DeleteTemplate removes the template record. Deleting one that is not
-// there is success, matching Delete's idempotent stance for an agent.
+// ErrTemplateInUse reports that DeleteTemplate was asked to remove a
+// template some CronAgent still references by TemplateID. Checked and
+// enforced inside the SAME read-write transaction as the delete itself, so
+// there is no window for a CronAgent to be created against a template
+// between the check and the delete.
+var ErrTemplateInUse = errors.New("template is in use by a cron agent")
+
+// IsTemplateInUse reports whether err was caused by a template still
+// referenced by a CronAgent.
+func IsTemplateInUse(err error) bool { return errors.Is(err, ErrTemplateInUse) }
+
+// DeleteTemplate removes the template record, unless any CronAgent still
+// references it (ErrTemplateInUse) -- a CronAgent silently going stale
+// because its config disappeared out from under it is worse than an
+// explicit, immediate block the user can act on. Deleting a template that
+// is not there is success, matching Delete's idempotent stance for an
+// agent; that idempotence and the in-use check are not in tension, since an
+// in-use check against a nonexistent template ID simply finds no matching
+// CronAgent and the subsequent bucket Delete is already a no-op.
 func (s *Store) DeleteTemplate(ctx context.Context, id string) error {
-	return s.updateTemplates(ctx, func(b *bbolt.Bucket) error {
-		if err := b.Delete([]byte(id)); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		cb, err := s.cronAgentsBucket(tx)
+		if err != nil {
+			return err
+		}
+		var inUseBy string
+		if err := cb.ForEach(func(k, v []byte) error {
+			if inUseBy != "" {
+				return nil
+			}
+			var ca CronAgent
+			if err := decodeCronAgent(string(k), v, &ca); err != nil {
+				return err
+			}
+			if ca.TemplateID == id {
+				inUseBy = ca.ID
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if inUseBy != "" {
+			return fmt.Errorf("deleting template %q: referenced by cron agent %q: %w", id, inUseBy, ErrTemplateInUse)
+		}
+
+		tb, err := s.templatesBucket(tx)
+		if err != nil {
+			return err
+		}
+		if err := tb.Delete([]byte(id)); err != nil {
 			return fmt.Errorf("deleting template %q: %w", id, err)
 		}
 		return nil

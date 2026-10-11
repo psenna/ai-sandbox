@@ -426,58 +426,69 @@ func TestCorruptTemplateRecordSurfacesAsAnError(t *testing.T) {
 	}
 }
 
-func TestTemplate_ScheduleFieldsRoundTrip(t *testing.T) {
-	st := newStore(t, 1)
-	ctx := context.Background()
-
-	tmpl, err := st.CreateTemplate(ctx, TemplateCreateSpec{
-		ID:         "tpl_sched1",
-		Name:       "daily report",
-		Harness:    "claude-code",
-		Schedule:   "0 9 * * *",
-		Enabled:    true,
-		Task:       "write today's report",
-		OnComplete: "delete",
-	})
-	if err != nil {
-		t.Fatalf("CreateTemplate: %v", err)
-	}
-	if tmpl.Harness != "claude-code" || tmpl.Schedule != "0 9 * * *" || !tmpl.Enabled ||
-		tmpl.Task != "write today's report" || tmpl.OnComplete != "delete" {
-		t.Errorf("Template = %+v, want the five new fields set verbatim", tmpl)
-	}
-
-	got, err := st.GetTemplate(ctx, tmpl.ID)
-	if err != nil {
-		t.Fatalf("GetTemplate: %v", err)
-	}
-	if got != tmpl {
-		t.Errorf("GetTemplate = %+v, want %+v", got, tmpl)
-	}
-}
-
-// TestTemplate_PreScheduleRecordDecodesInert pins the Review Focus item: a
-// template saved before these fields existed (no schedule/task/on_complete/
-// harness keys in its JSON at all) must decode with them all zero-valued,
-// which this feature's "empty Schedule means not scheduled" rule already
-// treats as fully inert.
-func TestTemplate_PreScheduleRecordDecodesInert(t *testing.T) {
+// This test pins the Review Focus item: a template saved under #233, with
+// schedule/enabled/task/on_complete keys still in its raw JSON, must
+// decode cleanly once this feature removes those fields from the Go
+// struct -- the extra JSON keys are simply ignored by encoding/json, the
+// mirror image of #233's own "pre-schedule record decodes inert" test.
+func TestTemplate_LegacyFieldsDecodeInert(t *testing.T) {
 	st := newStore(t, 1)
 	ctx := context.Background()
 
 	err := st.updateTemplates(ctx, func(b *bbolt.Bucket) error {
-		raw := []byte(`{"id":"tpl_old1","name":"old template","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`)
+		raw := []byte(`{"id":"tpl_old1","name":"old template","harness":"claude-code",` +
+			`"schedule":"0 9 * * *","enabled":true,"task":"do the thing","on_complete":"stop",` +
+			`"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`)
 		return b.Put([]byte("tpl_old1"), raw)
 	})
 	if err != nil {
-		t.Fatalf("seeding a pre-schedule record: %v", err)
+		t.Fatalf("seeding a legacy schedule-bearing record: %v", err)
 	}
 
 	got, err := st.GetTemplate(ctx, "tpl_old1")
 	if err != nil {
 		t.Fatalf("GetTemplate: %v", err)
 	}
-	if got.Harness != "" || got.Schedule != "" || got.Enabled || got.Task != "" || got.OnComplete != "" {
-		t.Errorf("pre-schedule record decoded as %+v, want every new field zero-valued", got)
+	if got.ID != "tpl_old1" || got.Name != "old template" || got.Harness != "claude-code" {
+		t.Errorf("GetTemplate = %+v, want ID/Name/Harness to survive unaffected", got)
+	}
+}
+
+func TestDeleteTemplate_RejectsWhenReferencedByCronAgent(t *testing.T) {
+	st := newStore(t, 1)
+	ctx := context.Background()
+	tmpl := mustCreateTemplate(t, st, "tpl_referenced", "referenced")
+	if _, err := st.CreateCronAgent(ctx, CronAgentCreateSpec{
+		ID: "ca_1", Name: "nightly", TemplateID: tmpl.ID, Schedule: "0 9 * * *", Enabled: true, Task: "go", OnComplete: "stop",
+	}); err != nil {
+		t.Fatalf("CreateCronAgent: %v", err)
+	}
+
+	err := st.DeleteTemplate(ctx, tmpl.ID)
+	if !IsTemplateInUse(err) {
+		t.Fatalf("DeleteTemplate while referenced: err = %v, want IsTemplateInUse", err)
+	}
+
+	if _, err := st.GetTemplate(ctx, tmpl.ID); err != nil {
+		t.Errorf("GetTemplate after a rejected delete: %v, want the template to still exist", err)
+	}
+}
+
+func TestDeleteTemplate_SucceedsOnceReferenceRemoved(t *testing.T) {
+	st := newStore(t, 1)
+	ctx := context.Background()
+	tmpl := mustCreateTemplate(t, st, "tpl_referenced", "referenced")
+	ca, err := st.CreateCronAgent(ctx, CronAgentCreateSpec{
+		ID: "ca_1", Name: "nightly", TemplateID: tmpl.ID, Schedule: "0 9 * * *", Enabled: true, Task: "go", OnComplete: "stop",
+	})
+	if err != nil {
+		t.Fatalf("CreateCronAgent: %v", err)
+	}
+	if err := st.DeleteCronAgent(ctx, ca.ID); err != nil {
+		t.Fatalf("DeleteCronAgent: %v", err)
+	}
+
+	if err := st.DeleteTemplate(ctx, tmpl.ID); err != nil {
+		t.Fatalf("DeleteTemplate after the reference is gone: %v", err)
 	}
 }

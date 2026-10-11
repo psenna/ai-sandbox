@@ -9,12 +9,12 @@ func TestScheduleRun_CreateAndFinish(t *testing.T) {
 	st := newStore(t, 1)
 	ctx := context.Background()
 
-	run, err := st.CreateScheduleRun(ctx, "tpl_1", "agt_1")
+	run, err := st.CreateScheduleRun(ctx, "ca_1", "agt_1")
 	if err != nil {
 		t.Fatalf("CreateScheduleRun: %v", err)
 	}
-	if run.TemplateID != "tpl_1" || run.AgentID != "agt_1" || run.Status != ScheduleRunStatusRunning {
-		t.Errorf("ScheduleRun = %+v, want TemplateID/AgentID set and Status running", run)
+	if run.CronAgentID != "ca_1" || run.AgentID != "agt_1" || run.Status != ScheduleRunStatusRunning {
+		t.Errorf("ScheduleRun = %+v, want CronAgentID/AgentID set and Status running", run)
 	}
 	if run.StartedAt.IsZero() {
 		t.Error("StartedAt is zero, want the time CreateScheduleRun ran")
@@ -40,7 +40,7 @@ func TestScheduleRun_CreateAndFinish(t *testing.T) {
 	}
 	// FinishedAt is a pointer, so compare the struct field by field rather
 	// than with ==, which would compare pointer identity.
-	if got.ID != finished.ID || got.TemplateID != finished.TemplateID ||
+	if got.ID != finished.ID || got.CronAgentID != finished.CronAgentID ||
 		got.AgentID != finished.AgentID || got.Status != finished.Status ||
 		!got.StartedAt.Equal(finished.StartedAt) ||
 		got.FinishedAt == nil || !got.FinishedAt.Equal(*finished.FinishedAt) {
@@ -58,30 +58,30 @@ func TestScheduleRun_FinishMissingIsNotFound(t *testing.T) {
 	}
 }
 
-// TestScheduleRun_ListByTemplateNewestFirst backs the UI's run-history list
+// TestScheduleRun_ListByCronAgentNewestFirst backs the UI's run-history list
 // and the ticker's "anchor on the most recent run" lookup.
-func TestScheduleRun_ListByTemplateNewestFirst(t *testing.T) {
+func TestScheduleRun_ListByCronAgentNewestFirst(t *testing.T) {
 	st := newStore(t, 1)
 	ctx := context.Background()
 
-	first, err := st.CreateScheduleRun(ctx, "tpl_a", "agt_1")
+	first, err := st.CreateScheduleRun(ctx, "ca_a", "agt_1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateScheduleRun(ctx, "tpl_b", "agt_2"); err != nil {
+	if _, err := st.CreateScheduleRun(ctx, "ca_b", "agt_2"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := st.CreateScheduleRun(ctx, "tpl_a", "agt_3")
+	second, err := st.CreateScheduleRun(ctx, "ca_a", "agt_3")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := st.ListScheduleRunsByTemplate(ctx, "tpl_a")
+	got, err := st.ListScheduleRunsByCronAgent(ctx, "ca_a")
 	if err != nil {
-		t.Fatalf("ListScheduleRunsByTemplate: %v", err)
+		t.Fatalf("ListScheduleRunsByCronAgent: %v", err)
 	}
 	if len(got) != 2 || got[0].ID != second.ID || got[1].ID != first.ID {
-		t.Errorf("ListScheduleRunsByTemplate(tpl_a) = %+v, want [second, first] newest-first", got)
+		t.Errorf("ListScheduleRunsByCronAgent(ca_a) = %+v, want [second, first] newest-first", got)
 	}
 }
 
@@ -89,11 +89,11 @@ func TestScheduleRun_ListByStatus(t *testing.T) {
 	st := newStore(t, 1)
 	ctx := context.Background()
 
-	running, err := st.CreateScheduleRun(ctx, "tpl_a", "agt_1")
+	running, err := st.CreateScheduleRun(ctx, "ca_a", "agt_1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	finishedOne, err := st.CreateScheduleRun(ctx, "tpl_a", "agt_2")
+	finishedOne, err := st.CreateScheduleRun(ctx, "ca_a", "agt_2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,9 +111,9 @@ func TestScheduleRun_ListByStatus(t *testing.T) {
 }
 
 // TestDeleteTemplate_DoesNotCascadeScheduleRuns pins the Review Focus
-// item: a template's run history is meant to outlive the template itself,
-// the same way a transcript outlives its agent -- DeleteTemplate must not
-// take ScheduleRun records down with it.
+// item: a ScheduleRun's history is independent of both the CronAgent and
+// the Template lifecycle -- deleting a Template with no CronAgent
+// referencing it must not touch ScheduleRun records that happen to exist.
 func TestDeleteTemplate_DoesNotCascadeScheduleRuns(t *testing.T) {
 	st := newStore(t, 1)
 	ctx := context.Background()
@@ -122,7 +122,7 @@ func TestDeleteTemplate_DoesNotCascadeScheduleRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTemplate: %v", err)
 	}
-	run, err := st.CreateScheduleRun(ctx, tmpl.ID, "agt_1")
+	run, err := st.CreateScheduleRun(ctx, "ca_unrelated", "agt_1")
 	if err != nil {
 		t.Fatalf("CreateScheduleRun: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestDeleteTemplate_DoesNotCascadeScheduleRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetScheduleRun after DeleteTemplate: %v, want the run to survive", err)
 	}
-	if got.TemplateID != tmpl.ID {
-		t.Errorf("surviving run's TemplateID = %q, want %q", got.TemplateID, tmpl.ID)
+	if got.CronAgentID != "ca_unrelated" {
+		t.Errorf("surviving run's CronAgentID = %q, want %q", got.CronAgentID, "ca_unrelated")
 	}
 }

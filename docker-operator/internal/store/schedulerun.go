@@ -43,15 +43,15 @@ const (
 var bucketScheduleRuns = []byte("schedule_runs")
 
 // ScheduleRun is a durable record of one triggered run of a scheduled
-// Template, independent of both the Template's and the Agent's own
+// CronAgent, independent of both the Template's and the Agent's own
 // lifecycle: querying live store.Agent records cannot answer "what ran
 // under this schedule last week" once an agent has been deleted (the
 // common case for OnComplete: "delete"), and deleting the Template itself
 // must not take this history down with it.
 type ScheduleRun struct {
-	ID         string `json:"id"`
-	TemplateID string `json:"template_id"`
-	AgentID    string `json:"agent_id"`
+	ID          string `json:"id"`
+	CronAgentID string `json:"cron_agent_id"`
+	AgentID     string `json:"agent_id"`
 	// StartedAt is when CreateScheduleRun ran, i.e. when the trigger fired.
 	StartedAt time.Time `json:"started_at"`
 	// FinishedAt is nil while Status is ScheduleRunStatusRunning; set by
@@ -73,19 +73,19 @@ func NewScheduleRunID() (string, error) {
 }
 
 // CreateScheduleRun inserts a new ScheduleRun record with Status
-// ScheduleRunStatusRunning and StartedAt now, for templateID's trigger that
-// just created agentID.
-func (s *Store) CreateScheduleRun(ctx context.Context, templateID, agentID string) (ScheduleRun, error) {
+// ScheduleRunStatusRunning and StartedAt now, for cronAgentID's trigger
+// that just created agentID.
+func (s *Store) CreateScheduleRun(ctx context.Context, cronAgentID, agentID string) (ScheduleRun, error) {
 	id, err := NewScheduleRunID()
 	if err != nil {
 		return ScheduleRun{}, fmt.Errorf("creating a schedule run: %w", err)
 	}
 	run := ScheduleRun{
-		ID:         id,
-		TemplateID: templateID,
-		AgentID:    agentID,
-		StartedAt:  s.now(),
-		Status:     ScheduleRunStatusRunning,
+		ID:          id,
+		CronAgentID: cronAgentID,
+		AgentID:     agentID,
+		StartedAt:   s.now(),
+		Status:      ScheduleRunStatusRunning,
 	}
 	if err := s.updateScheduleRuns(ctx, func(b *bbolt.Bucket) error {
 		return putScheduleRun(b, run)
@@ -143,10 +143,10 @@ func (s *Store) GetScheduleRun(ctx context.Context, id string) (ScheduleRun, err
 	return run, nil
 }
 
-// ListScheduleRunsByTemplate returns every run for templateID, newest
+// ListScheduleRunsByCronAgent returns every run for cronAgentID, newest
 // StartedAt first -- the order both the UI's run-history list and the
 // ticker's "anchor on the most recent run" lookup want.
-func (s *Store) ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]ScheduleRun, error) {
+func (s *Store) ListScheduleRunsByCronAgent(ctx context.Context, cronAgentID string) ([]ScheduleRun, error) {
 	runs := make([]ScheduleRun, 0)
 	err := s.viewScheduleRuns(ctx, func(b *bbolt.Bucket) error {
 		return b.ForEach(func(k, v []byte) error {
@@ -154,14 +154,14 @@ func (s *Store) ListScheduleRunsByTemplate(ctx context.Context, templateID strin
 			if err := decodeScheduleRun(string(k), v, &run); err != nil {
 				return err
 			}
-			if run.TemplateID == templateID {
+			if run.CronAgentID == cronAgentID {
 				runs = append(runs, run)
 			}
 			return nil
 		})
 	})
 	if err != nil {
-		return nil, fmt.Errorf("listing schedule runs for template %q: %w", templateID, err)
+		return nil, fmt.Errorf("listing schedule runs for cron agent %q: %w", cronAgentID, err)
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].StartedAt.After(runs[j].StartedAt) })
 	return runs, nil
