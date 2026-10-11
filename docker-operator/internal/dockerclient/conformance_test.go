@@ -1,7 +1,9 @@
 package dockerclient_test
 
 import (
+	"archive/tar"
 	"context"
+	"io"
 	"slices"
 	"sort"
 	"strconv"
@@ -699,6 +701,89 @@ var conformanceCases = []conformanceCase{
 			t.Errorf("VolumeUsage still reports removed volume %q (got %v)", name, usage)
 		}
 	}},
+
+	// CopyFromContainerLifecycle pins the contract internal/agent's
+	// transcript-archive feature is built on
+	// (docs/superpowers/specs/2026-10-10-agent-transcript-archive-design.md):
+	// reading a file or directory out of a container via the same mechanism
+	// `docker cp` uses, which (unlike every other in-container read in this
+	// codebase) needs no running process -- it works identically on a
+	// RUNNING and a STOPPED container -- and which (confirmed against
+	// Docker 27.5.1) always returns a tar stream, with a copied directory's
+	// entries prefixed by that directory's OWN basename (copying
+	// ".../testdir" yields an entry named "testdir/file.txt", not a bare
+	// "file.txt"). internal/agent's extraction logic depends on that exact
+	// prefixing convention to land files at the right destination without
+	// doubling the directory name -- this is the one case in this suite
+	// asserting an EXACT tar shape rather than plausibility-only, because
+	// that shape is a real dependency, not incidental.
+	{name: "CopyFromContainerLifecycle", run: func(t *testing.T, f factory, c dockerclient.Client) {
+		ctx := context.Background()
+		ctrName := uniqueName(f, t) + "-ctr"
+
+		spec := dockerclient.ContainerSpec{Name: ctrName, Image: "alpine:latest", Cmd: []string{"sleep", "300"}}
+		if f.name == "docker" {
+			// The fake does not execute Cmd; the real daemon leg needs a
+			// real file on disk, so write it as the container's own entry
+			// point before anything else can race it.
+			spec.Cmd = []string{"sh", "-c", "mkdir -p /tmp/testdir && printf hello-transcript > /tmp/testdir/file.txt && sleep 300"}
+		}
+		id, err := c.ContainerCreate(ctx, spec)
+		if err != nil {
+			if isImageNotFoundErr(err) {
+				t.Skipf("alpine:latest not available and this client cannot pull images (by design, #63): %v", err)
+			}
+			t.Fatalf("ContainerCreate: %v", err)
+		}
+		t.Cleanup(func() { _ = c.ContainerRemove(context.Background(), id) })
+
+		if f.name == "fake" {
+			fake := c.(*dockerclienttest.Fake)
+			if err := fake.SetContainerDir(id, "/tmp/testdir", map[string]string{"file.txt": "hello-transcript"}); err != nil {
+				t.Fatalf("SetContainerDir: %v", err)
+			}
+		}
+
+		if err := c.ContainerStart(ctx, id); err != nil {
+			t.Fatalf("ContainerStart: %v", err)
+		}
+
+		// Real: the shell write races container startup; retry briefly
+		// rather than a single arbitrary sleep. Fake: already seeded above,
+		// so this succeeds on the first attempt.
+		var content io.ReadCloser
+		for attempt := 0; attempt < 20; attempt++ {
+			content, err = c.CopyFromContainer(ctx, id, "/tmp/testdir")
+			if err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("CopyFromContainer(running, existing dir): %v", err)
+		}
+		assertTarEntry(t, content, "testdir/file.txt", "hello-transcript")
+
+		if err := c.ContainerStop(ctx, id, 5*time.Second); err != nil {
+			t.Fatalf("ContainerStop: %v", err)
+		}
+
+		// The whole point of this method: it must still work on a STOPPED
+		// container.
+		content, err = c.CopyFromContainer(ctx, id, "/tmp/testdir")
+		if err != nil {
+			t.Fatalf("CopyFromContainer(stopped, existing dir): %v", err)
+		}
+		assertTarEntry(t, content, "testdir/file.txt", "hello-transcript")
+
+		if _, err := c.CopyFromContainer(ctx, id, "/tmp/testdir/does-not-exist.txt"); !dockerclient.IsNotFound(err) {
+			t.Errorf("CopyFromContainer(missing path) error = %v, want IsNotFound", err)
+		}
+
+		if _, err := c.CopyFromContainer(ctx, uniqueName(f, t)+"-missing", "/tmp/testdir"); !dockerclient.IsNotFound(err) {
+			t.Errorf("CopyFromContainer(missing container) error = %v, want IsNotFound", err)
+		}
+	}},
 }
 
 // findVolumeUsage returns the entry for name and whether it was present.
@@ -709,4 +794,33 @@ func findVolumeUsage(list []dockerclient.VolumeUsage, name string) (dockerclient
 		}
 	}
 	return dockerclient.VolumeUsage{}, false
+}
+
+// assertTarEntry reads r as a tar stream (closing it when done) and fails t
+// unless it contains a regular-file entry named exactly wantName with
+// content wantContent.
+func assertTarEntry(t *testing.T, r io.ReadCloser, wantName, wantContent string) {
+	t.Helper()
+	defer func() { _ = r.Close() }()
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			t.Fatalf("tar stream has no entry named %q", wantName)
+		}
+		if err != nil {
+			t.Fatalf("reading tar stream: %v", err)
+		}
+		if hdr.Typeflag != tar.TypeReg || hdr.Name != wantName {
+			continue
+		}
+		got, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("reading tar entry %q: %v", hdr.Name, err)
+		}
+		if string(got) != wantContent {
+			t.Fatalf("tar entry %q content = %q, want %q", hdr.Name, got, wantContent)
+		}
+		return
+	}
 }

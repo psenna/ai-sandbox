@@ -96,6 +96,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 // exactly what is left.
 func (m *Manager) teardown(ctx context.Context, a store.Agent) error {
 	a = withDerivedNames(a)
+	m.archiveTranscript(ctx, a) // best-effort: logs and continues on any error
 	var errs []error
 
 	// Containers first. Referenced by ID when create got far enough to record

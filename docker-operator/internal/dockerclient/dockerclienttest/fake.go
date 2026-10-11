@@ -10,11 +10,14 @@
 package dockerclienttest
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	stdpath "path"
 	"sort"
 	"strings"
 	"sync"
@@ -63,6 +66,7 @@ const (
 	OpImagePull         Op = "ImagePull"
 	OpImageList         Op = "ImageList"
 	OpImageRemove       Op = "ImageRemove"
+	OpCopyFromContainer Op = "CopyFromContainer"
 )
 
 // Call is one recorded invocation of a Fake method. Target is the object the
@@ -121,6 +125,12 @@ type containerRecord struct {
 	// ExecOutput, which is keyed by command across containers. nil means no
 	// override -- a running container then gets the canned sample.
 	stats *dockerclient.Stats
+	// copyPaths holds the pre-built tar bytes CopyFromContainer returns for
+	// a given path, seeded by SetContainerFile/SetContainerDir. nil/missing
+	// means "not seeded", which CopyFromContainer reports as ErrNotFound --
+	// the fake has no real filesystem to consult, so every path a test
+	// cares about must be seeded explicitly.
+	copyPaths map[string][]byte
 }
 
 func (c *containerRecord) toContainer() dockerclient.Container {
@@ -360,6 +370,46 @@ func (f *Fake) SetStats(idOrName string, s dockerclient.Stats) error {
 		return fmt.Errorf("container %q: %w", idOrName, dockerclient.ErrNotFound)
 	}
 	c.stats = &s
+	return nil
+}
+
+// SetContainerFile seeds CopyFromContainer's response for path on an
+// existing container, found by ID or name, as if path named a single file:
+// the returned tar carries one entry named path's base, holding content --
+// mirroring the real daemon's single-file copy-out convention (pinned by
+// the conformance suite's CopyFromContainerLifecycle case).
+func (f *Fake) SetContainerFile(idOrName, path string, content []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(idOrName)
+	if !ok {
+		return fmt.Errorf("container %q: %w", idOrName, dockerclient.ErrNotFound)
+	}
+	if c.copyPaths == nil {
+		c.copyPaths = map[string][]byte{}
+	}
+	c.copyPaths[path] = buildFileTar(stdpath.Base(path), content)
+	return nil
+}
+
+// SetContainerDir seeds CopyFromContainer's response for path on an
+// existing container, found by ID or name, as if path named a directory:
+// the returned tar carries one entry per entry in files, each named
+// path's-basename + "/" + <key>, holding <value> -- mirroring the real
+// daemon's directory copy-out convention of prefixing every entry with the
+// copied directory's own basename (pinned by the conformance suite's
+// CopyFromContainerLifecycle case).
+func (f *Fake) SetContainerDir(idOrName, path string, files map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(idOrName)
+	if !ok {
+		return fmt.Errorf("container %q: %w", idOrName, dockerclient.ErrNotFound)
+	}
+	if c.copyPaths == nil {
+		c.copyPaths = map[string][]byte{}
+	}
+	c.copyPaths[path] = buildDirTar(stdpath.Base(path), files)
 	return nil
 }
 
@@ -771,6 +821,57 @@ func (f *Fake) ContainerInspect(ctx context.Context, id string) (dockerclient.Co
 		return dockerclient.Container{}, fmt.Errorf("container %q: %w", id, dockerclient.ErrNotFound)
 	}
 	return c.toContainer(), nil
+}
+
+// CopyFromContainer returns the tar stream seeded for path on an existing
+// container by SetContainerFile or SetContainerDir, found by ID or name.
+func (f *Fake) CopyFromContainer(ctx context.Context, id, path string) (io.ReadCloser, error) {
+	if err := f.call(OpCopyFromContainer, id); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.resolveContainer(id)
+	if !ok {
+		return nil, fmt.Errorf("container %q: %w", id, dockerclient.ErrNotFound)
+	}
+	data, ok := c.copyPaths[path]
+	if !ok {
+		return nil, fmt.Errorf("path %q in container %q: %w", path, id, dockerclient.ErrNotFound)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// buildFileTar returns a tar archive with one regular-file entry named name
+// holding content -- the shape CopyFromContainer always returns, even for a
+// single-file source.
+func buildFileTar(name string, content []byte) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))})
+	_, _ = tw.Write(content)
+	_ = tw.Close()
+	return buf.Bytes()
+}
+
+// buildDirTar returns a tar archive with one regular-file entry per entry
+// in files, each named dirName+"/"+<key>, written in sorted key order for a
+// deterministic stream.
+func buildDirTar(dirName string, files map[string]string) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		content := files[name]
+		_ = tw.WriteHeader(&tar.Header{Name: dirName + "/" + name, Mode: 0o644, Size: int64(len(content))})
+		_, _ = tw.Write([]byte(content))
+	}
+	_ = tw.Close()
+	return buf.Bytes()
 }
 
 // resolveContainer looks a container up by ID first, then by name -- the

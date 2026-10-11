@@ -170,6 +170,17 @@ type ContainerClient interface {
 	// -- there is no cheaper honest CPU number. Only a RUNNING container has
 	// stats: a stopped one yields an error, not zeros.
 	ContainerStats(ctx context.Context, id string) (Stats, error)
+
+	// CopyFromContainer reads path out of the container's filesystem and
+	// returns it as a tar stream -- the same mechanism `docker cp` uses.
+	// Unlike every exec-based read in this package, it needs no running
+	// process: it works identically whether the container is running or
+	// stopped. The result ALWAYS tar-wraps its content, even when path names
+	// a single file (confirmed against the vendored
+	// github.com/moby/moby/client v0.5.1's CopyFromContainer). The caller
+	// owns the returned stream and must Close it. A missing container or a
+	// path the container does not have satisfies IsNotFound.
+	CopyFromContainer(ctx context.Context, id, path string) (io.ReadCloser, error)
 }
 
 // ExecClient runs processes inside an existing container: the terminal bridge
@@ -805,6 +816,16 @@ func (d *Docker) ContainerInspect(ctx context.Context, id string) (Container, er
 		return Container{}, wrapErr("container", id, err)
 	}
 	return toContainer(res.Container), nil
+}
+
+// CopyFromContainer reads path out of id's filesystem and returns it as a
+// tar stream. See the ContainerClient interface doc for the full contract.
+func (d *Docker) CopyFromContainer(ctx context.Context, id, path string) (io.ReadCloser, error) {
+	res, err := d.api.CopyFromContainer(ctx, id, client.CopyFromContainerOptions{SourcePath: path})
+	if err != nil {
+		return nil, wrapErr("container", id, err)
+	}
+	return res.Content, nil
 }
 
 // ContainerList returns containers carrying every label in labels.

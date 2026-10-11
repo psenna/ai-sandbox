@@ -226,7 +226,7 @@ walk matches, Refresh to re-pull, Esc to close.
 | Proxy network | `docker-operator-proxynet` | shared singleton (agents + shared services; **not** the operator) |
 | DB network | `docker-operator-dbnet` | shared singleton |
 | Operator network | `docker-operator-operatornet` | singleton, operator only — no agent joins it |
-| File-store volume | `docker-operator-filestore` | shared singleton; per-agent `agents/<id>/` (RW) + `shared/` (RO in every agent) subpaths, **unlabelled** |
+| File-store volume | `docker-operator-filestore` | shared singleton; per-agent `agents/<id>/` (RW) + `shared/` (RO in every agent) subpaths, plus an operator-only `transcripts/<id>/` archive written at delete time, **unlabelled** |
 
 Every resource above (except the shared singleton networks, the operator's own
 network, and the shared file-store volume, none of which a single agent owns)
@@ -440,23 +440,34 @@ rest of `/workspace` is destroyed when the agent is deleted; neither of these
 is.
 
 **Topology.** One shared Docker volume, `docker-operator-filestore`, holds an
-`agents/<id>/` subtree per agent plus a single `shared/` tree. The operator
-pre-creates those before the agent is created, then mounts them into the agent
-container as volume **subpaths**:
+`agents/<id>/` subtree per agent, a single `shared/` tree, and a
+`transcripts/<id>/` archive per deleted agent. The operator pre-creates
+`agents/<id>/` and `shared/` before the agent is created, then mounts them
+into the agent container as volume **subpaths**; `transcripts/<id>/` is
+written only by the operator itself, at delete time, and is never mounted
+into any agent:
 
 ```
 docker-operator-filestore   (one shared volume)
 ├── agents/
 │   ├── agt_7f3a9c2d/   ─── mounted RW at /workspace/store in agent agt_7f3a9c2d
 │   └── agt_1b2c3d4e/   ─── mounted RW at /workspace/store in agent agt_1b2c3d4e
-└── shared/             ─── mounted READ-ONLY at /workspace/shared in EVERY agent
+├── shared/             ─── mounted READ-ONLY at /workspace/shared in EVERY agent
+└── transcripts/
+    └── agt_7f3a9c2d/   ─── written by the operator at delete time, never mounted into any agent
+        ├── metadata.json
+        ├── projects/...    (Claude Code: the agent's whole session history)
+        └── output.log      (opencode: the agent's raw terminal output)
 ```
 
 Docker enforces the isolation: an agent sees only its own `agents/<id>/`
 subtree (never the volume root or another agent's) and a read-only view of
 `shared/`. Agents never touch the operator API — the file API below is the
 operator's, behind the same `OPERATOR_API_TOKEN`, and it is also how the
-operator writes `shared/` (`POST /api/files/upload?path=shared`, etc.).
+operator writes `shared/` (`POST /api/files/upload?path=shared`, etc.) and how
+a human browses `transcripts/` after the fact (sidebar **Files**; that browser
+is fully generic over whatever top-level directories exist, so
+`transcripts/<id>/` needs no UI changes to show up there).
 
 **`FILESTORE_DIR` and `FILESTORE_VOLUME` are two names for the same storage.**
 `FILESTORE_DIR` is the path the *operator* sees the volume at (where it
@@ -466,18 +477,31 @@ with a single `- filestore:/var/lib/docker-operator/filestore` mount. A
 mismatch surfaces at agent-create time as `container create: subpath not
 found`.
 
-**Persistence contract.** An agent's files survive `DELETE /api/agents/{id}`,
-create-failure rollback, and the startup reconcile pass. They are removed only
-by `DELETE /api/agents/{id}?purge_files=true` or the web UI's file browser
-(sidebar **Files**). An orphan `agents/<id>/` left by a lost record is left
-alone — clean it up from the web UI.
+**Persistence contract.** An agent's `agents/<id>/` files survive `DELETE
+/api/agents/{id}`, create-failure rollback, and the startup reconcile pass.
+They are removed only by `DELETE /api/agents/{id}?purge_files=true` or the web
+UI's file browser (sidebar **Files**). An orphan `agents/<id>/` left by a lost
+record is left alone — clean it up from the web UI.
+
+A deleted agent's `transcripts/<id>/` archive is a separate, deliberately
+unrelated lifetime: `purge_files=true` never touches it (archiving a session
+for later learning and purging an agent's own files are two different actions
+a caller can take independently), and it is written best-effort as the first
+step of every teardown (`Delete`, create-failure rollback, and reconcile
+cleanup alike) — a copy or write failure is logged and never blocks any of
+them. Remove a transcript the same way as any other file-store entry, from
+the web UI's file browser.
 
 **Requires Docker Engine >= 26.0 (API v1.45).** Volume-subpath mounts landed
 there; an older daemon **silently ignores the subpath** and mounts the whole
 volume, so every agent would see every other agent's files. Check `docker
 version` before relying on this.
 
-A single upload is capped at 100 MiB (`FILESTORE_MAX_UPLOAD_BYTES`). Set
+A single upload is capped at 100 MiB (`FILESTORE_MAX_UPLOAD_BYTES`). A single
+file inside a transcript archive is capped separately, at 512 MiB, and is not
+currently configurable — an archive is not a user upload, but the cap exists
+for the same reason: to bound a single pathological or hostile file, not
+because 512 MiB is expected in practice. Set
 `FILESTORE_DIR=""` to disable the whole feature: no `/api/files*` routes (they
 answer `501 filestore_disabled`), no `/workspace/store` or `/workspace/shared`
 mount, no `AGENT_STORE_DIR` / `AGENT_SHARED_DIR`. `docker compose down -v`

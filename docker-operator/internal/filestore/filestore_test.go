@@ -496,6 +496,16 @@ func TestRemove(t *testing.T) {
 	if err := s.Remove("shared"); !IsInvalidPath(err) {
 		t.Errorf("Remove(\"shared\") err = %v, want ErrInvalidPath", err)
 	}
+	if err := s.Remove("transcripts"); !IsInvalidPath(err) {
+		t.Errorf("Remove(\"transcripts\") err = %v, want ErrInvalidPath (one call must not wipe every archived agent's history)", err)
+	}
+	// Contents of transcripts/ are still removable per agent.
+	if err := s.Mkdir("transcripts/agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("transcripts/agt_1"); err != nil {
+		t.Errorf("Remove(transcripts/agt_1) = %v, want nil", err)
+	}
 	// Contents of shared/ are still removable.
 	if _, err := s.Save("shared/note.txt", strings.NewReader("hi"), 1<<20); err != nil {
 		t.Fatal(err)
