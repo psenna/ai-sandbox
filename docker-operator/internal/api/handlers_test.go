@@ -85,6 +85,8 @@ type fakeManager struct {
 
 	templates map[string]store.Template
 
+	scheduleRuns map[string][]store.ScheduleRun
+
 	nextTemplateID int
 
 	listTemplatesErr error
@@ -600,6 +602,19 @@ func (f *fakeManager) DeleteTemplate(_ context.Context, id string) error {
 	}
 	delete(f.templates, id)
 	return nil
+}
+
+// ListScheduleRunsByTemplate mirrors ListTemplates's style: a nil map
+// entry (the common case -- a template with no scheduled runs yet)
+// reads as an empty, never-nil slice, matching the real Store's own
+// never-nil-list convention.
+func (f *fakeManager) ListScheduleRunsByTemplate(_ context.Context, templateID string) ([]store.ScheduleRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	runs := f.scheduleRuns[templateID]
+	out := make([]store.ScheduleRun, len(runs))
+	copy(out, runs)
+	return out, nil
 }
 
 // --- test helpers -----------------------------------------------------------

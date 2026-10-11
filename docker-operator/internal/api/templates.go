@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
+	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
@@ -37,6 +39,12 @@ type templateRequest struct {
 	MaxContextTokens     string `json:"max_context_tokens"`
 	ImageTag             string `json:"image_tag"`
 	AutoMode             string `json:"auto_mode"`
+
+	Harness    string `json:"harness"`
+	Schedule   string `json:"schedule"`
+	Enabled    bool   `json:"enabled"`
+	Task       string `json:"task"`
+	OnComplete string `json:"on_complete"`
 }
 
 // toAgentFieldsRequest maps templateRequest's 9 shared fields onto
@@ -72,17 +80,59 @@ func (t templateRequest) toTemplateCreateSpec() store.TemplateCreateSpec {
 		MaxContextTokens:     t.MaxContextTokens,
 		ImageTag:             t.ImageTag,
 		AutoMode:             t.AutoMode,
+
+		Harness:    t.Harness,
+		Schedule:   t.Schedule,
+		Enabled:    t.Enabled,
+		Task:       t.Task,
+		OnComplete: t.OnComplete,
 	}
+}
+
+// validOnComplete reports whether s is one of the three values ApplyOnComplete
+// understands. Template-only: agents have no OnComplete concept, so this
+// lives here rather than in internal/config alongside the agent-level
+// validators.
+func validOnComplete(s string) bool {
+	return s == "stop" || s == "delete" || s == "leave"
 }
 
 // validateTemplateFields runs the template-specific check (a non-empty
 // name) plus every createAgentRequest field check, reused via
-// toAgentFieldsRequest.
+// toAgentFieldsRequest. When Schedule is set, it also requires Harness, Task
+// and OnComplete together, rejects malformed cron strings (parsed with the
+// exact parser the ticker itself uses), and rejects the opencode harness (v1
+// scheduling is Claude Code only). A template with no Schedule validates
+// exactly as it did before this feature -- no new requirements for it.
 func validateTemplateFields(req templateRequest) *apiErr {
 	if strings.TrimSpace(req.Name) == "" {
 		return &apiErr{http.StatusBadRequest, CodeMissingField, `"name" must not be empty`, "name"}
 	}
-	return validateAgentFields(req.toAgentFieldsRequest())
+	if ae := validateAgentFields(req.toAgentFieldsRequest()); ae != nil {
+		return ae
+	}
+	if req.Schedule == "" {
+		return nil
+	}
+	if req.Harness == "" {
+		return &apiErr{http.StatusBadRequest, CodeMissingField, `"harness" is required when "schedule" is set`, "harness"}
+	}
+	if !config.ValidHarness(req.Harness) {
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"harness" must be "claude-code" or "opencode"`, "harness"}
+	}
+	if req.Harness == config.HarnessOpenCode {
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `scheduling is not supported for the "opencode" harness yet`, "harness"}
+	}
+	if strings.TrimSpace(req.Task) == "" {
+		return &apiErr{http.StatusBadRequest, CodeMissingField, `"task" is required when "schedule" is set`, "task"}
+	}
+	if !validOnComplete(req.OnComplete) {
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"on_complete" must be "stop", "delete" or "leave"`, "on_complete"}
+	}
+	if _, err := agent.ParseSchedule(req.Schedule); err != nil {
+		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"schedule" must be a valid standard 5-field cron expression`, "schedule"}
+	}
+	return nil
 }
 
 // templateError maps a store.Template sentinel error to the right HTTP
@@ -162,4 +212,20 @@ func (h *Handler) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
+}
+
+// scheduleRunListResponse is the GET /api/templates/{id}/runs body, same
+// wrapped-array convention as templateListResponse.
+type scheduleRunListResponse struct {
+	Runs []store.ScheduleRun `json:"runs"`
+}
+
+func (h *Handler) handleListScheduleRuns(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	runs, err := h.mgr.ListScheduleRunsByTemplate(r.Context(), id)
+	if err != nil {
+		h.internalError(w, "listing schedule runs for template "+id, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, scheduleRunListResponse{Runs: runs})
 }
