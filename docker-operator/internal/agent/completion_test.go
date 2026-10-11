@@ -13,19 +13,28 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
-func TestCreateFromTemplate(t *testing.T) {
+// newTestCronAgent creates a Template with the given harness/backend and
+// returns a CronAgent referencing it with the given task/OnComplete.
+// CreateFromCronAgent resolves TemplateID to a real Template record, so
+// these tests can no longer build a bare store.CronAgent in isolation the
+// way TestCreateFromTemplate once built a bare store.Template.
+func newTestCronAgent(t *testing.T, m *Manager, harness, backend, task, onComplete string) store.CronAgent {
+	t.Helper()
+	tmpl, err := m.CreateTemplate(context.Background(), store.TemplateCreateSpec{Harness: harness, Backend: backend})
+	if err != nil {
+		t.Fatalf("CreateTemplate: %v", err)
+	}
+	return store.CronAgent{TemplateID: tmpl.ID, Task: task, OnComplete: onComplete}
+}
+
+func TestCreateFromCronAgent(t *testing.T) {
 	m, _, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{
-		Harness:  config.HarnessClaudeCode,
-		Backend:  config.BackendOllama,
-		Task:     "do the daily thing",
-		Schedule: "0 9 * * *",
-	}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "do the daily thing", "")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	if a.Harness != config.HarnessClaudeCode {
 		t.Errorf("Harness = %q, want %q", a.Harness, config.HarnessClaudeCode)
@@ -36,10 +45,10 @@ func TestCheckScheduledRunStatus_NotDoneYet(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	f.ExecOutput[strings.Join(scheduledRunCheckCmd, " ")] = nil
 
@@ -57,10 +66,10 @@ func TestCheckScheduledRunStatus_Done(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	f.ExecOutput[strings.Join(scheduledRunCheckCmd, " ")] = []byte("complete\n")
 
@@ -99,10 +108,10 @@ func TestCheckScheduledRunStatus_Failed(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	f.ExecOutput[strings.Join(scheduledRunCheckCmd, " ")] = []byte("failed\n")
 
@@ -123,10 +132,10 @@ func TestCheckScheduledRunStatus_StoppedContainerIsGone(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	if err := f.ContainerStop(ctx, agentContainerName(a.ID), 0); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
@@ -151,10 +160,10 @@ func TestCheckScheduledRunStatus_RunningExecErrorPropagates(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	boom := errors.New("daemon hiccup")
 	f.FailOnce(dockerclienttest.OpExecCreate, boom)
@@ -169,13 +178,13 @@ func TestApplyOnComplete_Stop(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x", OnComplete: "stop"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "stop")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	run := store.ScheduleRun{AgentID: a.ID}
-	if err := m.ApplyOnComplete(ctx, tmpl, run); err != nil {
+	if err := m.ApplyOnComplete(ctx, ca, run); err != nil {
 		t.Fatalf("ApplyOnComplete: %v", err)
 	}
 
@@ -196,12 +205,12 @@ func TestApplyOnComplete_StopShieldsRecord(t *testing.T) {
 	m, _, st := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x", OnComplete: "stop"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "stop")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
-	if err := m.ApplyOnComplete(ctx, tmpl, store.ScheduleRun{AgentID: a.ID}); err != nil {
+	if err := m.ApplyOnComplete(ctx, ca, store.ScheduleRun{AgentID: a.ID}); err != nil {
 		t.Fatalf("ApplyOnComplete: %v", err)
 	}
 	got, err := st.Get(ctx, a.ID)
@@ -217,13 +226,13 @@ func TestApplyOnComplete_Delete(t *testing.T) {
 	m, _, st := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x", OnComplete: "delete"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "delete")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	run := store.ScheduleRun{AgentID: a.ID}
-	if err := m.ApplyOnComplete(ctx, tmpl, run); err != nil {
+	if err := m.ApplyOnComplete(ctx, ca, run); err != nil {
 		t.Fatalf("ApplyOnComplete: %v", err)
 	}
 
@@ -236,13 +245,13 @@ func TestApplyOnComplete_Leave(t *testing.T) {
 	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
-	tmpl := store.Template{Harness: config.HarnessClaudeCode, Backend: config.BackendOllama, Task: "x", OnComplete: "leave"}
-	a, err := m.CreateFromTemplate(ctx, tmpl)
+	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "x", "leave")
+	a, err := m.CreateFromCronAgent(ctx, ca)
 	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
+		t.Fatalf("CreateFromCronAgent: %v", err)
 	}
 	run := store.ScheduleRun{AgentID: a.ID}
-	if err := m.ApplyOnComplete(ctx, tmpl, run); err != nil {
+	if err := m.ApplyOnComplete(ctx, ca, run); err != nil {
 		t.Fatalf("ApplyOnComplete: %v", err)
 	}
 
@@ -255,22 +264,22 @@ func TestApplyOnComplete_Leave(t *testing.T) {
 	}
 }
 
-func TestListScheduleRunsByTemplate(t *testing.T) {
+func TestListScheduleRunsByCronAgent(t *testing.T) {
 	m, _, st := newTestManager(t, 5)
 	ctx := context.Background()
 
-	if _, err := st.CreateScheduleRun(ctx, "tpl_1", "agt_1"); err != nil {
+	if _, err := st.CreateScheduleRun(ctx, "ca_1", "agt_1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CreateScheduleRun(ctx, "tpl_2", "agt_2"); err != nil {
+	if _, err := st.CreateScheduleRun(ctx, "ca_2", "agt_2"); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := m.ListScheduleRunsByTemplate(ctx, "tpl_1")
+	got, err := m.ListScheduleRunsByCronAgent(ctx, "ca_1")
 	if err != nil {
-		t.Fatalf("ListScheduleRunsByTemplate: %v", err)
+		t.Fatalf("ListScheduleRunsByCronAgent: %v", err)
 	}
-	if len(got) != 1 || got[0].TemplateID != "tpl_1" {
-		t.Errorf("ListScheduleRunsByTemplate(tpl_1) = %+v, want exactly tpl_1's run", got)
+	if len(got) != 1 || got[0].CronAgentID != "ca_1" {
+		t.Errorf("ListScheduleRunsByCronAgent(ca_1) = %+v, want exactly ca_1's run", got)
 	}
 }
