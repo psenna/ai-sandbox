@@ -127,6 +127,29 @@ func (m *Manager) ListScheduleRunsByTemplate(ctx context.Context, templateID str
 	return m.store.ListScheduleRunsByTemplate(ctx, templateID)
 }
 
+// ListScheduleRunsByStatus returns every ScheduleRun with the given status,
+// regardless of template -- the same thin pass-through shape as
+// ListScheduleRunsByTemplate, and added alongside it for the same reason:
+// cmd/docker-operator's schedulingDeps interface needs this on Manager, not
+// on *store.Store directly.
+func (m *Manager) ListScheduleRunsByStatus(ctx context.Context, status string) ([]store.ScheduleRun, error) {
+	return m.store.ListScheduleRunsByStatus(ctx, status)
+}
+
+// CreateScheduleRun records a new in-flight run (status
+// store.ScheduleRunStatusRunning) for templateID's agentID. Thin
+// pass-through, mirroring ListScheduleRunsByTemplate.
+func (m *Manager) CreateScheduleRun(ctx context.Context, templateID, agentID string) (store.ScheduleRun, error) {
+	return m.store.CreateScheduleRun(ctx, templateID, agentID)
+}
+
+// FinishScheduleRun sets a ScheduleRun's terminal status (success or error)
+// and its FinishedAt. Thin pass-through, mirroring
+// ListScheduleRunsByTemplate.
+func (m *Manager) FinishScheduleRun(ctx context.Context, id, status string) (store.ScheduleRun, error) {
+	return m.store.FinishScheduleRun(ctx, id, status)
+}
+
 // execOneShot runs cmd inside the container named ref via one exec,
 // bounded by its own timeout (m.opts.ExecTimeout), and returns everything
 // the command wrote to stdout/stderr. A missing container satisfies
