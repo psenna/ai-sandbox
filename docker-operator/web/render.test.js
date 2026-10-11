@@ -1030,6 +1030,34 @@ test('renderTemplateForm includes the five new scheduling fields', () => {
 	assert.match(html, /name="on_complete"/);
 });
 
+test('renderTemplateForm: Backend and Auto mode are selects, not free-text inputs', () => {
+	const html = Render.renderTemplateForm({ backend: 'anthropic', auto_mode: 'on' });
+	assert.match(html, /<select name="backend">[\s\S]*?<option value="anthropic" selected>/);
+	assert.doesNotMatch(html, /<input[^>]*name="backend"/);
+	assert.match(html, /<select name="auto_mode">[\s\S]*?<option value="on" selected>/);
+	assert.doesNotMatch(html, /<input[^>]*name="auto_mode"/);
+});
+
+test('renderTemplateForm: rarely-used fields are grouped under a collapsed Advanced disclosure', () => {
+	const html = Render.renderTemplateForm({});
+	const advancedMatch = html.match(/<details class="template-form__advanced">[\s\S]*?<\/details>/);
+	assert.ok(advancedMatch, 'no <details class="template-form__advanced"> found');
+	const advancedBody = advancedMatch[0];
+	for (const name of ['model', 'fast_model', 'ollama_url', 'auto_compact_threshold', 'max_context_tokens', 'image_tag']) {
+		assert.match(advancedBody, new RegExp('name="' + name + '"'), name + ' should be inside Advanced');
+	}
+	// Fields that matter even without scheduling stay visible by default.
+	for (const name of ['name', 'backend', 'harness', 'repo']) {
+		assert.doesNotMatch(advancedBody, new RegExp('name="' + name + '"'), name + ' should NOT be inside Advanced');
+	}
+});
+
+test('renderTemplateForm: two labeled sections group config vs. scheduling fields', () => {
+	const html = Render.renderTemplateForm({});
+	assert.match(html, /<h3 class="template-form__section-heading">Agent configuration<\/h3>/);
+	assert.match(html, /<h3 class="template-form__section-heading">Scheduling<\/h3>/);
+});
+
 test('renderScheduleRunList renders status and timestamps, newest first', () => {
 	const html = Render.renderScheduleRunList([
 		{ id: 'run_2', agent_id: 'agt_2', status: 'running', started_at: '2026-01-02T09:00:00Z' },

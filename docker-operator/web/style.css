@@ -146,6 +146,9 @@ html, body {
    min-width) keeps it in its own rule; only the visual half lives here. */
 .create-form__row input[type="text"],
 .create-form__row select,
+.template-form__row input[type="text"],
+.template-form__row select,
+.template-form__row textarea,
 .detail__name,
 .detail__description,
 .login__token,
@@ -163,6 +166,9 @@ html, body {
    :hover, and the hover rules below already move the border. */
 .create-form__row input[type="text"]:focus,
 .create-form__row select:focus,
+.template-form__row input[type="text"]:focus,
+.template-form__row select:focus,
+.template-form__row textarea:focus,
 .detail__name:focus,
 .detail__description:focus,
 .login__token:focus,
@@ -714,7 +720,8 @@ html, body {
 
 .create-form__title { margin: 0; font-size: var(--font-lg); font-weight: 600; }
 
-.create-form__row {
+.create-form__row,
+.template-form__row {
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-1);
@@ -722,12 +729,22 @@ html, body {
 	color: var(--fg-dim);
 }
 
+/* The Enabled checkbox reads better next to its label than stacked above it
+   -- the only row in either form that needs the opposite direction. */
+.template-form__row--inline {
+	flex-direction: row;
+	align-items: center;
+	gap: var(--space-2);
+}
+
 /* One treatment for every group heading -- the Identity/Model sections, the
    two fieldsets' legends, and the Advanced summary -- so the form reads as
-   titled groups. Same small-uppercase-dim recipe as the sidebar badges. */
+   titled groups. Same small-uppercase-dim recipe as the sidebar badges.
+   The template form's own section headings share this recipe too. */
 .create-form__section-heading,
 .create-form__harness legend,
-.create-form__backend legend {
+.create-form__backend legend,
+.template-form__section-heading {
 	margin: 0;
 	padding: 0;
 	font-size: var(--font-xs);
@@ -737,7 +754,8 @@ html, body {
 	color: var(--fg-dim);
 }
 
-.create-form__section {
+.create-form__section,
+.template-form__section {
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-4);
@@ -746,7 +764,8 @@ html, body {
 /* Help text under a field, replacing the whole sentences that used to sit in
    placeholders (an exception: the Ollama-server placeholder carries the
    operator's default VALUE, which is data, so it stays). */
-.create-form__help { font-size: var(--font-xs); color: var(--fg-dim); }
+.create-form__help,
+.template-form__help { font-size: var(--font-xs); color: var(--fg-dim); }
 
 .create-form__backend,
 .create-form__harness {
@@ -842,12 +861,14 @@ html, body {
    DOM when closed -- infraFieldsFromForm and the submit paths in both app.js
    and terminal.js read them with unguarded `.value`, so they must never be
    conditionally omitted. */
-.create-form__advanced {
+.create-form__advanced,
+.template-form__advanced {
 	border: 1px solid var(--border);
 	border-radius: var(--radius-md);
 }
 
-.create-form__advanced-summary {
+.create-form__advanced-summary,
+.template-form__advanced-summary {
 	display: flex;
 	align-items: center;
 	gap: var(--space-3);
@@ -860,25 +881,31 @@ html, body {
 	cursor: pointer;
 	list-style: none;
 }
-.create-form__advanced-summary::-webkit-details-marker { display: none; }
-.create-form__advanced-summary::after {
+.create-form__advanced-summary::-webkit-details-marker,
+.template-form__advanced-summary::-webkit-details-marker { display: none; }
+.create-form__advanced-summary::after,
+.template-form__advanced-summary::after {
 	content: '▸';
 	margin-left: auto;
 	transition: transform var(--transition-fast);
 }
-.create-form__advanced[open] .create-form__advanced-summary::after { transform: rotate(90deg); }
-.create-form__advanced-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.create-form__advanced[open] .create-form__advanced-summary::after,
+.template-form__advanced[open] .template-form__advanced-summary::after { transform: rotate(90deg); }
+.create-form__advanced-summary:focus-visible,
+.template-form__advanced-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-.create-form__advanced-body {
+.create-form__advanced-body,
+.template-form__advanced-body {
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-5);
 	padding: 0 var(--space-5) var(--space-5);
 }
 
-/* Pinned so Create/Cancel stay reachable once the Advanced section is open.
+/* Pinned so Save/Cancel stay reachable once the Advanced section is open.
    An opaque background + top border so rows never scroll visibly under it. */
-.create-form__actions {
+.create-form__actions,
+.template-form__actions {
 	position: sticky;
 	bottom: 0;
 	z-index: 1;
@@ -889,7 +916,8 @@ html, body {
 	border-top: 1px solid var(--border);
 }
 
-.create-form__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
+.create-form__error,
+.template-form__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
 
 /* --- template bar (sits above the create form) --- */
 .template-bar {
@@ -902,18 +930,107 @@ html, body {
 
 .template-bar__row { flex: 1 1 auto; }
 
-.template-bar__actions { display: flex; gap: var(--space-3); }
-
-.template-bar__save {
-	white-space: nowrap;
+/* --- templates page (issue #228) -----------------------------------------
+   The page's own shell/list/detail chrome. Row and input styling is shared
+   with the create form via the combined selectors above (.template-form__row
+   etc.) -- only what has no create-form equivalent lives here. */
+.templates-page {
+	max-width: 720px;
+	margin: 24px auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-5);
 }
 
-.template-bar__error {
-	color: var(--status-error);
+.templates-page__header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-4);
+}
+
+.templates-page__header h2 { margin: 0; font-size: var(--font-lg); font-weight: 600; }
+
+.templates-page__list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	overflow: hidden;
+}
+
+.templates-page__row {
+	display: flex;
+	align-items: center;
+	gap: var(--space-4);
+	padding: var(--space-4) var(--space-5);
+	border-bottom: 1px solid var(--border);
+}
+.templates-page__row:last-child { border-bottom: none; }
+.templates-page__row:hover { background: var(--bg-item); }
+
+.templates-page__name { font-weight: 600; flex: 1 1 auto; }
+
+.templates-page__schedule {
+	font-size: var(--font-xs);
+	color: var(--fg-dim);
+	font-family: var(--font-mono, monospace);
+}
+
+.templates-page__detail {
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	padding: var(--space-5);
+}
+
+.templates-page__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
+
+.template-form {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-6);
+}
+
+/* --- schedule run history (issue #228) ------------------------------------ */
+.schedule-run-list {
+	list-style: none;
+	margin: var(--space-4) 0 0;
+	padding: 0;
+	border-top: 1px solid var(--border);
+}
+
+.schedule-run-list__row {
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	padding: var(--space-3) 0;
+	border-bottom: 1px solid var(--border);
 	font-size: var(--font-sm2);
-	margin: var(--space-1) auto 0;
-	max-width: 560px;
 }
+
+/* Reuses .status-dot's own shape/size; the colour comes from the SAME
+   tokens the agent-status dots already use (status-dot.status-creating/
+   running/error), just under names that read correctly next to a
+   ScheduleRun's own vocabulary ("running"/"success"/"error") instead of
+   an agent's ("creating"/"running"/"stopped"/...). */
+.schedule-run-list__status {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	font-size: var(--font-sm2);
+}
+.status-dot.schedule-run-status--running { background: var(--status-creating); }
+.status-dot.schedule-run-status--success { background: var(--status-running); }
+.status-dot.schedule-run-status--error { background: var(--status-error); }
+
+.schedule-run-list__started,
+.schedule-run-list__finished { color: var(--fg-dim); font-size: var(--font-xs); }
+
+.schedule-run-list__no-agent { color: var(--fg-dim); font-size: var(--font-xs); font-style: italic; margin-left: auto; }
+
+.schedule-run-list__open-agent,
+.schedule-run-list__open-files { margin-left: auto; white-space: nowrap; }
 
 /* --- Anthropic login view --- */
 .login__hint { color: var(--fg-dim); font-size: 13px; padding: 8px 12px; margin: 0; }
@@ -942,6 +1059,10 @@ html, body {
 }
 
 .activity-btn {
+	margin-bottom: var(--space-5);
+}
+
+.templates-btn {
 	margin-bottom: var(--space-5);
 }
 
