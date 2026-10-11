@@ -526,58 +526,78 @@
 	// scheduling ones this feature adds.
 	function renderTemplateForm(t) {
 		t = t || {};
+		var backendValue = t.backend || '';
+		var autoModeValue = t.auto_mode || '';
 		return (
 			'<form class="template-form">' +
-				'<label class="template-form__row">Name' +
-					'<input type="text" name="name" value="' + escapeHTML(t.name || '') + '" required>' +
-				'</label>' +
-				'<label class="template-form__row">Description' +
-					'<textarea name="description">' + escapeHTML(t.description || '') + '</textarea>' +
-				'</label>' +
-				'<label class="template-form__row">Backend' +
-					'<input type="text" name="backend" value="' + escapeHTML(t.backend || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Harness' +
-					'<select name="harness">' +
-						'<option value="">—</option>' +
-						'<option value="claude-code"' + (t.harness === 'claude-code' ? ' selected' : '') + '>claude-code</option>' +
-						'<option value="opencode"' + (t.harness === 'opencode' ? ' selected' : '') + '>opencode</option>' +
-					'</select>' +
-				'</label>' +
-				'<label class="template-form__row">Model' +
-					'<input type="text" name="model" value="' + escapeHTML(t.model || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Fast model' +
-					'<input type="text" name="fast_model" value="' + escapeHTML(t.fast_model || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Ollama URL' +
-					'<input type="text" name="ollama_url" value="' + escapeHTML(t.ollama_url || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Repo' +
-					'<input type="text" name="repo" value="' + escapeHTML(t.repo || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Auto-compact threshold' +
-					'<input type="text" name="auto_compact_threshold" value="' + escapeHTML(t.auto_compact_threshold || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Max context tokens' +
-					'<input type="text" name="max_context_tokens" value="' + escapeHTML(t.max_context_tokens || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Image tag' +
-					'<input type="text" name="image_tag" value="' + escapeHTML(t.image_tag || '') + '">' +
-				'</label>' +
-				'<label class="template-form__row">Auto mode' +
-					'<input type="text" name="auto_mode" value="' + escapeHTML(t.auto_mode || '') + '">' +
-				'</label>' +
-				'<fieldset class="template-form__schedule">' +
-					'<legend>Scheduling</legend>' +
-					'<label class="template-form__row">' +
+				'<section class="template-form__section">' +
+					'<h3 class="template-form__section-heading">Agent configuration</h3>' +
+					'<label class="template-form__row">Name' +
+						'<input type="text" name="name" value="' + escapeHTML(t.name || '') + '" required>' +
+					'</label>' +
+					'<label class="template-form__row">Description' +
+						'<textarea name="description">' + escapeHTML(t.description || '') + '</textarea>' +
+					'</label>' +
+					'<label class="template-form__row">Backend' +
+						'<select name="backend">' +
+							'<option value="">— operator default —</option>' +
+							'<option value="ollama"' + (backendValue === 'ollama' ? ' selected' : '') + '>ollama</option>' +
+							'<option value="anthropic"' + (backendValue === 'anthropic' ? ' selected' : '') + '>anthropic</option>' +
+						'</select>' +
+					'</label>' +
+					'<label class="template-form__row">Harness' +
+						'<select name="harness">' +
+							'<option value="">—</option>' +
+							'<option value="claude-code"' + (t.harness === 'claude-code' ? ' selected' : '') + '>claude-code</option>' +
+							'<option value="opencode"' + (t.harness === 'opencode' ? ' selected' : '') + '>opencode</option>' +
+						'</select>' +
+					'</label>' +
+					'<label class="template-form__row">Repo' +
+						'<input type="text" name="repo" value="' + escapeHTML(t.repo || '') + '">' +
+					'</label>' +
+					'<label class="template-form__row">Auto mode' +
+						'<select name="auto_mode">' +
+							'<option value="">— operator default —</option>' +
+							'<option value="on"' + (autoModeValue === 'on' ? ' selected' : '') + '>on</option>' +
+							'<option value="off"' + (autoModeValue === 'off' ? ' selected' : '') + '>off</option>' +
+						'</select>' +
+					'</label>' +
+				'</section>' +
+				'<details class="template-form__advanced">' +
+					'<summary class="template-form__advanced-summary">Advanced</summary>' +
+					'<div class="template-form__advanced-body">' +
+						'<label class="template-form__row">Model' +
+							'<input type="text" name="model" value="' + escapeHTML(t.model || '') + '">' +
+						'</label>' +
+						'<label class="template-form__row">Fast model' +
+							'<input type="text" name="fast_model" value="' + escapeHTML(t.fast_model || '') + '">' +
+						'</label>' +
+						'<label class="template-form__row">Ollama URL' +
+							'<input type="text" name="ollama_url" value="' + escapeHTML(t.ollama_url || '') + '">' +
+						'</label>' +
+						'<label class="template-form__row">Auto-compact threshold' +
+							'<input type="text" name="auto_compact_threshold" value="' + escapeHTML(t.auto_compact_threshold || '') + '">' +
+						'</label>' +
+						'<label class="template-form__row">Max context tokens' +
+							'<input type="text" name="max_context_tokens" value="' + escapeHTML(t.max_context_tokens || '') + '">' +
+						'</label>' +
+						'<label class="template-form__row">Image tag' +
+							'<input type="text" name="image_tag" value="' + escapeHTML(t.image_tag || '') + '">' +
+						'</label>' +
+					'</div>' +
+				'</details>' +
+				'<section class="template-form__section template-form__section--schedule">' +
+					'<h3 class="template-form__section-heading">Scheduling</h3>' +
+					'<label class="template-form__row template-form__row--inline">' +
 						'<input type="checkbox" name="enabled"' + (t.enabled ? ' checked' : '') + '> Enabled' +
 					'</label>' +
 					'<label class="template-form__row">Schedule (cron)' +
 						'<input type="text" name="schedule" value="' + escapeHTML(t.schedule || '') + '" placeholder="0 9 * * *">' +
+						'<span class="template-form__help">Standard 5-field cron, evaluated in UTC. Required, along with Harness/Task/On complete, once set.</span>' +
 					'</label>' +
 					'<label class="template-form__row">Task' +
 						'<textarea name="task">' + escapeHTML(t.task || '') + '</textarea>' +
+						'<span class="template-form__help">The prompt each triggered run gets, as a one-shot task (Claude Code only).</span>' +
 					'</label>' +
 					'<label class="template-form__row">On complete' +
 						'<select name="on_complete">' +
@@ -587,7 +607,7 @@
 							'<option value="leave"' + (t.on_complete === 'leave' ? ' selected' : '') + '>Leave</option>' +
 						'</select>' +
 					'</label>' +
-				'</fieldset>' +
+				'</section>' +
 				'<div class="template-form__actions">' +
 					'<button class="template-form__save btn btn--primary" type="submit">Save</button>' +
 				'</div>' +
@@ -621,7 +641,10 @@
 			}
 			return (
 				'<li class="schedule-run-list__row" data-run-id="' + escapeHTML(r.id) + '" data-agent-id="' + agentID + '">' +
-					'<span class="schedule-run-list__status schedule-run-list__status--' + escapeHTML(r.status) + '">' + escapeHTML(r.status) + '</span>' +
+					'<span class="schedule-run-list__status">' +
+						'<span class="status-dot schedule-run-status--' + escapeHTML(r.status) + '"></span>' +
+						escapeHTML(r.status) +
+					'</span>' +
 					'<span class="schedule-run-list__started">' + escapeHTML(r.started_at || '') + '</span>' +
 					'<span class="schedule-run-list__finished">' + escapeHTML(r.finished_at || '—') + '</span>' +
 					link +
