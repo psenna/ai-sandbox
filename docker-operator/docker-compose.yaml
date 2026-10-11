@@ -118,7 +118,7 @@ services:
   # shared dinernet, connecting dependaproxy into each agent's per-agent
   # dinernet is the operator's job at create time, not compose's.
   dependaproxy:
-    image: ghcr.io/psenna/dependaproxy:v0.0.7
+    image: ghcr.io/psenna/dependaproxy:v0.0.8
     container_name: docker-operator-dependaproxy
     restart: unless-stopped
     depends_on:

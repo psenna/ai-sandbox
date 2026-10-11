@@ -84,7 +84,7 @@ Shared, singleton services (one set, reused by every agent):
 | `ollama` | `ollama/ollama:latest` | LLM server, Anthropic-compatible `/v1/messages`. `:cloud` + local models. |
 | `git-proxy` | `ghcr.io/psenna/git-proxy:v0.0.11` | Policy gateway holding the GitHub PAT. `8080` (git) + `8090` (broker) on `127.0.0.1`. |
 | `postgres` | `postgres:18` | DependaProxy's trust-anchor storage. Reachable only by `dependaproxy`. |
-| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.7` | Validates + hash-verifies every npm / PyPI / Go package; serves `/npm` `/pypi` `/goproxy` + an admin dashboard at `/`. |
+| `dependaproxy` | `ghcr.io/psenna/dependaproxy:v0.0.8` | Validates + hash-verifies every npm / PyPI / Go package; serves `/npm` `/pypi` `/goproxy` + an admin dashboard at `/`. |
 | `docker-operator` | built from `docker-operator/Dockerfile` | The orchestrator: REST API + web UI on `127.0.0.1:${LISTEN_PORT:-8000}`, drives Docker over a bind-mounted socket. |
 
 Then, **per agent, on demand**, the operator creates: an agent container
@@ -133,11 +133,13 @@ Full topology, resource naming, and the security boundary:
    If a newer tag is out, bump the `git-proxy` `image:` line in
    `docker-operator/docker-compose.yaml`.
 
-3. **`ghcr.io/psenna/dependaproxy:v0.0.7`** published (the dependaproxy repo's
+3. **`ghcr.io/psenna/dependaproxy:v0.0.8`** published (the dependaproxy repo's
    `release` workflow pushes it on every GitHub release). v0.0.6/v0.0.7 land the
    security review (PyPI file-version binding, a per-project validated-artifact
-   trust store, provenance bound to the served digest). The sandbox runs it with
-   auth disabled (`auth.token: ""` in `dependaproxy.yaml`).
+   trust store, provenance bound to the served digest); v0.0.8 adds the
+   `/pypi/upstream/{host}/{path...}` lockfile-portability alias route (#185) and
+   an OCI/container-registry adapter (#190). The sandbox runs it with auth
+   disabled (`auth.token: ""` in `dependaproxy.yaml`).
 
 4. **A GitHub fine-grained PAT** for the repo(s) agents will work on
    (https://github.com/settings/personal-access-tokens):
