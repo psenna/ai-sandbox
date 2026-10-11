@@ -475,33 +475,19 @@
 		);
 	}
 
-	// scheduleSummary renders a human-readable one-liner for a template's
-	// cron schedule, or '' when it has none -- the Templates list's own
-	// cron-to-English isn't ambitious (it shows the raw expression plus
-	// enabled/disabled), since a full English-cron translator is out of
-	// scope for this feature.
-	function scheduleSummary(t) {
-		if (!t || !t.schedule) return '';
-		return escapeHTML(t.schedule) + (t.enabled ? ' (enabled)' : ' (paused)');
-	}
-
-	// renderTemplatesPage renders the standalone Templates page (issue:
-	// scheduled agents, Task 6): every saved template, alphabetically by
-	// name, with its schedule summary and Edit/Delete actions, a "New
-	// template" button, a detail slot the Edit/New flow fills with
-	// renderTemplateForm (plus renderScheduleRunList once a template has an
-	// id), and an error line for a failed load/save/delete.
+	// renderTemplatesPage renders the standalone Templates page: every
+	// saved template, alphabetically by name, with Edit/Delete actions, a
+	// "New template" button, a detail slot the Edit/New flow fills with
+	// renderTemplateForm, and an error line for a failed load/save/delete.
 	function renderTemplatesPage(templates) {
 		var rows = (templates || []).slice().sort(function (a, b) {
 			var an = (a && a.name) || '';
 			var bn = (b && b.name) || '';
 			return an < bn ? -1 : an > bn ? 1 : 0;
 		}).map(function (t) {
-			var summary = scheduleSummary(t);
 			return (
 				'<li class="templates-page__row" data-template-id="' + escapeHTML(t.id) + '">' +
 					'<span class="templates-page__name">' + escapeHTML(t.name || '(unnamed template)') + '</span>' +
-					(summary ? '<span class="templates-page__schedule">' + summary + '</span>' : '') +
 					'<button class="templates-page__edit btn btn--ghost btn--sm" type="button">Edit</button>' +
 					'<button class="templates-page__delete btn btn--danger btn--sm" type="button">Delete</button>' +
 				'</li>'
@@ -520,10 +506,102 @@
 		);
 	}
 
+	// cronAgentScheduleSummary renders a human-readable one-liner for a cron
+	// agent's cron schedule, or '' when it has none. Renamed/relocated from
+	// the old Templates-page scheduleSummary, now that the schedule lives on
+	// CronAgent, not Template.
+	function cronAgentScheduleSummary(ca) {
+		if (!ca || !ca.schedule) return '';
+		return escapeHTML(ca.schedule) + (ca.enabled ? ' (enabled)' : ' (paused)');
+	}
+
+	// renderCronAgentsPage renders the standalone Cron Agents page: every
+	// saved cron agent, alphabetically by name, with its schedule summary and
+	// Edit/Delete actions, a "New cron agent" button, a detail slot the
+	// Edit/New flow fills with renderCronAgentForm (plus renderScheduleRunList
+	// once a cron agent has an id), and an error line for a failed
+	// load/save/delete. Mirrors renderTemplatesPage's own shape exactly.
+	function renderCronAgentsPage(cronAgents) {
+		var rows = (cronAgents || []).slice().sort(function (a, b) {
+			var an = (a && a.name) || '';
+			var bn = (b && b.name) || '';
+			return an < bn ? -1 : an > bn ? 1 : 0;
+		}).map(function (ca) {
+			var summary = cronAgentScheduleSummary(ca);
+			return (
+				'<li class="cron-agents-page__row" data-cron-agent-id="' + escapeHTML(ca.id) + '">' +
+					'<span class="cron-agents-page__name">' + escapeHTML(ca.name || '(unnamed cron agent)') + '</span>' +
+					(summary ? '<span class="cron-agents-page__schedule">' + summary + '</span>' : '') +
+					'<button class="cron-agents-page__edit btn btn--ghost btn--sm" type="button">Edit</button>' +
+					'<button class="cron-agents-page__delete btn btn--danger btn--sm" type="button">Delete</button>' +
+				'</li>'
+			);
+		}).join('');
+		return (
+			'<div class="cron-agents-page">' +
+				'<div class="cron-agents-page__header">' +
+					'<h2>Cron Agents</h2>' +
+					'<button class="cron-agents-page__new btn btn--primary" type="button">New cron agent</button>' +
+				'</div>' +
+				'<ul class="cron-agents-page__list">' + rows + '</ul>' +
+				'<div class="cron-agents-page__detail" hidden></div>' +
+				'<p class="cron-agents-page__error" role="alert" hidden></p>' +
+			'</div>'
+		);
+	}
+
+	// renderCronAgentForm renders the edit form for one cron agent (or a blank
+	// one for "New cron agent" when ca is null/undefined): Name, a Template
+	// picker (populated from templates, the same list GET /api/templates
+	// returns), Schedule, Enabled, Task, On complete.
+	function renderCronAgentForm(ca, templates) {
+		ca = ca || {};
+		var templateOptions = '<option value="">— Select a template —</option>' +
+			(templates || []).slice().sort(function (a, b) {
+				var an = (a && a.name) || '';
+				var bn = (b && b.name) || '';
+				return an < bn ? -1 : an > bn ? 1 : 0;
+			}).map(function (t) {
+				var label = t.name ? escapeHTML(t.name) : '(unnamed template)';
+				return '<option value="' + escapeHTML(t.id) + '"' + (ca.template_id === t.id ? ' selected' : '') + '>' + label + '</option>';
+			}).join('');
+		return (
+			'<form class="cron-agent-form">' +
+				'<label class="cron-agent-form__row">Name' +
+					'<input type="text" name="name" value="' + escapeHTML(ca.name || '') + '" required>' +
+				'</label>' +
+				'<label class="cron-agent-form__row">Template' +
+					'<select name="template_id" required>' + templateOptions + '</select>' +
+				'</label>' +
+				'<label class="cron-agent-form__row">Schedule (cron)' +
+					'<input type="text" name="schedule" value="' + escapeHTML(ca.schedule || '') + '" placeholder="0 9 * * *">' +
+					'<span class="cron-agent-form__help">Standard 5-field cron, evaluated in UTC.</span>' +
+				'</label>' +
+				'<label class="cron-agent-form__row cron-agent-form__row--inline">' +
+					'<input type="checkbox" name="enabled"' + (ca.enabled ? ' checked' : '') + '> Enabled' +
+				'</label>' +
+				'<label class="cron-agent-form__row">Task' +
+					'<textarea name="task">' + escapeHTML(ca.task || '') + '</textarea>' +
+					'<span class="cron-agent-form__help">The prompt each triggered run gets, as a one-shot task (Claude Code only).</span>' +
+				'</label>' +
+				'<label class="cron-agent-form__row">On complete' +
+					'<select name="on_complete">' +
+						'<option value="">—</option>' +
+						'<option value="stop"' + (ca.on_complete === 'stop' ? ' selected' : '') + '>Stop</option>' +
+						'<option value="delete"' + (ca.on_complete === 'delete' ? ' selected' : '') + '>Delete</option>' +
+						'<option value="leave"' + (ca.on_complete === 'leave' ? ' selected' : '') + '>Leave</option>' +
+					'</select>' +
+				'</label>' +
+				'<div class="cron-agent-form__actions">' +
+					'<button class="cron-agent-form__save btn btn--primary" type="submit">Save</button>' +
+				'</div>' +
+			'</form>'
+		);
+	}
+
 	// renderTemplateForm renders the edit form for one template (or a blank
 	// one for "New template" when t is null/undefined) -- every field a
-	// Template now carries, the 9 pre-existing agent-config ones plus the 5
-	// scheduling ones this feature adds.
+	// Template carries, the 9 agent-config ones.
 	function renderTemplateForm(t) {
 		t = t || {};
 		var backendValue = t.backend || '';
@@ -586,28 +664,6 @@
 						'</label>' +
 					'</div>' +
 				'</details>' +
-				'<section class="template-form__section template-form__section--schedule">' +
-					'<h3 class="template-form__section-heading">Scheduling</h3>' +
-					'<label class="template-form__row template-form__row--inline">' +
-						'<input type="checkbox" name="enabled"' + (t.enabled ? ' checked' : '') + '> Enabled' +
-					'</label>' +
-					'<label class="template-form__row">Schedule (cron)' +
-						'<input type="text" name="schedule" value="' + escapeHTML(t.schedule || '') + '" placeholder="0 9 * * *">' +
-						'<span class="template-form__help">Standard 5-field cron, evaluated in UTC. Required, along with Harness/Task/On complete, once set.</span>' +
-					'</label>' +
-					'<label class="template-form__row">Task' +
-						'<textarea name="task">' + escapeHTML(t.task || '') + '</textarea>' +
-						'<span class="template-form__help">The prompt each triggered run gets, as a one-shot task (Claude Code only).</span>' +
-					'</label>' +
-					'<label class="template-form__row">On complete' +
-						'<select name="on_complete">' +
-							'<option value="">—</option>' +
-							'<option value="stop"' + (t.on_complete === 'stop' ? ' selected' : '') + '>Stop</option>' +
-							'<option value="delete"' + (t.on_complete === 'delete' ? ' selected' : '') + '>Delete</option>' +
-							'<option value="leave"' + (t.on_complete === 'leave' ? ' selected' : '') + '>Leave</option>' +
-						'</select>' +
-					'</label>' +
-				'</section>' +
 				'<div class="template-form__actions">' +
 					'<button class="template-form__save btn btn--primary" type="submit">Save</button>' +
 				'</div>' +
@@ -615,18 +671,18 @@
 		);
 	}
 
-	// renderScheduleRunList renders a template's run history, newest first
+	// renderScheduleRunList renders a cron agent's run history, newest first
 	// (the API already returns it in that order -- see
-	// ListScheduleRunsByTemplate). onComplete is the template's completion
+	// ListScheduleRunsByCronAgent). onComplete is the cron agent's completion
 	// policy, which decides each row's link:
 	//   - still running, or OnComplete "stop"/"leave" (the agent likely still
-	//     exists): an "Open agent" button (templates.js jumps to it, falling
+	//     exists): an "Open agent" button (cronagents.js jumps to it, falling
 	//     back to the Files browser if it is gone after all);
 	//   - finished with OnComplete "delete": a button opening the Files
 	//     browser, where the archived transcript lives at transcripts/<id>/
 	//     (named in the label -- renderFileBrowser has no initial-path
 	//     parameter, so this opens the store root, not a deep link);
-	//   - no agent at all (CreateFromTemplate failed): no link.
+	//   - no agent at all (create failed): no link.
 	function renderScheduleRunList(runs, onComplete) {
 		var rows = (runs || []).map(function (r) {
 			var link;
@@ -1402,6 +1458,8 @@
 		renderTemplateBar: renderTemplateBar,
 		renderTemplatesPage: renderTemplatesPage,
 		renderTemplateForm: renderTemplateForm,
+		renderCronAgentsPage: renderCronAgentsPage,
+		renderCronAgentForm: renderCronAgentForm,
 		renderScheduleRunList: renderScheduleRunList,
 		renderAgentInfo: renderAgentInfo,
 		renderSettingsOverlay: renderSettingsOverlay,

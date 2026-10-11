@@ -44,6 +44,7 @@
 	var filesBtn = document.getElementById('files-btn');
 	var activityBtn = document.getElementById('activity-btn');
 	var templatesBtn = document.getElementById('templates-btn');
+	var cronAgentsBtn = document.getElementById('cron-agents-btn');
 	var settingsBtn = document.getElementById('settings-btn');
 	var mainArea = document.getElementById('main-area');
 	var sidebarEl = document.getElementById('sidebar');
@@ -831,6 +832,17 @@
 		});
 	}
 
+	if (cronAgentsBtn) {
+		cronAgentsBtn.addEventListener('click', function () {
+			if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
+			state.selectedID = null;
+			renderSidebar();
+			if (typeof window.renderCronAgentsPage === 'function') {
+				window.renderCronAgentsPage(mainArea);
+			}
+		});
+	}
+
 	// The Activity page follows the issue's pattern -- pure markup in
 	// render.js, claim/release in app.js -- with no dashboard.js middle file:
 	// the page has no fetch and no listeners, and the mounted-check
@@ -875,7 +887,7 @@
 		refreshAgents().then(function () { selectAgent(id); }).catch(function () { selectAgent(id); });
 	};
 
-	// openAgent lets templates.js's run history jump to a scheduled run's
+	// openAgent lets cronagents.js's run history jump to a scheduled run's
 	// agent exactly as a sidebar click would. Returns false (doing nothing)
 	// when id is not in the current agent list -- deleted, or never existed
 	// -- so the caller can fall back to somewhere else.
