@@ -410,7 +410,7 @@ func Open(path string, maxAgents int) (*Store, error) {
 		return nil, fmt.Errorf("opening the state database %q: %w", path, err)
 	}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bucketAgents, bucketSettings, bucketTemplates, bucketAnthropicAccounts} {
+		for _, name := range [][]byte{bucketAgents, bucketSettings, bucketTemplates, bucketAnthropicAccounts, bucketScheduleRuns} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("creating the %q bucket: %w", name, err)
 			}
