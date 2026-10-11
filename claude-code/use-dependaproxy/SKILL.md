@@ -21,6 +21,16 @@ In the ai-sandbox stack the proxy is `http://dependaproxy:8080` and the public
 registries are **network-blocked** — a client that bypasses the proxy fails with
 a connection error. Do not try to work around the block; route through the proxy.
 
+**The block is not uniform across hosts.** `pypi.org` (the PyPI index) is
+reliably blocked. `files.pythonhosted.org` (the actual artifact/wheel CDN —
+what `uv sync --frozen` and a hash-pinned `pip install` fetch from directly)
+is a Fastly anycast host whose resolved IP varies per query, so the sandbox's
+IP-snapshot block can miss it. Don't treat "direct access isn't blocked" as a
+signal that going around the proxy is safe for PyPI artifacts — a request that
+reaches the real CDN skips every validation gate (CVE/malware/age) silently.
+Always route through the proxy rather than relying on the network block as a
+backstop.
+
 Every agent gets its **own private** Docker network (`dinernet`), so there is
 no single fixed DependaProxy address — the entrypoint writes the address
 assigned to *this* agent's network to `/workspace/dependaproxy-ip`. Read it,
@@ -89,10 +99,31 @@ anyone with direct PyPI access.**
 ### PyPI — the `/pypi/upstream/` alias (reversible URL rewrite)
 
 The pypi adapter serves `GET /pypi/upstream/{host}/{path...}` as an alias for
-`/pypi/files/{name}/{version}/{filename}` (`upstream_alias`, default on). `{host}`
-must be in the registry's upstream allowlist; the path prefix is decoration and
-is never fetched; the bytes go through the **same trust flow** as `/pypi/files/`.
-So converting a canonical lock to a proxy lock — and back — is one `sed`:
+`/pypi/files/{name}/{version}/{filename}` (`upstream_alias`, default on when the
+deployment's dependaproxy build has it). `{host}` must be in the registry's
+upstream allowlist; the path prefix is decoration and is never fetched; the
+bytes go through the **same trust flow** as `/pypi/files/`.
+
+**Verify the route exists before relying on this recipe** — it shipped in
+dependaproxy issue #185, merged one day after the `v0.0.7` tag, so any
+deployment still pinned to `v0.0.7` or earlier doesn't have it yet:
+
+```sh
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
+  "http://dependaproxy:8080/pypi/upstream/pypi.org/x"
+```
+
+A bare `404` with `content-type: text/plain; charset=utf-8` and body literally
+`404 page not found` is Go's stdlib default-mux miss — the route isn't
+registered at all (old dependaproxy build). A response from the app itself
+(any status, but a *different*, descriptive plain-text body, e.g. `upstream
+host not allowlisted` or `not found`) means the route exists and you're good.
+If it's the stdlib 404, this recipe isn't available yet — ask the operator to
+bump the pinned dependaproxy image once a release includes #185; there's no
+client-side workaround.
+
+So, once confirmed available, converting a canonical lock to a proxy lock —
+and back — is one `sed`:
 
 ```sh
 cp uv.lock /tmp/uv.lock.bak
@@ -119,10 +150,18 @@ cp /tmp/uv.lock.bak uv.lock          # restore BEFORE any git operation
   host — never bake `user:token@` into the committed lock.
 - **PDM** (`static-urls = true`) has the same shape: the same `sed` on `pdm.lock`.
 
-### npm — nothing to add
+### npm — usually nothing to add
 
-`/npm/{pkg}/-/{file}.tgz` already mirrors `registry.npmjs.org/{pkg}/-/{file}.tgz`,
-so `package-lock.json`'s `resolved` URLs work after:
+`/npm/{pkg}/-/{file}.tgz` already mirrors `registry.npmjs.org/{pkg}/-/{file}.tgz`.
+npm ≥ 9.10 (bundled with `node:22`) defaults `replace-registry-host` to
+`npmjs`, which already rewrites a `resolved` URL at install time whenever its
+host is `registry.npmjs.org` — so a committed `package-lock.json` with
+canonical URLs installs through the proxy with **zero config and zero file
+edits**, verified against both `npm install` and `npm ci`. Nothing to set.
+
+Only if `npm config get replace-registry-host` comes back `never` (an
+operator override, or a pre-9.10 npm) or the lock's `resolved` host is some
+other mirror (not `registry.npmjs.org`) do you need:
 
 ```sh
 npm config set replace-registry-host always     # rewrites resolved URLs to the configured registry host
