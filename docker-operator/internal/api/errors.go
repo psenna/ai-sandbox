@@ -64,6 +64,10 @@ const (
 	// references the tag -- by its image reference or by the image ID its
 	// container last started from.
 	CodeImageTagInUse = "image_tag_in_use"
+
+	// CodeTemplateInUse is returned (409) by DELETE /api/templates/{id}
+	// when some CronAgent still references the template by TemplateID.
+	CodeTemplateInUse = "template_in_use"
 )
 
 // writeJSON writes body as status with a JSON content type. Encode errors
