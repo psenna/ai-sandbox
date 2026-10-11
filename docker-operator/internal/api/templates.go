@@ -166,12 +166,16 @@ func (h *Handler) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
-// handleDeleteTemplate always answers 200, whether or not the template
-// existed, matching handleDelete's idempotent stance for an agent.
+// handleDeleteTemplate always answers 200 for a template that did not exist
+// (matching handleDelete's idempotent stance for an agent), but a template
+// still referenced by a CronAgent comes back as store.ErrTemplateInUse, not
+// success, so that case is routed through templateError for the same 409 a
+// create/update collision gets -- not internalError, which would otherwise
+// mask an expected, user-actionable conflict as a 500.
 func (h *Handler) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.mgr.DeleteTemplate(r.Context(), id); err != nil {
-		h.internalError(w, "deleting template "+id, err)
+		h.templateError(w, "deleting template "+id, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})

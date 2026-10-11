@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -224,6 +225,28 @@ func TestDeleteTemplate_IsIdempotent(t *testing.T) {
 	rec := doJSON(t, h, "DELETE", "/api/templates/tpl_never_existed", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+}
+
+// TestDeleteTemplate_InUse is a regression test for a bug caught by Task 6's
+// manual smoke check (not by any existing unit test, since fakeManager's
+// DeleteTemplate never synthesizes store.ErrTemplateInUse on its own):
+// handleDeleteTemplate used to route every mgr.DeleteTemplate error through
+// internalError, turning the expected "still referenced by a CronAgent"
+// conflict into a 500 instead of the 409 handleCreateTemplate/
+// handleUpdateTemplate already give the same sentinel via templateError.
+func TestDeleteTemplate_InUse(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	mgr.deleteTemplateErr = fmt.Errorf("deleting template %q: referenced by cron agent %q: %w", "tpl_1", "ca_1", store.ErrTemplateInUse)
+
+	rec := doJSON(t, h, "DELETE", "/api/templates/tpl_1", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeTemplateInUse {
+		t.Errorf("error code = %q, want %q", got, CodeTemplateInUse)
 	}
 }
 

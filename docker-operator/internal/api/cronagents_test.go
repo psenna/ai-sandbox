@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 
 func seedTemplateForCronAgent(t *testing.T, mgr *fakeManager) store.Template {
 	t.Helper()
-	tmpl, err := mgr.CreateTemplate(nil, store.TemplateCreateSpec{Name: "base config", Harness: "claude-code"})
+	tmpl, err := mgr.CreateTemplate(context.Background(), store.TemplateCreateSpec{Name: "base config", Harness: "claude-code"})
 	if err != nil {
 		t.Fatalf("seeding a template: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestCreateCronAgent_UnknownOnCompleteRejected(t *testing.T) {
 func TestCreateCronAgent_OpencodeTemplateRejected(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, nil)
-	tmpl, err := mgr.CreateTemplate(nil, store.TemplateCreateSpec{Name: "opencode base", Harness: "opencode"})
+	tmpl, err := mgr.CreateTemplate(context.Background(), store.TemplateCreateSpec{Name: "opencode base", Harness: "opencode"})
 	if err != nil {
 		t.Fatalf("seeding an opencode template: %v", err)
 	}
