@@ -14,7 +14,9 @@
 # A CLEAN exit (status 0 -- a deliberate `/exit`, or `claude -p` finishing
 # its one-shot run) is left alone: this script does not resurrect a session
 # the user asked to end. Only a NON-ZERO exit is treated as "unintentional"
-# and restarted.
+# and restarted. On that clean-exit path the script also writes the
+# completion sentinel /workspace/.task-complete (see the inline comment at
+# the end of the script).
 #
 # "$@" are exactly the args tmux-boot.sh forwards on the FIRST invocation
 # (create.go's autoModeArgs: nothing, or "--permission-mode auto", followed
@@ -72,3 +74,11 @@ while [ "$status" -ne 0 ]; do
 done
 
 echo "claude-supervisor: claude exited 0 (deliberate); not restarting" >&2
+# Written only on this clean-exit path, never on the crash-loop give-up
+# path a few lines above (which exits non-zero) -- this is how
+# internal/agent.CheckScheduledRunStatus tells a scheduled run's
+# `claude -p` finishing cleanly apart from the supervisor simply giving up
+# on a broken claude. Every agent's script writes this now, not just
+# scheduled ones; it is inert (never read by anything) unless a
+# ScheduleRun's completion check is specifically polling for it.
+touch /workspace/.task-complete
