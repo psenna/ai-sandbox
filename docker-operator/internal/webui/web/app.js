@@ -43,6 +43,7 @@
 	var newAgentBtn = document.getElementById('new-agent-btn');
 	var filesBtn = document.getElementById('files-btn');
 	var activityBtn = document.getElementById('activity-btn');
+	var templatesBtn = document.getElementById('templates-btn');
 	var settingsBtn = document.getElementById('settings-btn');
 	var mainArea = document.getElementById('main-area');
 	var sidebarEl = document.getElementById('sidebar');
@@ -300,37 +301,6 @@
 		});
 	}
 
-	// infraFieldsFromForm reads the 9 template-eligible fields off the
-	// current form, trimmed, following the exact same "send only when it
-	// differs from the operator default" rule wireCreateForm's own submit
-	// body already uses for image_tag -- so saving a template pins a tag
-	// only when the user genuinely picked a non-default one.
-	// harness is deliberately excluded from these fields: store.Template has no
-	// Harness field yet, so a saved template can't carry it.
-	function infraFieldsFromForm(form) {
-		var backend = currentBackendOf(form);
-		var fields = {
-			backend: backend,
-			repo: form.querySelector('.create-form__repo').value.trim(),
-			auto_compact_threshold: form.querySelector('.create-form__auto-compact').value.trim(),
-			max_context_tokens: form.querySelector('.create-form__max-context-tokens').value.trim(),
-			auto_mode: form.querySelector('.create-form__auto-mode').value,
-			image_tag: '',
-			model: '',
-			fast_model: '',
-			ollama_url: '',
-		};
-		var sel = form.querySelector('.create-form__image-tag');
-		var harnessDefaultTag = window.Render.imageTagsForHarness(state.agentImage, currentHarnessOf(form)).defaultTag;
-		if (sel && sel.value && sel.value !== harnessDefaultTag) fields.image_tag = sel.value;
-		if (backend === 'ollama') {
-			fields.model = form.querySelector('.create-form__model').value.trim();
-			fields.fast_model = form.querySelector('.create-form__fast-model').value.trim();
-			fields.ollama_url = form.querySelector('.create-form__ollama-url').value.trim();
-		}
-		return fields;
-	}
-
 	// applyTemplateToForm rebuilds ONLY the .create-form element (via
 	// renderCreateForm's opts.values, the same mechanism the update-agent
 	// form already uses for an agent record) with the selected template's 9
@@ -384,82 +354,27 @@
 		wireTemplateBar(selectedId);
 	}
 
+	// wireTemplateBar wires the picker's one control: picking a template
+	// seeds the create-agent form with its 9 reusable infra fields
+	// (applyTemplateToForm). Saving, updating and deleting a template's full
+	// definition now happens on the standalone Templates page
+	// (window.renderTemplatesPage, templates.js) -- this bar has nothing
+	// left to wire for those.
 	function wireTemplateBar(selectedId) {
 		var templateBar = mainArea.querySelector('.template-bar');
 		var templateSelect = templateBar.querySelector('.template-bar__select');
-		var saveBtn = templateBar.querySelector('.template-bar__save');
-		var deleteBtn = templateBar.querySelector('.template-bar__delete');
-		var errorEl = templateBar.querySelector('.template-bar__error');
 		if (selectedId) templateSelect.value = selectedId;
 
 		function currentTemplate() {
 			var matches = state.templates.filter(function (t) { return t.id === templateSelect.value; });
 			return matches.length ? matches[0] : null;
 		}
-		function syncButtons() {
-			var t = currentTemplate();
-			saveBtn.textContent = t ? 'Update template' : 'Save as template';
-			deleteBtn.hidden = !t;
-		}
-		syncButtons();
 
 		templateSelect.addEventListener('change', function () {
-			errorEl.hidden = true;
-			syncButtons();
 			// Blank selection ("— Select a template —") is a deliberate no-op
 			// on the form fields -- it must never silently discard manual edits.
 			var t = currentTemplate();
 			if (t) applyTemplateToForm(t);
-		});
-
-		saveBtn.addEventListener('click', function () {
-			var existing = currentTemplate();
-			var name = window.prompt('Template name:', existing ? existing.name : '');
-			if (name === null) return; // cancelled
-			name = name.trim();
-			if (!name) return;
-
-			var body = Object.assign(
-				{ name: name, description: existing ? existing.description : '' },
-				infraFieldsFromForm(currentForm())
-			);
-			errorEl.hidden = true;
-			saveBtn.disabled = true;
-
-			var save = existing
-				? fetchJSON('/api/templates/' + existing.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-				: fetchJSON('/api/templates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-
-			save.then(function (saved) {
-				return fetchJSON('/api/templates').then(function (data) {
-					state.templates = (data && data.templates) || [];
-					refreshTemplateBar(saved.id);
-				});
-			}).catch(function (e) {
-				saveBtn.disabled = false;
-				errorEl.textContent = e.message;
-				errorEl.hidden = false;
-			});
-		});
-
-		deleteBtn.addEventListener('click', function () {
-			var t = currentTemplate();
-			if (!t) return;
-			window.OperatorConfirm.show(
-				'This cannot be undone.',
-				{ title: 'Delete the template "' + t.name + '"?', confirmLabel: 'Delete', danger: true }
-			).then(function (confirmed) {
-				if (!confirmed) return;
-				fetchJSON('/api/templates/' + t.id, { method: 'DELETE' })
-					.then(function () {
-						state.templates = state.templates.filter(function (x) { return x.id !== t.id; });
-						refreshTemplateBar('');
-					})
-					.catch(function (e) {
-						errorEl.textContent = e.message;
-						errorEl.hidden = false;
-					});
-			});
 		});
 	}
 
@@ -901,6 +816,17 @@
 			renderSidebar();
 			if (typeof window.renderFileBrowser === 'function') {
 				window.renderFileBrowser(mainArea);
+			}
+		});
+	}
+
+	if (templatesBtn) {
+		templatesBtn.addEventListener('click', function () {
+			if (typeof window.teardownActiveView === 'function') window.teardownActiveView();
+			state.selectedID = null;
+			renderSidebar();
+			if (typeof window.renderTemplatesPage === 'function') {
+				window.renderTemplatesPage(mainArea);
 			}
 		});
 	}

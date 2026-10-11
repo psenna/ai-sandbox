@@ -971,8 +971,6 @@ test('renderTemplateBar: empty state shows only the blank option', () => {
 	const html = Render.renderTemplateBar([]);
 	const opts = html.match(/<option[^>]*>[^<]*<\/option>/g);
 	assert.deepEqual(opts, ['<option value="">— Select a template —</option>']);
-	assert.match(html, /class="template-bar__save btn btn--ghost" type="button">Save as template<\/button>/);
-	assert.match(html, /class="template-bar__delete btn btn--danger" type="button" hidden>Delete<\/button>/);
 });
 
 test('renderTemplateBar: null/undefined also renders the empty state', () => {
@@ -1002,6 +1000,43 @@ test('renderTemplateBar: a template name containing HTML is escaped', () => {
 test('renderTemplateBar: an unnamed template shows a placeholder label', () => {
 	const html = Render.renderTemplateBar([{ id: 'tpl_x', name: '' }]);
 	assert.match(html, /\(unnamed template\)/);
+});
+
+test('renderTemplateBar is a pure picker now (no save/delete controls)', () => {
+	const html = Render.renderTemplateBar([{ id: 'tpl_1', name: 'x' }]);
+	assert.match(html, /template-bar__select/);
+	assert.doesNotMatch(html, /template-bar__save/);
+	assert.doesNotMatch(html, /template-bar__delete/);
+});
+
+// --- the Templates page -------------------------------------------------
+
+test('renderTemplatesPage lists templates with a schedule summary', () => {
+	const html = Render.renderTemplatesPage([
+		{ id: 'tpl_1', name: 'Daily report', schedule: '0 9 * * *', enabled: true },
+		{ id: 'tpl_2', name: 'Plain template', schedule: '', enabled: false },
+	]);
+	assert.match(html, /Daily report/);
+	assert.match(html, /Plain template/);
+	assert.match(html, /0 9 \* \* \*/);
+});
+
+test('renderTemplateForm includes the five new scheduling fields', () => {
+	const html = Render.renderTemplateForm({ id: 'tpl_1', name: 'x' });
+	assert.match(html, /name="harness"/);
+	assert.match(html, /name="schedule"/);
+	assert.match(html, /name="enabled"/);
+	assert.match(html, /name="task"/);
+	assert.match(html, /name="on_complete"/);
+});
+
+test('renderScheduleRunList renders status and timestamps, newest first', () => {
+	const html = Render.renderScheduleRunList([
+		{ id: 'run_2', agent_id: 'agt_2', status: 'running', started_at: '2026-01-02T09:00:00Z' },
+		{ id: 'run_1', agent_id: 'agt_1', status: 'success', started_at: '2026-01-01T09:00:00Z' },
+	]);
+	assert.match(html, /running/);
+	assert.match(html, /success/);
 });
 
 // --- the Settings overlay ---------------------------------------------------

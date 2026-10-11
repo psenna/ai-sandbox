@@ -435,12 +435,19 @@
 	}
 
 	// renderTemplateBar renders the template picker sitting above the
-	// create-agent form: a <select> of saved templates (GET /api/templates),
-	// a context-aware save/update button, and a delete button. It is a
-	// separate root element from renderCreateForm's own markup -- inserted
-	// as a sibling by app.js, never spliced into the form string -- so the
-	// update-agent form (terminal.js's openUpdateForm, which also calls
-	// renderCreateForm) is untouched by construction.
+	// create-agent form: a <select> of saved templates (GET /api/templates).
+	// It is a separate root element from renderCreateForm's own markup --
+	// inserted as a sibling by app.js, never spliced into the form string --
+	// so the update-agent form (terminal.js's openUpdateForm, which also
+	// calls renderCreateForm) is untouched by construction.
+	//
+	// A pure picker now (issue: scheduled agents, Task 6): saving/updating/
+	// deleting a template's full definition happens on the standalone
+	// Templates page (renderTemplatesPage/renderTemplateForm below), the one
+	// place that now captures a template's complete 14 fields (9
+	// agent-config plus the 5 scheduling ones). This bar only lets the
+	// create-agent form seed itself from an existing template's 9 reusable
+	// infra fields.
 	//
 	// Options are sorted alphabetically by name for display; the store
 	// itself stays ID-ordered (the same division of labor renderImageTagSelect
@@ -464,13 +471,147 @@
 				'<label class="create-form__row template-bar__row">Template' +
 					'<select class="template-bar__select">' + options + '</select>' +
 				'</label>' +
-				'<div class="template-bar__actions">' +
-					'<button class="template-bar__save btn btn--ghost" type="button">Save as template</button>' +
-					'<button class="template-bar__delete btn btn--danger" type="button" hidden>Delete</button>' +
-				'</div>' +
-				'<p class="template-bar__error" role="alert" hidden></p>' +
 			'</div>'
 		);
+	}
+
+	// scheduleSummary renders a human-readable one-liner for a template's
+	// cron schedule, or '' when it has none -- the Templates list's own
+	// cron-to-English isn't ambitious (it shows the raw expression plus
+	// enabled/disabled), since a full English-cron translator is out of
+	// scope for this feature.
+	function scheduleSummary(t) {
+		if (!t || !t.schedule) return '';
+		return escapeHTML(t.schedule) + (t.enabled ? ' (enabled)' : ' (paused)');
+	}
+
+	// renderTemplatesPage renders the standalone Templates page (issue:
+	// scheduled agents, Task 6): every saved template, alphabetically by
+	// name, with its schedule summary and Edit/Delete actions, a "New
+	// template" button, a detail slot the Edit/New flow fills with
+	// renderTemplateForm (plus renderScheduleRunList once a template has an
+	// id), and an error line for a failed load/save/delete.
+	function renderTemplatesPage(templates) {
+		var rows = (templates || []).slice().sort(function (a, b) {
+			var an = (a && a.name) || '';
+			var bn = (b && b.name) || '';
+			return an < bn ? -1 : an > bn ? 1 : 0;
+		}).map(function (t) {
+			var summary = scheduleSummary(t);
+			return (
+				'<li class="templates-page__row" data-template-id="' + escapeHTML(t.id) + '">' +
+					'<span class="templates-page__name">' + escapeHTML(t.name || '(unnamed template)') + '</span>' +
+					(summary ? '<span class="templates-page__schedule">' + summary + '</span>' : '') +
+					'<button class="templates-page__edit btn btn--ghost btn--sm" type="button">Edit</button>' +
+					'<button class="templates-page__delete btn btn--danger btn--sm" type="button">Delete</button>' +
+				'</li>'
+			);
+		}).join('');
+		return (
+			'<div class="templates-page">' +
+				'<div class="templates-page__header">' +
+					'<h2>Templates</h2>' +
+					'<button class="templates-page__new btn btn--primary" type="button">New template</button>' +
+				'</div>' +
+				'<ul class="templates-page__list">' + rows + '</ul>' +
+				'<div class="templates-page__detail" hidden></div>' +
+				'<p class="templates-page__error" role="alert" hidden></p>' +
+			'</div>'
+		);
+	}
+
+	// renderTemplateForm renders the edit form for one template (or a blank
+	// one for "New template" when t is null/undefined) -- every field a
+	// Template now carries, the 9 pre-existing agent-config ones plus the 5
+	// scheduling ones this feature adds.
+	function renderTemplateForm(t) {
+		t = t || {};
+		return (
+			'<form class="template-form">' +
+				'<label class="template-form__row">Name' +
+					'<input type="text" name="name" value="' + escapeHTML(t.name || '') + '" required>' +
+				'</label>' +
+				'<label class="template-form__row">Description' +
+					'<textarea name="description">' + escapeHTML(t.description || '') + '</textarea>' +
+				'</label>' +
+				'<label class="template-form__row">Backend' +
+					'<input type="text" name="backend" value="' + escapeHTML(t.backend || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Harness' +
+					'<select name="harness">' +
+						'<option value="">—</option>' +
+						'<option value="claude-code"' + (t.harness === 'claude-code' ? ' selected' : '') + '>claude-code</option>' +
+						'<option value="opencode"' + (t.harness === 'opencode' ? ' selected' : '') + '>opencode</option>' +
+					'</select>' +
+				'</label>' +
+				'<label class="template-form__row">Model' +
+					'<input type="text" name="model" value="' + escapeHTML(t.model || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Fast model' +
+					'<input type="text" name="fast_model" value="' + escapeHTML(t.fast_model || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Ollama URL' +
+					'<input type="text" name="ollama_url" value="' + escapeHTML(t.ollama_url || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Repo' +
+					'<input type="text" name="repo" value="' + escapeHTML(t.repo || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Auto-compact threshold' +
+					'<input type="text" name="auto_compact_threshold" value="' + escapeHTML(t.auto_compact_threshold || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Max context tokens' +
+					'<input type="text" name="max_context_tokens" value="' + escapeHTML(t.max_context_tokens || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Image tag' +
+					'<input type="text" name="image_tag" value="' + escapeHTML(t.image_tag || '') + '">' +
+				'</label>' +
+				'<label class="template-form__row">Auto mode' +
+					'<input type="text" name="auto_mode" value="' + escapeHTML(t.auto_mode || '') + '">' +
+				'</label>' +
+				'<fieldset class="template-form__schedule">' +
+					'<legend>Scheduling</legend>' +
+					'<label class="template-form__row">' +
+						'<input type="checkbox" name="enabled"' + (t.enabled ? ' checked' : '') + '> Enabled' +
+					'</label>' +
+					'<label class="template-form__row">Schedule (cron)' +
+						'<input type="text" name="schedule" value="' + escapeHTML(t.schedule || '') + '" placeholder="0 9 * * *">' +
+					'</label>' +
+					'<label class="template-form__row">Task' +
+						'<textarea name="task">' + escapeHTML(t.task || '') + '</textarea>' +
+					'</label>' +
+					'<label class="template-form__row">On complete' +
+						'<select name="on_complete">' +
+							'<option value="">—</option>' +
+							'<option value="stop"' + (t.on_complete === 'stop' ? ' selected' : '') + '>Stop</option>' +
+							'<option value="delete"' + (t.on_complete === 'delete' ? ' selected' : '') + '>Delete</option>' +
+							'<option value="leave"' + (t.on_complete === 'leave' ? ' selected' : '') + '>Leave</option>' +
+						'</select>' +
+					'</label>' +
+				'</fieldset>' +
+				'<div class="template-form__actions">' +
+					'<button class="template-form__save btn btn--primary" type="submit">Save</button>' +
+				'</div>' +
+			'</form>'
+		);
+	}
+
+	// renderScheduleRunList renders a template's run history, newest first
+	// (the API already returns it in that order -- see
+	// ListScheduleRunsByTemplate). Each row links to the live agent (still
+	// around for OnComplete "stop"/"leave") or, once it no longer exists,
+	// nothing further here -- the Files browser is where an archived
+	// transcript lives, and this list does not re-derive that link.
+	function renderScheduleRunList(runs) {
+		var rows = (runs || []).map(function (r) {
+			return (
+				'<li class="schedule-run-list__row" data-run-id="' + escapeHTML(r.id) + '" data-agent-id="' + escapeHTML(r.agent_id) + '">' +
+					'<span class="schedule-run-list__status schedule-run-list__status--' + escapeHTML(r.status) + '">' + escapeHTML(r.status) + '</span>' +
+					'<span class="schedule-run-list__started">' + escapeHTML(r.started_at || '') + '</span>' +
+					'<span class="schedule-run-list__finished">' + escapeHTML(r.finished_at || '—') + '</span>' +
+				'</li>'
+			);
+		}).join('');
+		return '<ul class="schedule-run-list">' + rows + '</ul>';
 	}
 
 	// renderAgentInfo renders the "Agent info" overlay's body from
@@ -1219,6 +1360,9 @@
 		agentChangePolicy: agentChangePolicy,
 		renderCreateForm: renderCreateForm,
 		renderTemplateBar: renderTemplateBar,
+		renderTemplatesPage: renderTemplatesPage,
+		renderTemplateForm: renderTemplateForm,
+		renderScheduleRunList: renderScheduleRunList,
 		renderAgentInfo: renderAgentInfo,
 		renderSettingsOverlay: renderSettingsOverlay,
 		renderAnthropicAccountsPanel: renderAnthropicAccountsPanel,
