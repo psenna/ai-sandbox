@@ -422,6 +422,12 @@ type CreateRequest struct {
 	// never reads this field (see resolveBackend's existingAccountID
 	// parameter).
 	AccountID string
+
+	// OneShotTask, when non-empty, makes the agent's first invocation run
+	// claude -p "<OneShotTask>" instead of starting an interactive session.
+	// Set by CreateFromTemplate from a scheduled Template's Task field;
+	// empty for every ordinary human-initiated create.
+	OneShotTask string
 }
 
 // Create builds one agent end to end: reserve a slot under MAX_AGENTS, create
@@ -501,7 +507,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (store.Agent, e
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
 	}
 
-	if err := m.build(ctx, &a, rs.rb); err != nil {
+	if err := m.build(ctx, &a, rs.rb, req.OneShotTask); err != nil {
 		m.rollback(ctx, a, err)
 		return store.Agent{}, fmt.Errorf("creating agent %q: %w", id, err)
 	}
@@ -661,7 +667,7 @@ func (m *Manager) resolveBackend(ctx context.Context, req CreateRequest, existin
 // the sidecar healthy before the agent container that talks to it, and the
 // dependaproxy address read back before the agent container whose environment
 // carries it.
-func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend) error {
+func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend, oneShotTask string) error {
 	if err := m.stampNames(ctx, a); err != nil {
 		return err
 	}
@@ -685,7 +691,11 @@ func (m *Manager) build(ctx context.Context, a *store.Agent, rb resolvedBackend)
 		return err
 	}
 	m.verifyDependaproxyReachable(ctx, *a)
-	if err := m.startAgentContainer(ctx, a, rb, firstInvocationArgs(*a, sessionFresh)...); err != nil {
+	args := firstInvocationArgs(*a, sessionFresh)
+	if oneShotTask != "" {
+		args = oneShotInvocationArgs(*a, oneShotTask)
+	}
+	if err := m.startAgentContainer(ctx, a, rb, args...); err != nil {
 		return err
 	}
 	if err := m.waitTmuxSession(ctx, *a); err != nil {

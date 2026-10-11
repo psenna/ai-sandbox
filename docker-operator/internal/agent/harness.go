@@ -90,3 +90,15 @@ func firstInvocationArgs(a store.Agent, start sessionStart) []string {
 	}
 	return args
 }
+
+// oneShotInvocationArgs builds the CLI args for a one-shot, non-interactive
+// run: the harness's auto-mode flag (if any), then "-p" and task verbatim.
+// Unlike firstInvocationArgs, this is not a session-resumption concern at
+// all -- a one-shot run is inherently fresh, never continued or resumed --
+// so it is a separate function rather than a fourth sessionStart case.
+// Claude Code only (config.HarnessOpenCode is rejected for a scheduled
+// template at the API layer before this is ever called with one).
+func oneShotInvocationArgs(a store.Agent, task string) []string {
+	args := autoModeArgs(a)
+	return append(args, "-p", task)
+}
