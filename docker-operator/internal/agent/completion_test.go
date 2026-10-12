@@ -24,11 +24,17 @@ func newTestCronAgent(t *testing.T, m *Manager, harness, backend, task, onComple
 	if err != nil {
 		t.Fatalf("CreateTemplate: %v", err)
 	}
-	return store.CronAgent{TemplateID: tmpl.ID, Task: task, OnComplete: onComplete}
+	return store.CronAgent{TemplateID: tmpl.ID, Name: "nightly report", Task: task, OnComplete: onComplete}
 }
 
+// TestCreateFromCronAgent pins spec decision 4: the created Agent's Name
+// comes from the CronAgent's Name (not the Template, which no longer has
+// one), and the CronAgent's Task reaches the agent as its one-shot task --
+// verified the same way TestOneShotInvocationArgs's end-to-end counterparts
+// do, by reading back the real ContainerSpec a build produced
+// (f.ContainerSpecOf) rather than re-deriving the expected args.
 func TestCreateFromCronAgent(t *testing.T) {
-	m, _, _ := newTestManager(t, 5)
+	m, f, _ := newTestManager(t, 5)
 	ctx := context.Background()
 
 	ca := newTestCronAgent(t, m, config.HarnessClaudeCode, config.BackendOllama, "do the daily thing", "")
@@ -38,6 +44,23 @@ func TestCreateFromCronAgent(t *testing.T) {
 	}
 	if a.Harness != config.HarnessClaudeCode {
 		t.Errorf("Harness = %q, want %q", a.Harness, config.HarnessClaudeCode)
+	}
+	if a.Name != ca.Name {
+		t.Errorf("Name = %q, want the cron agent's Name %q", a.Name, ca.Name)
+	}
+
+	spec, ok := f.ContainerSpecOf(a.ContainerID)
+	if !ok {
+		t.Fatalf("ContainerSpecOf(%q): not found", a.ContainerID)
+	}
+	want := oneShotInvocationArgs(a, ca.Task)
+	if len(spec.Cmd) != 1+len(want) || spec.Cmd[0] != tmuxBootPath {
+		t.Fatalf("Cmd = %v, want [%q %v]", spec.Cmd, tmuxBootPath, want)
+	}
+	for i, arg := range want {
+		if spec.Cmd[1+i] != arg {
+			t.Errorf("Cmd[%d] = %q, want %q (the cron agent's Task reaching the one-shot invocation)", 1+i, spec.Cmd[1+i], arg)
+		}
 	}
 }
 
