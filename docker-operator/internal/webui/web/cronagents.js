@@ -41,7 +41,7 @@
 	}
 
 	function render(container) {
-		var state = { cronAgents: [], templates: [] };
+		var state = { cronAgents: [], templates: [], templatesByID: {} };
 
 		function showError(msg) {
 			var el = container.querySelector('.cron-agents-page__error');
@@ -57,11 +57,22 @@
 			el.hidden = !html;
 		}
 
+		// load fetches the cron agents list and the templates list in
+		// parallel -- the latter purely to build an id -> name lookup so
+		// each row can show which Template it uses (the list itself only
+		// carries template_id, not a Template's Name).
 		function load() {
-			fetchJSON('/api/cron-agents')
-				.then(function (data) {
-					state.cronAgents = data.cron_agents || [];
-					container.innerHTML = window.Render.renderCronAgentsPage(state.cronAgents);
+			Promise.all([fetchJSON('/api/cron-agents'), fetchJSON('/api/templates')])
+				.then(function (results) {
+					var cronAgentsData = results[0] || {};
+					var templatesData = results[1] || {};
+					state.cronAgents = cronAgentsData.cron_agents || [];
+					state.templates = templatesData.templates || [];
+					state.templatesByID = {};
+					state.templates.forEach(function (t) {
+						if (t && t.id) state.templatesByID[t.id] = t.name;
+					});
+					container.innerHTML = window.Render.renderCronAgentsPage(state.cronAgents, state.templatesByID);
 					bind();
 				})
 				.catch(function (e) {

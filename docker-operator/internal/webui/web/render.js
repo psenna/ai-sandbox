@@ -515,13 +515,35 @@
 		return escapeHTML(ca.schedule) + (ca.enabled ? ' (enabled)' : ' (paused)');
 	}
 
+	// cronAgentTemplateName looks up ca.template_id in templatesByID (a
+	// plain object or Map keyed by template id -> template name). Falls
+	// back to the raw template_id when it's set but not in the lookup (a
+	// stale/no-longer-resolvable reference), or to a literal
+	// "(missing template)" when there is no template_id at all.
+	function cronAgentTemplateName(ca, templatesByID) {
+		var id = ca && ca.template_id;
+		if (!id) return '(missing template)';
+		var name;
+		if (templatesByID) {
+			name = (typeof templatesByID.get === 'function') ? templatesByID.get(id) : templatesByID[id];
+		}
+		return name ? escapeHTML(name) : escapeHTML(id);
+	}
+
 	// renderCronAgentsPage renders the standalone Cron Agents page: every
-	// saved cron agent, alphabetically by name, with its schedule summary and
-	// Edit/Delete actions, a "New cron agent" button, a detail slot the
-	// Edit/New flow fills with renderCronAgentForm (plus renderScheduleRunList
-	// once a cron agent has an id), and an error line for a failed
-	// load/save/delete. Mirrors renderTemplatesPage's own shape exactly.
-	function renderCronAgentsPage(cronAgents) {
+	// saved cron agent, alphabetically by name, with its schedule summary,
+	// which Template it uses, and Edit/Delete actions, a "New cron agent"
+	// button, a detail slot the Edit/New flow fills with renderCronAgentForm
+	// (plus renderScheduleRunList once a cron agent has an id), and an error
+	// line for a failed load/save/delete. Mirrors renderTemplatesPage's own
+	// shape exactly.
+	//
+	// templatesByID is optional -- a plain object or Map keyed by template
+	// id -> template name, built by cronagents.js's load() from a parallel
+	// GET /api/templates. Omitting it (or passing {}) still renders; each
+	// row's Template name just falls back to the raw id or
+	// "(missing template)".
+	function renderCronAgentsPage(cronAgents, templatesByID) {
 		var rows = (cronAgents || []).slice().sort(function (a, b) {
 			var an = (a && a.name) || '';
 			var bn = (b && b.name) || '';
@@ -531,6 +553,7 @@
 			return (
 				'<li class="cron-agents-page__row" data-cron-agent-id="' + escapeHTML(ca.id) + '">' +
 					'<span class="cron-agents-page__name">' + escapeHTML(ca.name || '(unnamed cron agent)') + '</span>' +
+					'<span class="cron-agents-page__template">' + cronAgentTemplateName(ca, templatesByID) + '</span>' +
 					(summary ? '<span class="cron-agents-page__schedule">' + summary + '</span>' : '') +
 					'<button class="cron-agents-page__edit btn btn--ghost btn--sm" type="button">Edit</button>' +
 					'<button class="cron-agents-page__delete btn btn--danger btn--sm" type="button">Delete</button>' +

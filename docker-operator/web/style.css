@@ -983,12 +983,6 @@ html, body {
 
 .templates-page__name { font-weight: 600; flex: 1 1 auto; }
 
-.templates-page__schedule {
-	font-size: var(--font-xs);
-	color: var(--fg-dim);
-	font-family: var(--font-mono, monospace);
-}
-
 .templates-page__detail {
 	border: 1px solid var(--border);
 	border-radius: var(--radius-md);
@@ -1038,6 +1032,12 @@ html, body {
 .cron-agents-page__row:hover { background: var(--bg-item); }
 
 .cron-agents-page__name { font-weight: 600; flex: 1 1 auto; }
+
+.cron-agents-page__template {
+	font-size: var(--font-xs);
+	color: var(--fg-dim);
+	font-family: var(--font-mono, monospace);
+}
 
 .cron-agents-page__schedule {
 	font-size: var(--font-xs);
