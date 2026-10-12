@@ -273,10 +273,17 @@ func (s *Store) UpdateTemplate(ctx context.Context, id string, mutate func(*Temp
 }
 
 // ErrTemplateInUse reports that DeleteTemplate was asked to remove a
-// template some CronAgent still references by TemplateID. Checked and
-// enforced inside the SAME read-write transaction as the delete itself, so
-// there is no window for a CronAgent to be created against a template
-// between the check and the delete.
+// template some CronAgent still references by TemplateID. The in-use check
+// and the delete run inside the SAME read-write transaction, so they are
+// atomic with respect to EACH OTHER -- no second DeleteTemplate call and no
+// bucket mutation from this store can land between them. That does not
+// cover the broader create-CronAgent flow: handleCreateCronAgent and
+// handleUpdateCronAgent validate the Template's existence via a separate
+// GetTemplate call before writing the CronAgent in a separate call of their
+// own, so a DeleteTemplate landing in that gap can still leave a CronAgent
+// with a dangling TemplateID (surfaced, not silently stale, by the
+// scheduling ticker's error-ScheduleRun handling for an unresolvable
+// template).
 var ErrTemplateInUse = errors.New("template is in use by a cron agent")
 
 // IsTemplateInUse reports whether err was caused by a template still
@@ -300,9 +307,9 @@ func (s *Store) DeleteTemplate(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		var inUseBy string
+		var inUseByID, inUseByName string
 		if err := cb.ForEach(func(k, v []byte) error {
-			if inUseBy != "" {
+			if inUseByID != "" {
 				return nil
 			}
 			var ca CronAgent
@@ -310,14 +317,15 @@ func (s *Store) DeleteTemplate(ctx context.Context, id string) error {
 				return err
 			}
 			if ca.TemplateID == id {
-				inUseBy = ca.ID
+				inUseByID = ca.ID
+				inUseByName = ca.Name
 			}
 			return nil
 		}); err != nil {
 			return err
 		}
-		if inUseBy != "" {
-			return fmt.Errorf("deleting template %q: referenced by cron agent %q: %w", id, inUseBy, ErrTemplateInUse)
+		if inUseByID != "" {
+			return fmt.Errorf("deleting template %q: referenced by cron agent %q (%q): %w", id, inUseByID, inUseByName, ErrTemplateInUse)
 		}
 
 		tb, err := s.templatesBucket(tx)
