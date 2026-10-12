@@ -105,13 +105,25 @@ func fireDueCronAgents(ctx context.Context, deps schedulingDeps, log *slog.Logge
 		// check #233 had on Template.Harness directly -- CronAgent itself
 		// carries no Harness field, it inherits one transitively through
 		// the Template it references.
+		//
+		// Either failure here -- the Template is gone, or it was edited to
+		// the opencode harness after this CronAgent was created against it
+		// (Template validation no longer cross-checks that; it only runs at
+		// CronAgent create/update time) -- must NOT just `continue` silently:
+		// that would leave the CronAgent in a permanent limbo with no run
+		// history and a Warn logged on every tick forever. Instead it gets
+		// the same error-ScheduleRun treatment as a CreateFromCronAgent
+		// failure below, so it shows up in run history and advances
+		// CronAgentDue's anchor to the next real cron fire.
 		tmpl, err := deps.GetTemplate(ctx, ca.TemplateID)
 		if err != nil {
 			log.Warn("scheduling tick: loading template for cron agent", "cron_agent_id", ca.ID, "template_id", ca.TemplateID, "error", err)
+			recordFailedScheduleRun(ctx, deps, log, ca.ID)
 			continue
 		}
 		if tmpl.Harness == config.HarnessOpenCode {
 			log.Warn("scheduling tick: cron agent's template has the opencode harness, which scheduling does not support; skipping", "cron_agent_id", ca.ID)
+			recordFailedScheduleRun(ctx, deps, log, ca.ID)
 			continue
 		}
 
@@ -123,19 +135,30 @@ func fireDueCronAgents(ctx context.Context, deps schedulingDeps, log *slog.Logge
 			// persistently-failing cron agent is retried at its next cron
 			// fire, not on every single tick.
 			log.Warn("scheduling tick: creating agent from cron agent", "cron_agent_id", ca.ID, "error", err)
-			run, rerr := deps.CreateScheduleRun(ctx, ca.ID, "")
-			if rerr != nil {
-				log.Warn("scheduling tick: recording a failed schedule run", "cron_agent_id", ca.ID, "error", rerr)
-				continue
-			}
-			if _, ferr := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusError); ferr != nil {
-				log.Warn("scheduling tick: finalizing a failed schedule run", "run_id", run.ID, "error", ferr)
-			}
+			recordFailedScheduleRun(ctx, deps, log, ca.ID)
 			continue
 		}
 		if _, err := deps.CreateScheduleRun(ctx, ca.ID, a.ID); err != nil {
 			log.Warn("scheduling tick: recording schedule run", "cron_agent_id", ca.ID, "agent_id", a.ID, "error", err)
 		}
+	}
+}
+
+// recordFailedScheduleRun records a ScheduleRun for cronAgentID with an
+// empty AgentID and immediately finalizes it as store.ScheduleRunStatusError.
+// Shared by every fireDueCronAgents failure branch (template lookup, the
+// opencode-harness guard, CreateFromCronAgent itself): each failure still
+// gets a run recorded, so it shows up in run history instead of leaving the
+// cron agent in a silent limbo, and so CronAgentDue's anchor advances to the
+// cron agent's next real fire instead of re-tripping on every tick.
+func recordFailedScheduleRun(ctx context.Context, deps schedulingDeps, log *slog.Logger, cronAgentID string) {
+	run, rerr := deps.CreateScheduleRun(ctx, cronAgentID, "")
+	if rerr != nil {
+		log.Warn("scheduling tick: recording a failed schedule run", "cron_agent_id", cronAgentID, "error", rerr)
+		return
+	}
+	if _, ferr := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusError); ferr != nil {
+		log.Warn("scheduling tick: finalizing a failed schedule run", "run_id", run.ID, "error", ferr)
 	}
 }
 

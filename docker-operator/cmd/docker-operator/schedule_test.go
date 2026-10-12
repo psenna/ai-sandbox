@@ -200,7 +200,12 @@ func TestRunSchedulingTickOnce_FinalizesGoneAgentAsError(t *testing.T) {
 // TestRunSchedulingTickOnce_SkipsOpenCodeTemplate pins the Global
 // Constraint that a CronAgent whose referenced Template's Harness is
 // opencode never runs, even if a record reached that state before
-// internal/api's own validation existed to reject it.
+// internal/api's own validation existed to reject it. It also pins
+// Important Finding 1 from the whole-branch review: this is no longer a
+// silent skip -- it must record and finalize a ScheduleRun as an error, the
+// same way a CreateFromCronAgent failure does, so the CronAgent shows up in
+// run history instead of logging a Warn forever, and so the next tick does
+// not retry it before its next real cron fire.
 func TestRunSchedulingTickOnce_SkipsOpenCodeTemplate(t *testing.T) {
 	deps := &fakeSchedulingDeps{
 		cronAgents: []store.CronAgent{{
@@ -213,6 +218,56 @@ func TestRunSchedulingTickOnce_SkipsOpenCodeTemplate(t *testing.T) {
 
 	if len(deps.created) != 0 {
 		t.Errorf("created = %v, want none (opencode templates are rejected defensively)", deps.created)
+	}
+	if len(deps.recorded) != 1 {
+		t.Fatalf("recorded runs = %+v, want exactly one for the rejected cron agent", deps.recorded)
+	}
+	run := deps.recorded[0]
+	if run.CronAgentID != "ca_1" || run.AgentID != "" {
+		t.Errorf("recorded run = %+v, want CronAgentID ca_1 and an empty AgentID", run)
+	}
+	if deps.finished[run.ID] != store.ScheduleRunStatusError {
+		t.Errorf("finished[%s] = %q, want %q", run.ID, deps.finished[run.ID], store.ScheduleRunStatusError)
+	}
+
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+	if len(deps.recorded) != 1 {
+		t.Errorf("recorded after a second tick = %v, want still just one run (the anchor advanced, not due again today)", deps.recorded)
+	}
+}
+
+// TestRunSchedulingTickOnce_MissingTemplateRecordsErrorRun pins the other
+// half of Important Finding 1: GetTemplate failing outright (e.g. the
+// Template was deleted out-of-band) must also record and finalize a
+// ScheduleRun as an error, not just log a Warn and leave the CronAgent in a
+// silent limbo.
+func TestRunSchedulingTickOnce_MissingTemplateRecordsErrorRun(t *testing.T) {
+	deps := &fakeSchedulingDeps{
+		cronAgents: []store.CronAgent{{
+			ID: "ca_1", TemplateID: "tpl_missing", Enabled: true, Schedule: "0 9 * * *",
+			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		// No templates at all: tpl_missing does not resolve.
+	}
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+
+	if len(deps.created) != 0 {
+		t.Errorf("created = %v, want none (the template does not resolve)", deps.created)
+	}
+	if len(deps.recorded) != 1 {
+		t.Fatalf("recorded runs = %+v, want exactly one for the unresolvable cron agent", deps.recorded)
+	}
+	run := deps.recorded[0]
+	if run.CronAgentID != "ca_1" || run.AgentID != "" {
+		t.Errorf("recorded run = %+v, want CronAgentID ca_1 and an empty AgentID", run)
+	}
+	if deps.finished[run.ID] != store.ScheduleRunStatusError {
+		t.Errorf("finished[%s] = %q, want %q", run.ID, deps.finished[run.ID], store.ScheduleRunStatusError)
+	}
+
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+	if len(deps.recorded) != 1 {
+		t.Errorf("recorded after a second tick = %v, want still just one run (the anchor advanced, not due again today)", deps.recorded)
 	}
 }
 
