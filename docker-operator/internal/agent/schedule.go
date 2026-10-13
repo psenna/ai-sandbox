@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"time"
@@ -120,7 +121,14 @@ func (m *Manager) ApplyOnComplete(ctx context.Context, ca store.CronAgent, run s
 		}); err != nil {
 			return err
 		}
-		return m.docker.ContainerStop(ctx, agentContainerName(run.AgentID), m.opts.StopTimeout)
+		var errs []error
+		if err := m.docker.ContainerStop(ctx, agentContainerName(run.AgentID), m.opts.StopTimeout); err != nil {
+			errs = append(errs, err)
+		}
+		if err := m.docker.ContainerStop(ctx, dindContainerName(run.AgentID), m.opts.StopTimeout); err != nil {
+			errs = append(errs, err)
+		}
+		return errors.Join(errs...)
 	case "delete":
 		return m.Delete(ctx, run.AgentID)
 	default:

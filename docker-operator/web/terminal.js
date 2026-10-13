@@ -237,6 +237,17 @@
 		return isClipboardCombo(ev, 'KeyV');
 	}
 
+	// canStopAgent/canResumeAgent gate the detail page's Stop/Resume menu
+	// items on the agent's current status -- mutually exclusive single-status
+	// checks, unlike Update's own broader running/stopped/error allow-list.
+	function canStopAgent(status) {
+		return status === 'running';
+	}
+
+	function canResumeAgent(status) {
+		return status === 'stopped';
+	}
+
 	var HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 	function escapeHTML(s) {
 		return String(s).replace(/[&<>"']/g, function (c) { return HTML_ESCAPES[c]; });
@@ -388,6 +399,8 @@
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="view-context">View context</button>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="agent-info">Agent info</button>' +
 							'<button class="detail__menu-item" type="button" role="menuitem" data-action="update-agent">Update agent</button>' +
+							'<button class="detail__menu-item" type="button" role="menuitem" data-action="stop-agent" hidden>Stop agent</button>' +
+							'<button class="detail__menu-item" type="button" role="menuitem" data-action="resume-agent" hidden>Resume agent</button>' +
 						'</div>' +
 					'</span>' +
 					'<button class="detail__delete-btn btn btn--danger btn--sm" type="button">Delete</button>' +
@@ -404,6 +417,8 @@
 		var menuBtn = container.querySelector('.detail__menu-btn');
 		var menuPanel = container.querySelector('.detail__menu-panel');
 		var deleteBtn = container.querySelector('.detail__delete-btn');
+		var stopItem = container.querySelector('[data-action="stop-agent"]');
+		var resumeItem = container.querySelector('[data-action="resume-agent"]');
 		var termEl = container.querySelector('.detail__terminal');
 
 		var destroyed = false;
@@ -427,6 +442,8 @@
 						: 'a newer agent image has been published';
 					upgradeBtn.classList.toggle('detail__upgrade--ready', !!agent.upgrade_ready);
 				}
+				if (stopItem) stopItem.hidden = !canStopAgent(agent.status);
+				if (resumeItem) resumeItem.hidden = !canResumeAgent(agent.status);
 			})
 			.catch(function (e) {
 				if (destroyed) return;
@@ -501,6 +518,8 @@
 				if (action === 'view-context') openContextOverlay(agentID);
 				else if (action === 'agent-info') openInfoOverlay(agentID);
 				else if (action === 'update-agent') openUpdateForm(agentID);
+				else if (action === 'stop-agent') stopAgent();
+				else if (action === 'resume-agent') resumeAgent();
 			});
 		});
 
@@ -527,6 +546,24 @@
 					});
 			});
 		});
+
+		function stopAgent() {
+			window.OperatorConfirm.show(
+				'The agent\'s containers will stop; nothing is deleted and it can be resumed later.',
+				{ title: 'Stop this agent?', confirmLabel: 'Stop' }
+			).then(function (confirmed) {
+				if (!confirmed) return;
+				fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/stop', { method: 'POST' })
+					.then(function () { renderAgentDetail(container, agentID); })
+					.catch(function (e) { window.alert('Could not stop agent: ' + e.message); });
+			});
+		}
+
+		function resumeAgent() {
+			fetchJSON('/api/agents/' + encodeURIComponent(agentID) + '/resume', { method: 'POST' })
+				.then(function () { renderAgentDetail(container, agentID); })
+				.catch(function (e) { window.alert('Could not resume agent: ' + e.message); });
+		}
 
 		// --- terminal ------------------------------------------------------
 
@@ -1013,6 +1050,8 @@
 		buildContextHTML: buildContextHTML,
 		clampToLastLines: clampToLastLines,
 		replayCaptureToText: replayCaptureToText,
+		canStopAgent: canStopAgent,
+		canResumeAgent: canResumeAgent,
 	};
 	if (typeof module !== 'undefined' && module.exports) {
 		module.exports = TerminalProtocol;
