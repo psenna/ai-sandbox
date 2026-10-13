@@ -213,10 +213,17 @@ func TestApplyOnComplete_Stop(t *testing.T) {
 
 	c, err := f.ContainerInspect(ctx, agentContainerName(a.ID))
 	if err != nil {
-		t.Fatalf("ContainerInspect: %v", err)
+		t.Fatalf("ContainerInspect(agent): %v", err)
 	}
 	if c.State != dockerclient.StateExited {
-		t.Errorf("container state = %v, want exited (stopped)", c.State)
+		t.Errorf("agent container state = %v, want exited (stopped)", c.State)
+	}
+	d, err := f.ContainerInspect(ctx, dindContainerName(a.ID))
+	if err != nil {
+		t.Fatalf("ContainerInspect(dind): %v", err)
+	}
+	if d.State != dockerclient.StateExited {
+		t.Errorf("dind sidecar state = %v, want exited (stopped) -- on_complete:\"stop\" must stop the sidecar too", d.State)
 	}
 }
 
