@@ -20,6 +20,8 @@ const {
 	buildContextHTML,
 	clampToLastLines,
 	replayCaptureToText,
+	canStopAgent,
+	canResumeAgent,
 } = require('./terminal.js');
 
 // replayCaptureToText uses window.Terminal when present. The vendored xterm.js
@@ -73,6 +75,19 @@ test('shouldForwardWheel: swallowed only on the alternate screen with no mouse t
 	// The app is tracking the mouse: forward, so it can scroll itself.
 	assert.equal(shouldForwardWheel('alternate', 'vt200'), true);
 	assert.equal(shouldForwardWheel('alternate', 'any'), true);
+});
+
+test('canStopAgent: true only for a running agent', () => {
+	assert.equal(canStopAgent('running'), true);
+	assert.equal(canStopAgent('stopped'), false);
+	assert.equal(canStopAgent('error'), false);
+	assert.equal(canStopAgent(''), false);
+});
+
+test('canResumeAgent: true only for a stopped agent', () => {
+	assert.equal(canResumeAgent('stopped'), true);
+	assert.equal(canResumeAgent('running'), false);
+	assert.equal(canResumeAgent(''), false);
 });
 
 test('isCopyShortcut / isPasteShortcut: Ctrl/⌘+Shift+C/V only', () => {
