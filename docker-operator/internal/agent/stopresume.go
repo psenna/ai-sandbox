@@ -67,7 +67,9 @@ func (m *Manager) StopAgent(ctx context.Context, id string) (store.Agent, error)
 	}
 
 	if err := m.markStopped(ctx, &a); err != nil {
-		return store.Agent{}, fmt.Errorf("stopping agent %q: marking it stopped: %w", id, err)
+		err = fmt.Errorf("stopping agent %q: marking it stopped: %w", id, err)
+		m.markStopError(ctx, id, err)
+		return store.Agent{}, err
 	}
 	return a, nil
 }

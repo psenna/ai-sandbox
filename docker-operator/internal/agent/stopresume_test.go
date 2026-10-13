@@ -3,13 +3,45 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
+
+// cancelAfterNthContainerStop wraps a dockerclient.Client and cancels a
+// context.CancelFunc right after the Nth successful ContainerStop call --
+// used to simulate the caller's request context being cancelled at the exact
+// moment StopAgent has finished stopping both containers and is about to
+// make its final store write (markStopped). This fails that write with
+// context.Canceled while leaving the record (and both now-stopped
+// containers) completely intact, which is precisely the scenario
+// TestStopAgent_MarkStoppedFailureLandsError exercises.
+type cancelAfterNthContainerStop struct {
+	dockerclient.Client
+	n      int
+	cancel context.CancelFunc
+
+	mu    sync.Mutex
+	count int
+}
+
+func (c *cancelAfterNthContainerStop) ContainerStop(ctx context.Context, id string, timeout time.Duration) error {
+	err := c.Client.ContainerStop(ctx, id, timeout)
+	if err == nil {
+		c.mu.Lock()
+		c.count++
+		if c.count == c.n {
+			c.cancel()
+		}
+		c.mu.Unlock()
+	}
+	return err
+}
 
 func TestStopAgent_StopsBothContainers(t *testing.T) {
 	m, f, st := newTestManager(t, 5)
@@ -86,6 +118,45 @@ func TestStopAgent_PartialFailureLandsError(t *testing.T) {
 	}
 	if got.ContainerID == "" {
 		t.Error("ContainerID cleared, want it left intact -- Stop never removes anything")
+	}
+}
+
+// TestStopAgent_MarkStoppedFailureLandsError is a Review Focus case: if
+// BOTH ContainerStop calls succeed but the final store write that lands
+// StatusStopped (markStopped) itself fails -- here because the caller's
+// context is cancelled at exactly that moment, simulated via
+// cancelAfterNthContainerStop -- the record must still land StatusError via
+// markStopError, not stay stuck in StatusUpdating (the shield state). This
+// mirrors TestStopAgent_PartialFailureLandsError but exercises the LAST
+// branch of StopAgent rather than the ContainerStop-failure branch.
+func TestStopAgent_MarkStoppedFailureLandsError(t *testing.T) {
+	m, f, st := newTestManager(t, 5)
+	a := createRunningAgent(t, m)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.docker = &cancelAfterNthContainerStop{Client: f, n: 2, cancel: cancel}
+
+	if _, err := m.StopAgent(ctx, a.ID); err == nil {
+		t.Fatal("StopAgent = nil error, want the cancellation to surface as an error")
+	}
+
+	got, err := st.Get(context.Background(), a.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != store.StatusError {
+		t.Errorf("Status = %q, want %q (must not be left stuck in %q)", got.Status, store.StatusError, store.StatusUpdating)
+	}
+	if got.ContainerID == "" {
+		t.Error("ContainerID cleared, want it left intact -- Stop never removes anything")
+	}
+
+	c, err := f.ContainerInspect(context.Background(), a.ContainerID)
+	if err != nil {
+		t.Fatalf("ContainerInspect(agent): %v", err)
+	}
+	if c.State != dockerclient.StateExited {
+		t.Errorf("agent container state = %v, want exited (both stops had already succeeded)", c.State)
 	}
 }
 
