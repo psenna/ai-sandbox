@@ -603,19 +603,18 @@ func TestReconcile_FailedDeleteThenReconcile_CleansUp(t *testing.T) {
 
 // --- wake shield ----------------------------------------------------------
 
-// TestMarkWakeUpdating pins the shield's transition and its stand-down.
-func TestMarkWakeUpdating(t *testing.T) {
-	t.Run("a running record is moved to updating", func(t *testing.T) {
+func TestMarkShielded(t *testing.T) {
+	t.Run("a running record is moved to updating when from=Running", func(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
 		ctx := context.Background()
 		a := createRunningAgent(t, m)
 
-		ok, err := m.markWakeUpdating(ctx, a.ID)
+		ok, err := m.markShielded(ctx, a.ID, store.StatusRunning)
 		if err != nil {
-			t.Fatalf("markWakeUpdating: %v", err)
+			t.Fatalf("markShielded: %v", err)
 		}
 		if !ok {
-			t.Fatal("markWakeUpdating = false, want true for a running record")
+			t.Fatal("markShielded = false, want true for a running record")
 		}
 		got, err := st.Get(ctx, a.ID)
 		if err != nil {
@@ -626,7 +625,34 @@ func TestMarkWakeUpdating(t *testing.T) {
 		}
 	})
 
-	t.Run("a record that is no longer running stands the wake down untouched", func(t *testing.T) {
+	t.Run("a stopped record is moved to updating when from=Stopped", func(t *testing.T) {
+		m, _, st := newTestManager(t, 5)
+		ctx := context.Background()
+		a := createRunningAgent(t, m)
+		if _, err := st.Update(ctx, a.ID, func(ag *store.Agent) error {
+			ag.Status = store.StatusStopped
+			return nil
+		}); err != nil {
+			t.Fatalf("seeding stopped: %v", err)
+		}
+
+		ok, err := m.markShielded(ctx, a.ID, store.StatusStopped)
+		if err != nil {
+			t.Fatalf("markShielded: %v", err)
+		}
+		if !ok {
+			t.Fatal("markShielded = false, want true for a stopped record with from=Stopped")
+		}
+		got, err := st.Get(ctx, a.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Status != store.StatusUpdating {
+			t.Errorf("Status = %q, want %q", got.Status, store.StatusUpdating)
+		}
+	})
+
+	t.Run("a record no longer matching from stands the shield down untouched", func(t *testing.T) {
 		m, _, st := newTestManager(t, 5)
 		ctx := context.Background()
 		a := createRunningAgent(t, m)
@@ -635,29 +661,29 @@ func TestMarkWakeUpdating(t *testing.T) {
 			ag.ErrorMessage = "set by another operation"
 			return nil
 		}); err != nil {
-			t.Fatalf("racing the wake: %v", err)
+			t.Fatalf("racing the shield: %v", err)
 		}
 
-		ok, err := m.markWakeUpdating(ctx, a.ID)
+		ok, err := m.markShielded(ctx, a.ID, store.StatusRunning)
 		if err != nil {
-			t.Fatalf("markWakeUpdating: %v", err)
+			t.Fatalf("markShielded: %v", err)
 		}
 		if ok {
-			t.Fatal("markWakeUpdating = true, want false (the record is no longer running)")
+			t.Fatal("markShielded = true, want false (the record no longer matches from)")
 		}
 		got, err := st.Get(ctx, a.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
 		if got.Status != store.StatusError || got.ErrorMessage != "set by another operation" {
-			t.Errorf("record = %+v, want it untouched by the losing wake", got)
+			t.Errorf("record = %+v, want it untouched by the losing shield", got)
 		}
 	})
 
 	t.Run("a missing record is an error, not a silent stand-down", func(t *testing.T) {
 		m, _, _ := newTestManager(t, 5)
-		if _, err := m.markWakeUpdating(context.Background(), "agt_missing"); !store.IsNotFound(err) {
-			t.Errorf("markWakeUpdating(missing) err = %v, want store.IsNotFound", err)
+		if _, err := m.markShielded(context.Background(), "agt_missing", store.StatusRunning); !store.IsNotFound(err) {
+			t.Errorf("markShielded(missing) err = %v, want store.IsNotFound", err)
 		}
 	})
 }

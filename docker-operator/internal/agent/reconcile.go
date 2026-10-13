@@ -339,7 +339,7 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 
 	dindAwoke, err := m.ensureDindRunning(ctx, a)
 	if err != nil {
-		m.markWakeError(ctx, a.ID, fmt.Errorf("the dind sidecar: %w", err))
+		m.markRebuildError(ctx, a.ID, fmt.Errorf("the dind sidecar: %w", err))
 		return false, fmt.Errorf("the dind sidecar: %w", err)
 	}
 
@@ -348,11 +348,11 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 	switch {
 	case dockerclient.IsNotFound(err):
 		err = fmt.Errorf("the agent container %q no longer exists; recreate this agent", ref)
-		m.markWakeError(ctx, a.ID, err)
+		m.markRebuildError(ctx, a.ID, err)
 		return false, err
 	case err != nil:
 		err = fmt.Errorf("inspecting the agent container %q: %w", ref, err)
-		m.markWakeError(ctx, a.ID, err)
+		m.markRebuildError(ctx, a.ID, err)
 		return false, err
 	case c.State == dockerclient.StateRunning:
 		// Already running: don't touch it. The sidecar may still have needed
@@ -372,7 +372,7 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 	rb, err := m.resolveBackendFromAgent(ctx, a)
 	if err != nil {
 		err = fmt.Errorf("resolving the backend to restart the agent container: %w", err)
-		m.markWakeError(ctx, a.ID, err)
+		m.markRebuildError(ctx, a.ID, err)
 		return false, err
 	}
 
@@ -387,7 +387,7 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 	// reconcile pass; on a ticker it is already running, so a successfully
 	// woken agent would end up in error. Update closes the same window the
 	// same way: StatusUpdating is not StatusRunning, so MarkUnexpectedExit's
-	// "not running" guard no-ops. markWakeUpdating re-checks the status inside
+	// "not running" guard no-ops. markShielded re-checks the status inside
 	// the store transaction and stands this wake down silently if an Update or
 	// Delete won the race.
 	//
@@ -396,10 +396,10 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 	// (volumes intact, manual retry), whereas before the next boot would have
 	// re-woken it automatically. That is the price of making the wake safe to
 	// run on a ticker at all.
-	ok, err := m.markWakeUpdating(ctx, a.ID)
+	ok, err := m.markShielded(ctx, a.ID, store.StatusRunning)
 	if err != nil {
 		err = fmt.Errorf("marking the agent updating before recreating its container: %w", err)
-		m.markWakeError(ctx, a.ID, err)
+		m.markRebuildError(ctx, a.ID, err)
 		return false, err
 	}
 	if !ok {
@@ -408,58 +408,41 @@ func (m *Manager) wakeAgent(ctx context.Context, a store.Agent) (bool, error) {
 		return false, nil
 	}
 
-	if err := m.removeAgentContainer(ctx, a); err != nil {
-		err = fmt.Errorf("removing the old agent container: %w", err)
-		m.markWakeError(ctx, a.ID, err)
-		return false, err
-	}
-	if err := m.startAgentContainer(ctx, &a, rb, firstInvocationArgs(a, sessionResume)...); err != nil {
-		m.markWakeError(ctx, a.ID, fmt.Errorf("starting the agent container: %w", err))
-		return false, err
-	}
-	if err := m.waitTmuxSession(ctx, a); err != nil {
-		m.markWakeError(ctx, a.ID, err)
-		return false, err
-	}
-	// The wake is complete: put the record back to StatusRunning, closing the
-	// shield opened above. A failure here (the store is unhealthy) is recorded
-	// like any other failed wake.
-	if err := m.markRunning(ctx, &a); err != nil {
-		m.markWakeError(ctx, a.ID, fmt.Errorf("marking the agent running after the wake-up: %w", err))
+	if err := m.rebuildAgentContainer(ctx, &a, rb); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// errWakeStandDown is the internal sentinel markWakeUpdating's mutator returns
-// to abort its store write (rolling the transaction back) when the record is
-// no longer StatusRunning. It never escapes this package: markWakeUpdating
-// maps it to (false, nil).
-var errWakeStandDown = errors.New("the record is no longer running")
+// errShieldStandDown is the internal sentinel markShielded's mutator returns
+// to abort its store write (rolling the transaction back) when the record no
+// longer matches the expected starting status. It never escapes this
+// package: markShielded maps it to (false, nil).
+var errShieldStandDown = errors.New("the record no longer matches the expected status")
 
-// markWakeUpdating transitions an agent record to StatusUpdating as the shield
-// that makes wakeAgent's container removal safe on a ticker: while the record
-// is updating, the old container's own die/stop event hits MarkUnexpectedExit's
-// "not running" guard and no-ops (see wakeAgent).
+// markShielded transitions an agent record from status `from` to
+// StatusUpdating -- the device that makes a container recreate safe to run
+// concurrently with Reconcile and the status-sync events goroutine: while the
+// record says Updating, the old container's own die/stop event hits
+// MarkUnexpectedExit's "not running" guard and no-ops.
 //
 // It reports ok=false, with a nil error, when the record was no longer
-// StatusRunning inside the store transaction -- an Update or Delete won the
-// race between the pass listing the record and this write -- meaning the wake
-// must stand down without touching anything and without clobbering the winner.
+// `from` inside the store.Update transaction -- another operation already
+// won the race between the caller listing the record and this write.
 //
-// Extracted from wakeAgent so the transition and its stand-down are
-// unit-testable on their own.
-func (m *Manager) markWakeUpdating(ctx context.Context, id string) (bool, error) {
+// Shared by wakeAgent (from=StatusRunning), StopAgent (from=StatusRunning)
+// and ResumeAgent (from=StatusStopped).
+func (m *Manager) markShielded(ctx context.Context, id string, from store.Status) (bool, error) {
 	_, err := m.store.Update(ctx, id, func(ag *store.Agent) error {
-		if ag.Status != store.StatusRunning {
-			return errWakeStandDown
+		if ag.Status != from {
+			return errShieldStandDown
 		}
 		ag.Status = store.StatusUpdating
 		ag.ErrorMessage = ""
 		return nil
 	})
 	switch {
-	case errors.Is(err, errWakeStandDown):
+	case errors.Is(err, errShieldStandDown):
 		return false, nil
 	case err != nil:
 		return false, err
@@ -482,23 +465,58 @@ func (m *Manager) resolveBackendFromAgent(ctx context.Context, a store.Agent) (r
 	}, a.AnthropicAccountID)
 }
 
-// markWakeError settles a failed wake-up attempt the same way failUpdate
-// settles a failed in-place update: StatusError with an explanatory message,
-// no container ID (it may already be gone), and every volume left exactly as
-// it is. Logged, not returned -- the caller already has the error that
-// matters, and this write itself uses a context detached from ctx so it
-// still lands even when ctx is what is failing.
-func (m *Manager) markWakeError(ctx context.Context, id string, cause error) {
+// markRebuildError settles a failed container rebuild the same way
+// failUpdate settles a failed in-place update: StatusError with an
+// explanatory message, no container ID (it may already be gone), and every
+// volume left exactly as it is. Logged, not returned -- the caller already
+// has the error that matters, and this write itself uses a context detached
+// from ctx so it still lands even when ctx is what is failing.
+//
+// Shared by wakeAgent and ResumeAgent -- both recreate the agent container
+// to resume its previous session, and both fail the same way.
+func (m *Manager) markRebuildError(ctx context.Context, id string, cause error) {
 	if _, err := m.store.Update(context.WithoutCancel(ctx), id, func(ag *store.Agent) error {
 		ag.Status = store.StatusError
-		ag.ErrorMessage = "could not bring this agent back up after a host/daemon restart " +
-			"(its workspace, Claude-config and DinD-cache volumes are intact -- fix the cause and retry via Update): " + cause.Error()
+		ag.ErrorMessage = "could not bring this agent's container up (its workspace, Claude-config and DinD-cache volumes are intact -- fix the cause and retry): " + cause.Error()
 		ag.ContainerID = ""
 		return nil
 	}); err != nil {
-		m.log.ErrorContext(ctx, "could not record a failed wake-up attempt; the record stays running against a reality that does not back it up",
+		m.log.ErrorContext(ctx, "could not record a failed rebuild attempt; the record may no longer reflect reality",
 			"agent_id", id, "error", err)
 	}
+}
+
+// rebuildAgentContainer stops and removes a's own container and starts a
+// fresh one with firstInvocationArgs(a, sessionResume), so the harness
+// resumes the agent's previous conversation rather than booting fresh. The
+// caller must already hold the shield (markShielded succeeded) before
+// calling this -- it does not take or check one itself.
+//
+// Shared by wakeAgent (recovering a StatusRunning agent whose container
+// died) and ResumeAgent (bringing a StatusStopped agent back up). Any
+// failure here marks the record StatusError itself via markRebuildError, so
+// neither caller needs to.
+func (m *Manager) rebuildAgentContainer(ctx context.Context, a *store.Agent, rb resolvedBackend) error {
+	if err := m.removeAgentContainer(ctx, *a); err != nil {
+		err = fmt.Errorf("removing the old agent container: %w", err)
+		m.markRebuildError(ctx, a.ID, err)
+		return err
+	}
+	if err := m.startAgentContainer(ctx, a, rb, firstInvocationArgs(*a, sessionResume)...); err != nil {
+		err = fmt.Errorf("starting the agent container: %w", err)
+		m.markRebuildError(ctx, a.ID, err)
+		return err
+	}
+	if err := m.waitTmuxSession(ctx, *a); err != nil {
+		m.markRebuildError(ctx, a.ID, err)
+		return err
+	}
+	if err := m.markRunning(ctx, a); err != nil {
+		err = fmt.Errorf("marking the agent running after the rebuild: %w", err)
+		m.markRebuildError(ctx, a.ID, err)
+		return err
+	}
+	return nil
 }
 
 // ensureDindRunning makes sure agent a's DinD sidecar is actually running AND
