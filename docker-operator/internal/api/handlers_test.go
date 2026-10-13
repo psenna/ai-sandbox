@@ -40,6 +40,11 @@ type fakeManager struct {
 	updateErr  error
 	updateReqs []agent.UpdateRequest
 
+	stopErr     error
+	stopCalls   []string
+	resumeErr   error
+	resumeCalls []string
+
 	purgedIDs []string
 	purgeErr  error
 
@@ -227,6 +232,38 @@ func (f *fakeManager) Update(_ context.Context, id string, req agent.UpdateReque
 	} else {
 		a.AnthropicAccountID = ""
 	}
+	f.agents[id] = a
+	return a, nil
+}
+
+func (f *fakeManager) StopAgent(_ context.Context, id string) (store.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalls = append(f.stopCalls, id)
+	if f.stopErr != nil {
+		return store.Agent{}, f.stopErr
+	}
+	a, ok := f.agents[id]
+	if !ok {
+		return store.Agent{}, fmt.Errorf("stopping agent %q: %w", id, store.ErrNotFound)
+	}
+	a.Status = store.StatusStopped
+	f.agents[id] = a
+	return a, nil
+}
+
+func (f *fakeManager) ResumeAgent(_ context.Context, id string) (store.Agent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeCalls = append(f.resumeCalls, id)
+	if f.resumeErr != nil {
+		return store.Agent{}, f.resumeErr
+	}
+	a, ok := f.agents[id]
+	if !ok {
+		return store.Agent{}, fmt.Errorf("resuming agent %q: %w", id, store.ErrNotFound)
+	}
+	a.Status = store.StatusRunning
 	f.agents[id] = a
 	return a, nil
 }
@@ -2390,6 +2427,140 @@ func TestHandleDelete_OperationInFlight(t *testing.T) {
 	}
 	if got := decodeEnvelope(t, rec).Error.Code; got != CodeOperationInFlight {
 		t.Errorf("error code = %q, want %q", got, CodeOperationInFlight)
+	}
+}
+
+func TestHandleStopAgent_OK(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/stop", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	if a := decodeAgent(t, rec); a.Status != store.StatusStopped {
+		t.Errorf("returned agent status = %q, want %q", a.Status, store.StatusStopped)
+	}
+	if len(mgr.stopCalls) != 1 || mgr.stopCalls[0] != "agt_1" {
+		t.Errorf("stopCalls = %v, want [\"agt_1\"]", mgr.stopCalls)
+	}
+}
+
+func TestHandleStopAgent_NotFound(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_missing/stop", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body)
+	}
+}
+
+func TestHandleStopAgent_NotStoppable(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusStopped})
+	mgr.stopErr = fmt.Errorf("stopping agent %q: %w", "agt_1", agent.ErrNotStoppable)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/stop", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeNotStoppable {
+		t.Errorf("error code = %q, want %q", got, CodeNotStoppable)
+	}
+}
+
+func TestHandleStopAgent_OperationInFlight(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+	mgr.stopErr = fmt.Errorf("stopping agent %q: %w", "agt_1", agent.ErrOperationInFlight)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/stop", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeOperationInFlight {
+		t.Errorf("error code = %q, want %q", got, CodeOperationInFlight)
+	}
+}
+
+func TestHandleStopAgent_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_1/stop", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusMethodNotAllowed, rec.Body)
+	}
+}
+
+func TestHandleResumeAgent_OK(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusStopped})
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/resume", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body)
+	}
+	if a := decodeAgent(t, rec); a.Status != store.StatusRunning {
+		t.Errorf("returned agent status = %q, want %q", a.Status, store.StatusRunning)
+	}
+	if len(mgr.resumeCalls) != 1 || mgr.resumeCalls[0] != "agt_1" {
+		t.Errorf("resumeCalls = %v, want [\"agt_1\"]", mgr.resumeCalls)
+	}
+}
+
+func TestHandleResumeAgent_NotFound(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_missing/resume", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body)
+	}
+}
+
+func TestHandleResumeAgent_NotResumable(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusRunning})
+	mgr.resumeErr = fmt.Errorf("resuming agent %q: %w", "agt_1", agent.ErrNotResumable)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/resume", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeNotResumable {
+		t.Errorf("error code = %q, want %q", got, CodeNotResumable)
+	}
+}
+
+func TestHandleResumeAgent_OperationInFlight(t *testing.T) {
+	mgr := newFakeManager(5)
+	mgr.seed(store.Agent{ID: "agt_1", Status: store.StatusStopped})
+	mgr.resumeErr = fmt.Errorf("resuming agent %q: %w", "agt_1", agent.ErrOperationInFlight)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "POST", "/api/agents/agt_1/resume", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
+	}
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeOperationInFlight {
+		t.Errorf("error code = %q, want %q", got, CodeOperationInFlight)
+	}
+}
+
+func TestHandleResumeAgent_MethodNotAllowed(t *testing.T) {
+	mgr := newFakeManager(5)
+	h := newTestHandler(mgr, dockerclienttest.New())
+
+	rec := doJSON(t, h, "GET", "/api/agents/agt_1/resume", nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusMethodNotAllowed, rec.Body)
 	}
 }
 

@@ -51,6 +51,16 @@ type AgentManager interface {
 	// invalid-backend/ollama/repo/threshold family (400).
 	Update(ctx context.Context, id string, req agent.UpdateRequest) (store.Agent, error)
 
+	// StopAgent stops a running agent's containers (the agent container and
+	// its DinD sidecar) without removing anything. Errors: store.IsNotFound
+	// (404), agent.IsNotStoppable (409), agent.IsOperationInFlight (409).
+	StopAgent(ctx context.Context, id string) (store.Agent, error)
+
+	// ResumeAgent brings a stopped agent back to StatusRunning, recreating
+	// its container with a session-resume flag. Errors: store.IsNotFound
+	// (404), agent.IsNotResumable (409), agent.IsOperationInFlight (409).
+	ResumeAgent(ctx context.Context, id string) (store.Agent, error)
+
 	// DefaultBackend/DefaultModel/DefaultFastModel/DefaultOllamaURL/DefaultRepo
 	// are the operator-configured defaults the create form pre-fills; they
 	// ride along on the list response so the UI needs no second request.
@@ -212,6 +222,8 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("POST /api/agents/{id}/update", h.handleUpdate)
 	mux.HandleFunc("GET /api/agents/{id}/output", h.handleOutput)
 	mux.HandleFunc("GET /api/agents/{id}/info", h.handleAgentInfo)
+	mux.HandleFunc("POST /api/agents/{id}/stop", h.handleStopAgent)
+	mux.HandleFunc("POST /api/agents/{id}/resume", h.handleResumeAgent)
 
 	mux.HandleFunc("GET /api/files", h.handleFilesList)
 	mux.HandleFunc("DELETE /api/files", h.handleFilesDelete)
@@ -258,6 +270,8 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("/api/agents/{id}/update", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/output", methodNotAllowed)
 	mux.HandleFunc("/api/agents/{id}/info", methodNotAllowed)
+	mux.HandleFunc("/api/agents/{id}/stop", methodNotAllowed)
+	mux.HandleFunc("/api/agents/{id}/resume", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/tags", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/refresh", methodNotAllowed)
 	mux.HandleFunc("/api/agent-image/cleanup", methodNotAllowed)
@@ -1439,6 +1453,51 @@ func (h *Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Wrapped in an agentView for consistency with handleGet, so the client
 	// gets the same shape (with upgrade_available) it reads elsewhere.
+	writeJSON(w, http.StatusOK, h.buildAgentViews(r.Context(), []store.Agent{a})[0])
+}
+
+// handleStopAgent serves POST /api/agents/{id}/stop: stops a running
+// agent's containers (the agent container and its DinD sidecar) without
+// removing anything, so ResumeAgent can bring it back up later.
+func (h *Handler) handleStopAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := h.mgr.StopAgent(r.Context(), id)
+	if err != nil {
+		switch {
+		case store.IsNotFound(err):
+			writeError(w, http.StatusNotFound, CodeNotFound, "no such agent", "")
+		case agent.IsOperationInFlight(err):
+			writeError(w, http.StatusConflict, CodeOperationInFlight, "another operation is already in flight for this agent; retry once it finishes", "")
+		case agent.IsNotStoppable(err):
+			writeError(w, http.StatusConflict, CodeNotStoppable, "only a running agent can be stopped", "")
+		default:
+			h.internalError(w, "stopping agent "+id, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, h.buildAgentViews(r.Context(), []store.Agent{a})[0])
+}
+
+// handleResumeAgent serves POST /api/agents/{id}/resume: brings a stopped
+// agent back to StatusRunning by recreating its container with a
+// session-resume flag, exactly like the reconcile pass's own automatic
+// wake-up.
+func (h *Handler) handleResumeAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a, err := h.mgr.ResumeAgent(r.Context(), id)
+	if err != nil {
+		switch {
+		case store.IsNotFound(err):
+			writeError(w, http.StatusNotFound, CodeNotFound, "no such agent", "")
+		case agent.IsOperationInFlight(err):
+			writeError(w, http.StatusConflict, CodeOperationInFlight, "another operation is already in flight for this agent; retry once it finishes", "")
+		case agent.IsNotResumable(err):
+			writeError(w, http.StatusConflict, CodeNotResumable, "only a stopped agent can be resumed", "")
+		default:
+			h.internalError(w, "resuming agent "+id, err)
+		}
+		return
+	}
 	writeJSON(w, http.StatusOK, h.buildAgentViews(r.Context(), []store.Agent{a})[0])
 }
 

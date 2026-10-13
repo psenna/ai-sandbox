@@ -68,6 +68,15 @@ const (
 	// CodeTemplateInUse is returned (409) by DELETE /api/templates/{id}
 	// when some CronAgent still references the template by TemplateID.
 	CodeTemplateInUse = "template_in_use"
+
+	// CodeNotStoppable is returned (409) by POST /api/agents/{id}/stop when
+	// the agent is not in a stoppable state (only a running agent can be
+	// stopped).
+	CodeNotStoppable = "not_stoppable"
+	// CodeNotResumable is returned (409) by POST /api/agents/{id}/resume when
+	// the agent is not in a resumable state (only a stopped agent can be
+	// resumed).
+	CodeNotResumable = "not_resumable"
 )
 
 // writeJSON writes body as status with a JSON content type. Encode errors
