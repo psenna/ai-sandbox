@@ -1,7 +1,7 @@
 // templates.js -- DOM wiring for the Templates page. Mirrors files.js's
 // dual-export/guard shape: pure rendering lives in render.js
-// (renderTemplatesPage / renderTemplateForm / renderScheduleRunList,
-// unit-tested), this file is the event wiring reviewed by hand.
+// (renderTemplatesPage / renderTemplateForm, unit-tested), this file is
+// the event wiring reviewed by hand.
 //
 // Exposes window.renderTemplatesPage(container), which app.js calls when
 // the sidebar "Templates" button is clicked.
@@ -42,10 +42,6 @@
 			max_context_tokens: fd.get('max_context_tokens') || '',
 			image_tag: fd.get('image_tag') || '',
 			auto_mode: fd.get('auto_mode') || '',
-			enabled: fd.get('enabled') === 'on',
-			schedule: fd.get('schedule') || '',
-			task: fd.get('task') || '',
-			on_complete: fd.get('on_complete') || '',
 		};
 	}
 
@@ -82,43 +78,7 @@
 
 		function openForm(template) {
 			showDetail(window.Render.renderTemplateForm(template));
-			if (template && template.id) loadRuns(template.id, template.on_complete);
 			bindDetail(template);
-		}
-
-		function loadRuns(templateID, onComplete) {
-			fetchJSON('/api/templates/' + encodeURIComponent(templateID) + '/runs')
-				.then(function (data) {
-					var detail = container.querySelector('.templates-page__detail');
-					if (!detail) return;
-					detail.insertAdjacentHTML('beforeend', window.Render.renderScheduleRunList(data.runs || [], onComplete));
-					bindRuns();
-				})
-				.catch(function () { /* run history is best-effort for this view */ });
-		}
-
-		// openFiles swaps this page for the Files browser, where an archived
-		// transcript lives (transcripts/<id>/). renderFileBrowser always
-		// opens at the store root.
-		function openFiles() {
-			if (typeof window.renderFileBrowser === 'function') window.renderFileBrowser(container);
-		}
-
-		// bindRuns wires the run-history links: "Open agent" jumps to the
-		// agent via app.js's window.openAgent (false when the agent is no
-		// longer in the list, e.g. deleted out-of-band -- then Files is the
-		// next best place to look), and the transcript button opens Files.
-		function bindRuns() {
-			container.querySelectorAll('.schedule-run-list__open-agent').forEach(function (btn) {
-				btn.addEventListener('click', function () {
-					var id = btn.getAttribute('data-agent-id');
-					if (typeof window.openAgent === 'function' && window.openAgent(id)) return;
-					openFiles();
-				});
-			});
-			container.querySelectorAll('.schedule-run-list__open-files').forEach(function (btn) {
-				btn.addEventListener('click', openFiles);
-			});
 		}
 
 		function bindDetail(template) {
@@ -151,7 +111,7 @@
 				btn.addEventListener('click', function () {
 					var id = btn.closest('[data-template-id]').getAttribute('data-template-id');
 					window.OperatorConfirm.show(
-						'Deleting this template permanently removes its configuration, including any cron schedule, task text and completion policy. This cannot be undone.',
+						'Deleting this template permanently removes its configuration. This cannot be undone.',
 						{ title: 'Delete this template?', confirmLabel: 'Delete', danger: true }
 					).then(function (confirmed) {
 						if (!confirmed) return;

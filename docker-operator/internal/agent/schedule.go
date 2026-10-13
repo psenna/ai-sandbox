@@ -12,52 +12,36 @@ import (
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
 
-// taskCompleteSentinelPath is the file claude-supervisor.sh writes right
-// after a clean (status 0) one-shot exit -- see agent/claude-supervisor.sh.
-// Same directory and naming convention as wsbridge.OutputLogPath's
-// /workspace/.agent-output.log.
 const taskCompleteSentinelPath = "/workspace/.task-complete"
-
-// taskFailedSentinelPath is the file claude-supervisor.sh writes when a
-// one-shot (`-p`) claude exits non-zero -- the supervisor never resumes a
-// one-shot run, so this is final.
 const taskFailedSentinelPath = "/workspace/.task-failed"
 
-// scheduledRunCheckCmd prints "complete" or "failed" for whichever
-// sentinel is present (complete wins if somehow both are), or nothing
-// while the task is still running.
 var scheduledRunCheckCmd = []string{"sh", "-c",
 	"if [ -f '" + taskCompleteSentinelPath + "' ]; then echo complete; " +
 		"elif [ -f '" + taskFailedSentinelPath + "' ]; then echo failed; fi"}
 
-// ParseSchedule parses a standard 5-field cron expression. Used both by
-// the ticker (via TemplateDue, below) and by internal/api's template
-// validation, so a Template's Schedule is checked with the exact same
-// parser it will later be run against.
 func ParseSchedule(expr string) (cron.Schedule, error) {
 	return cron.ParseStandard(expr)
 }
 
-// TemplateDue reports whether tmpl's schedule has a fire time in
-// (anchor, now], where anchor is the most recent of tmpl.CreatedAt,
-// tmpl.UpdatedAt and lastRun's StartedAt (if non-nil). UpdatedAt matters:
-// adding a schedule to an old template, or re-enabling a paused one, must
-// wait for the next real cron fire, not fire immediately off a stale
-// CreatedAt whose Next() is long past. A disabled or unscheduled template is never due. An
-// unparseable Schedule (should not happen past internal/api's validation,
-// but this function makes no assumption about that) is treated as never
-// due, not a panic.
-func TemplateDue(tmpl store.Template, lastRun *store.ScheduleRun, now time.Time) bool {
-	if !tmpl.Enabled || tmpl.Schedule == "" {
+// CronAgentDue reports whether ca is due to fire at now, anchored on
+// whichever of ca.CreatedAt, ca.UpdatedAt, or lastRun.StartedAt is most
+// recent -- a CronAgent created long ago whose schedule was just edited (or
+// re-enabled) waits for its next real cron fire instead of firing on the
+// very next tick off a stale CreatedAt. Named for the entity it now
+// operates on (CronAgent, not Template, since #233's own TemplateDue took
+// a store.Template) -- keeping the old name on a changed parameter type
+// would mislead every future reader of this file.
+func CronAgentDue(ca store.CronAgent, lastRun *store.ScheduleRun, now time.Time) bool {
+	if !ca.Enabled || ca.Schedule == "" {
 		return false
 	}
-	sched, err := ParseSchedule(tmpl.Schedule)
+	sched, err := ParseSchedule(ca.Schedule)
 	if err != nil {
 		return false
 	}
-	anchor := tmpl.CreatedAt
-	if tmpl.UpdatedAt.After(anchor) {
-		anchor = tmpl.UpdatedAt
+	anchor := ca.CreatedAt
+	if ca.UpdatedAt.After(anchor) {
+		anchor = ca.UpdatedAt
 	}
 	if lastRun != nil && lastRun.StartedAt.After(anchor) {
 		anchor = lastRun.StartedAt
@@ -66,26 +50,20 @@ func TemplateDue(tmpl store.Template, lastRun *store.ScheduleRun, now time.Time)
 	return !next.After(now)
 }
 
-// CreateFromTemplate creates a fresh agent from tmpl's fields, running
-// tmpl.Task as a one-shot invocation. This translation is NEW: the only
-// existing Template -> create-agent-fields mapping before this feature was
-// web/app.js's applyTemplateToForm, pure client-side JS that prefills the
-// create form for a human to then submit -- there was no server-side
-// equivalent, since nothing before this feature ever created an agent from
-// a template without a human in the loop.
-func (m *Manager) CreateFromTemplate(ctx context.Context, tmpl store.Template) (store.Agent, error) {
+// CreateFromCronAgent resolves ca.TemplateID to its Template and creates an
+// agent from the Template's config, with Name and OneShotTask coming from
+// the CronAgent instead -- the two fields that moved off Template (spec
+// decision 1 and 4).
+func (m *Manager) CreateFromCronAgent(ctx context.Context, ca store.CronAgent) (store.Agent, error) {
+	tmpl, err := m.store.GetTemplate(ctx, ca.TemplateID)
+	if err != nil {
+		return store.Agent{}, err
+	}
 	return m.Create(ctx, CreateRequest{
-		Backend:              tmpl.Backend,
-		Harness:              tmpl.Harness,
-		Model:                tmpl.Model,
-		FastModel:            tmpl.FastModel,
-		OllamaURL:            tmpl.OllamaURL,
-		Repo:                 tmpl.Repo,
-		AutoCompactThreshold: tmpl.AutoCompactThreshold,
-		MaxContextTokens:     tmpl.MaxContextTokens,
-		ImageTag:             tmpl.ImageTag,
-		AutoMode:             tmpl.AutoMode,
-		OneShotTask:          tmpl.Task,
+		Name: ca.Name, Backend: tmpl.Backend, Harness: tmpl.Harness, Model: tmpl.Model,
+		FastModel: tmpl.FastModel, OllamaURL: tmpl.OllamaURL, Repo: tmpl.Repo,
+		AutoCompactThreshold: tmpl.AutoCompactThreshold, MaxContextTokens: tmpl.MaxContextTokens,
+		ImageTag: tmpl.ImageTag, AutoMode: tmpl.AutoMode, OneShotTask: ca.Task,
 	})
 }
 
@@ -130,17 +108,11 @@ func (m *Manager) CheckScheduledRunStatus(ctx context.Context, run store.Schedul
 	}
 }
 
-// ApplyOnComplete runs tmpl's completion policy for run's agent: "stop"
-// (record marked StatusStopped first, then ContainerStop, left
-// inspectable -- the shield keeps the container's `die` event, which
-// MarkUnexpectedExit applies only to a StatusRunning record, from turning
-// a deliberate stop into a false StatusError), "delete" (Delete, which archives the
-// transcript first per the already-shipped internal/agent/transcript.go,
-// regardless of this feature), or "leave" (nothing further). An unknown or
-// empty OnComplete is treated as "leave" -- the safest no-op default,
-// never reachable past internal/api's validation but defensive here too.
-func (m *Manager) ApplyOnComplete(ctx context.Context, tmpl store.Template, run store.ScheduleRun) error {
-	switch tmpl.OnComplete {
+// ApplyOnComplete applies ca's completion policy to run's agent. Its body
+// is unchanged from #233's own Template-typed version -- it only ever read
+// .OnComplete, which now lives on CronAgent instead of Template.
+func (m *Manager) ApplyOnComplete(ctx context.Context, ca store.CronAgent, run store.ScheduleRun) error {
+	switch ca.OnComplete {
 	case "stop":
 		if _, err := m.store.Update(ctx, run.AgentID, func(a *store.Agent) error {
 			a.Status = store.StatusStopped
@@ -156,35 +128,15 @@ func (m *Manager) ApplyOnComplete(ctx context.Context, tmpl store.Template, run 
 	}
 }
 
-// ListScheduleRunsByTemplate returns every run for templateID, newest
-// first, mirroring ListTemplates's thin pass-through shape. Added here,
-// not in internal/api's task, because cmd/docker-operator's
-// schedulingDeps interface (next task) needs this on Manager before that
-// task ever runs -- internal/api's own task only calls it, it does not
-// define it.
-func (m *Manager) ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error) {
-	return m.store.ListScheduleRunsByTemplate(ctx, templateID)
+func (m *Manager) ListScheduleRunsByCronAgent(ctx context.Context, cronAgentID string) ([]store.ScheduleRun, error) {
+	return m.store.ListScheduleRunsByCronAgent(ctx, cronAgentID)
 }
-
-// ListScheduleRunsByStatus returns every ScheduleRun with the given status,
-// regardless of template -- the same thin pass-through shape as
-// ListScheduleRunsByTemplate, and added alongside it for the same reason:
-// cmd/docker-operator's schedulingDeps interface needs this on Manager, not
-// on *store.Store directly.
 func (m *Manager) ListScheduleRunsByStatus(ctx context.Context, status string) ([]store.ScheduleRun, error) {
 	return m.store.ListScheduleRunsByStatus(ctx, status)
 }
-
-// CreateScheduleRun records a new in-flight run (status
-// store.ScheduleRunStatusRunning) for templateID's agentID. Thin
-// pass-through, mirroring ListScheduleRunsByTemplate.
-func (m *Manager) CreateScheduleRun(ctx context.Context, templateID, agentID string) (store.ScheduleRun, error) {
-	return m.store.CreateScheduleRun(ctx, templateID, agentID)
+func (m *Manager) CreateScheduleRun(ctx context.Context, cronAgentID, agentID string) (store.ScheduleRun, error) {
+	return m.store.CreateScheduleRun(ctx, cronAgentID, agentID)
 }
-
-// FinishScheduleRun sets a ScheduleRun's terminal status (success or error)
-// and its FinishedAt. Thin pass-through, mirroring
-// ListScheduleRunsByTemplate.
 func (m *Manager) FinishScheduleRun(ctx context.Context, id, status string) (store.ScheduleRun, error) {
 	return m.store.FinishScheduleRun(ctx, id, status)
 }
@@ -200,7 +152,6 @@ func (m *Manager) FinishScheduleRun(ctx context.Context, id, status string) (sto
 func (m *Manager) execOneShot(ctx context.Context, ref string, cmd []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.opts.ExecTimeout)
 	defer cancel()
-
 	execID, err := m.docker.ExecCreate(ctx, ref, dockerclient.ExecSpec{Cmd: cmd})
 	if err != nil {
 		return nil, err
@@ -210,6 +161,5 @@ func (m *Manager) execOneShot(ctx context.Context, ref string, cmd []string) ([]
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
-
 	return io.ReadAll(stream)
 }

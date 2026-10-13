@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/psenna/ai-sandbox/docker-operator/internal/dockerclient/dockerclienttest"
@@ -225,98 +228,41 @@ func TestDeleteTemplate_IsIdempotent(t *testing.T) {
 	}
 }
 
-func TestValidateTemplateFields_ScheduleRequiresHarnessTaskOnComplete(t *testing.T) {
-	req := templateRequest{Name: "x", Schedule: "0 9 * * *"}
-	if ae := validateTemplateFields(req); ae == nil {
-		t.Error("validateTemplateFields(schedule, no harness/task/on_complete) = nil, want an error")
-	}
-}
-
-func TestValidateTemplateFields_ScheduleValid(t *testing.T) {
-	req := templateRequest{
-		Name: "x", Backend: "ollama", Harness: "claude-code",
-		Schedule: "0 9 * * *", Task: "do it", OnComplete: "stop",
-	}
-	if ae := validateTemplateFields(req); ae != nil {
-		t.Errorf("validateTemplateFields(valid schedule) = %v, want nil", ae)
-	}
-}
-
-func TestValidateTemplateFields_MalformedCronRejected(t *testing.T) {
-	req := templateRequest{
-		Name: "x", Backend: "ollama", Harness: "claude-code",
-		Schedule: "not a cron expression", Task: "do it", OnComplete: "stop",
-	}
-	if ae := validateTemplateFields(req); ae == nil {
-		t.Error("validateTemplateFields(malformed cron) = nil, want an error")
-	}
-}
-
-func TestValidateTemplateFields_UnknownOnCompleteRejected(t *testing.T) {
-	req := templateRequest{
-		Name: "x", Backend: "ollama", Harness: "claude-code",
-		Schedule: "0 9 * * *", Task: "do it", OnComplete: "nuke-it-from-orbit",
-	}
-	if ae := validateTemplateFields(req); ae == nil {
-		t.Error("validateTemplateFields(unknown on_complete) = nil, want an error")
-	}
-}
-
-func TestValidateTemplateFields_OpencodeWithScheduleRejected(t *testing.T) {
-	req := templateRequest{
-		Name: "x", Backend: "ollama", Harness: "opencode",
-		Schedule: "0 9 * * *", Task: "do it", OnComplete: "stop",
-	}
-	if ae := validateTemplateFields(req); ae == nil {
-		t.Error("validateTemplateFields(opencode + schedule) = nil, want an error (v1 is Claude Code only)")
-	}
-}
-
-func TestValidateTemplateFields_NoScheduleIgnoresTheRest(t *testing.T) {
-	// Every pre-existing template (no Schedule) must still validate exactly
-	// as it did before this feature -- no new required fields for it.
-	req := templateRequest{Name: "plain template", Backend: "ollama"}
-	if ae := validateTemplateFields(req); ae != nil {
-		t.Errorf("validateTemplateFields(no schedule) = %v, want nil", ae)
-	}
-}
-
-func TestHandleListScheduleRuns(t *testing.T) {
-	mgr := newFakeManager(5)
-	mgr.scheduleRuns = map[string][]store.ScheduleRun{
-		"tpl_1": {{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", Status: store.ScheduleRunStatusSuccess}},
-	}
-	h := newTestHandler(mgr, dockerclienttest.New())
-
-	rec := doJSON(t, h, "GET", "/api/templates/tpl_1/runs", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
-	}
-
-	var body scheduleRunListResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decoding response: %v", err)
-	}
-	if len(body.Runs) != 1 || body.Runs[0].ID != "run_1" {
-		t.Errorf("Runs = %+v, want [run_1]", body.Runs)
-	}
-}
-
-func TestHandleListScheduleRuns_EmptyForUnknownTemplate(t *testing.T) {
+// TestDeleteTemplate_InUse is a regression test for a bug caught by Task 6's
+// manual smoke check (not by any existing unit test, since fakeManager's
+// DeleteTemplate never synthesizes store.ErrTemplateInUse on its own):
+// handleDeleteTemplate used to route every mgr.DeleteTemplate error through
+// internalError, turning the expected "still referenced by a CronAgent"
+// conflict into a 500 instead of the 409 handleCreateTemplate/
+// handleUpdateTemplate already give the same sentinel via templateError.
+func TestDeleteTemplate_InUse(t *testing.T) {
 	mgr := newFakeManager(5)
 	h := newTestHandler(mgr, dockerclienttest.New())
 
-	rec := doJSON(t, h, "GET", "/api/templates/tpl_missing/runs", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
-	}
+	mgr.deleteTemplateErr = fmt.Errorf("deleting template %q: referenced by cron agent %q: %w", "tpl_1", "ca_1", store.ErrTemplateInUse)
 
-	var body scheduleRunListResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decoding response: %v", err)
+	rec := doJSON(t, h, "DELETE", "/api/templates/tpl_1", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body)
 	}
-	if body.Runs == nil {
-		t.Error("Runs = nil, want [] (not null) for a template with no runs")
+	if got := decodeEnvelope(t, rec).Error.Code; got != CodeTemplateInUse {
+		t.Errorf("error code = %q, want %q", got, CodeTemplateInUse)
+	}
+}
+
+// TestCreateTemplate_RejectsUnknownScheduleField proves templateRequest no
+// longer accepts the removed scheduling fields: decodeJSON's reject-unknown-
+// fields behavior (pre-existing, unrelated to this task) turns a "schedule"
+// key in the body into a 400, since templateRequest declares no such field
+// anymore.
+func TestCreateTemplate_RejectsUnknownScheduleField(t *testing.T) {
+	h := newTestHandler(newFakeManager(5), nil)
+	req := httptest.NewRequest("POST", "/api/templates", strings.NewReader(`{"name":"t","schedule":"0 9 * * *"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (schedule is no longer a template field)", rec.Code, http.StatusBadRequest)
 	}
 }
 

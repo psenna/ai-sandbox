@@ -124,18 +124,30 @@ type AgentManager interface {
 	// template dropdown. None of these touch Docker -- a template is pure
 	// store state -- so, unlike Create/Update, there is no agent.Xxx error
 	// family to switch on; only store.IsTemplateNotFound and
-	// store.IsTemplateNameExists matter (see templateError). No
-	// single-item Get: the UI only ever needs the already-fetched list.
+	// store.IsTemplateNameExists matter (see templateError).
+	//
+	// GetTemplate is the single-item lookup lookUpTemplateForCronAgent needs
+	// to validate a cron agent's template_id and check that template's
+	// Harness -- the list-only comment this interface used to carry no
+	// longer holds now that a CronAgent references a Template by ID.
 	ListTemplates(ctx context.Context) ([]store.Template, error)
+	GetTemplate(ctx context.Context, id string) (store.Template, error)
 	CreateTemplate(ctx context.Context, spec store.TemplateCreateSpec) (store.Template, error)
 	UpdateTemplate(ctx context.Context, id string, spec store.TemplateCreateSpec) (store.Template, error)
 	DeleteTemplate(ctx context.Context, id string) error
 
-	// ListScheduleRunsByTemplate backs GET /api/templates/{id}/runs, a
-	// template's ScheduleRun history (newest first). An unknown templateID
-	// is not an error -- it reads back as an empty list, matching every
-	// other list response's never-nil convention.
-	ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error)
+	// CreateCronAgent/GetCronAgent-via-ListCronAgents/UpdateCronAgent/
+	// DeleteCronAgent back the saved recurring-job definitions a user
+	// manages on the Cron Agents page. None of these touch Docker.
+	ListCronAgents(ctx context.Context) ([]store.CronAgent, error)
+	CreateCronAgent(ctx context.Context, spec store.CronAgentCreateSpec) (store.CronAgent, error)
+	UpdateCronAgent(ctx context.Context, id string, spec store.CronAgentCreateSpec) (store.CronAgent, error)
+	DeleteCronAgent(ctx context.Context, id string) error
+
+	// ListScheduleRunsByCronAgent backs GET /api/cron-agents/{id}/runs, a
+	// cron agent's ScheduleRun history (newest first). An unknown
+	// cronAgentID reads back as an empty list.
+	ListScheduleRunsByCronAgent(ctx context.Context, cronAgentID string) ([]store.ScheduleRun, error)
 }
 
 // anthropicLoginWSPath is the WebSocket route cmd/docker-operator wires to
@@ -217,7 +229,12 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("POST /api/templates", h.handleCreateTemplate)
 	mux.HandleFunc("PUT /api/templates/{id}", h.handleUpdateTemplate)
 	mux.HandleFunc("DELETE /api/templates/{id}", h.handleDeleteTemplate)
-	mux.HandleFunc("GET /api/templates/{id}/runs", h.handleListScheduleRuns)
+
+	mux.HandleFunc("GET /api/cron-agents", h.handleListCronAgents)
+	mux.HandleFunc("POST /api/cron-agents", h.handleCreateCronAgent)
+	mux.HandleFunc("PUT /api/cron-agents/{id}", h.handleUpdateCronAgent)
+	mux.HandleFunc("DELETE /api/cron-agents/{id}", h.handleDeleteCronAgent)
+	mux.HandleFunc("GET /api/cron-agents/{id}/runs", h.handleListCronAgentScheduleRuns)
 
 	mux.HandleFunc("GET /api/anthropic/accounts", h.handleAnthropicAccountsList)
 	mux.HandleFunc("POST /api/anthropic/accounts", h.handleAnthropicAccountsCreate)
@@ -248,7 +265,9 @@ func NewHandler(mgr AgentManager, docker execStatsClient, files *filestore.Store
 	mux.HandleFunc("/api/agent-image/tags/{harness}/{tag}", methodNotAllowed)
 	mux.HandleFunc("/api/templates", methodNotAllowed)
 	mux.HandleFunc("/api/templates/{id}", methodNotAllowed)
-	mux.HandleFunc("/api/templates/{id}/runs", methodNotAllowed)
+	mux.HandleFunc("/api/cron-agents", methodNotAllowed)
+	mux.HandleFunc("/api/cron-agents/{id}", methodNotAllowed)
+	mux.HandleFunc("/api/cron-agents/{id}/runs", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/accounts", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/accounts/{id}", methodNotAllowed)
 	mux.HandleFunc("/api/anthropic/accounts/{id}/default", methodNotAllowed)

@@ -16,23 +16,38 @@ import (
 // recording exactly what runSchedulingTickOnce does without touching a
 // real Manager or Store.
 type fakeSchedulingDeps struct {
-	templates      []store.Template
-	runsByTemplate map[string][]store.ScheduleRun
-	runningRuns    []store.ScheduleRun
-	created        []string          // template IDs CreateFromTemplate was called for
-	statuses       map[string]string // run ID -> "running" | "done" | "failed" | "gone"
-	completed      []string          // run IDs ApplyOnComplete was called for
-	finished       map[string]string // run ID -> status FinishScheduleRun was called with
-	checked        []string          // run IDs CheckScheduledRunStatus was called for
-	createErr      map[string]error  // template ID -> error CreateFromTemplate returns
-	recorded       []store.ScheduleRun
+	cronAgents      []store.CronAgent
+	templates       map[string]store.Template
+	runsByCronAgent map[string][]store.ScheduleRun
+	runningRuns     []store.ScheduleRun
+	created         []string          // cron agent IDs CreateFromCronAgent was called for
+	statuses        map[string]string // run ID -> "running" | "done" | "failed" | "gone"
+	completed       []string          // run IDs ApplyOnComplete was called for
+	finished        map[string]string // run ID -> status FinishScheduleRun was called with
+	checked         []string          // run IDs CheckScheduledRunStatus was called for
+	createErr       map[string]error  // cron agent ID -> error CreateFromCronAgent returns
+	recorded        []store.ScheduleRun
 }
 
-func (f *fakeSchedulingDeps) ListTemplates(ctx context.Context) ([]store.Template, error) {
-	return f.templates, nil
+func (f *fakeSchedulingDeps) ListCronAgents(ctx context.Context) ([]store.CronAgent, error) {
+	return f.cronAgents, nil
 }
-func (f *fakeSchedulingDeps) ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error) {
-	return f.runsByTemplate[templateID], nil
+func (f *fakeSchedulingDeps) GetCronAgent(ctx context.Context, id string) (store.CronAgent, error) {
+	for _, ca := range f.cronAgents {
+		if ca.ID == id {
+			return ca, nil
+		}
+	}
+	return store.CronAgent{}, store.ErrCronAgentNotFound
+}
+func (f *fakeSchedulingDeps) GetTemplate(ctx context.Context, id string) (store.Template, error) {
+	if t, ok := f.templates[id]; ok {
+		return t, nil
+	}
+	return store.Template{}, store.ErrTemplateNotFound
+}
+func (f *fakeSchedulingDeps) ListScheduleRunsByCronAgent(ctx context.Context, cronAgentID string) ([]store.ScheduleRun, error) {
+	return f.runsByCronAgent[cronAgentID], nil
 }
 func (f *fakeSchedulingDeps) ListScheduleRunsByStatus(ctx context.Context, status string) ([]store.ScheduleRun, error) {
 	if status == store.ScheduleRunStatusRunning {
@@ -41,19 +56,20 @@ func (f *fakeSchedulingDeps) ListScheduleRunsByStatus(ctx context.Context, statu
 	return nil, nil
 }
 
-// CreateScheduleRun also prepends the new run to runsByTemplate (newest
-// first, matching ListScheduleRunsByTemplate's contract), so a later tick
-// sees it as the template's last run -- exactly what TemplateDue anchors on.
-func (f *fakeSchedulingDeps) CreateScheduleRun(ctx context.Context, templateID, agentID string) (store.ScheduleRun, error) {
+// CreateScheduleRun also prepends the new run to runsByCronAgent (newest
+// first, matching ListScheduleRunsByCronAgent's contract), so a later tick
+// sees it as the cron agent's last run -- exactly what CronAgentDue
+// anchors on.
+func (f *fakeSchedulingDeps) CreateScheduleRun(ctx context.Context, cronAgentID, agentID string) (store.ScheduleRun, error) {
 	run := store.ScheduleRun{
-		ID: fmt.Sprintf("run_%s_%d", templateID, len(f.recorded)), TemplateID: templateID, AgentID: agentID,
+		ID: fmt.Sprintf("run_%s_%d", cronAgentID, len(f.recorded)), CronAgentID: cronAgentID, AgentID: agentID,
 		StartedAt: time.Now(), Status: store.ScheduleRunStatusRunning,
 	}
 	f.recorded = append(f.recorded, run)
-	if f.runsByTemplate == nil {
-		f.runsByTemplate = map[string][]store.ScheduleRun{}
+	if f.runsByCronAgent == nil {
+		f.runsByCronAgent = map[string][]store.ScheduleRun{}
 	}
-	f.runsByTemplate[templateID] = append([]store.ScheduleRun{run}, f.runsByTemplate[templateID]...)
+	f.runsByCronAgent[cronAgentID] = append([]store.ScheduleRun{run}, f.runsByCronAgent[cronAgentID]...)
 	return run, nil
 }
 func (f *fakeSchedulingDeps) FinishScheduleRun(ctx context.Context, id, status string) (store.ScheduleRun, error) {
@@ -63,52 +79,46 @@ func (f *fakeSchedulingDeps) FinishScheduleRun(ctx context.Context, id, status s
 	f.finished[id] = status
 	return store.ScheduleRun{ID: id, Status: status}, nil
 }
-func (f *fakeSchedulingDeps) CreateFromTemplate(ctx context.Context, tmpl store.Template) (store.Agent, error) {
-	f.created = append(f.created, tmpl.ID)
-	if err := f.createErr[tmpl.ID]; err != nil {
+func (f *fakeSchedulingDeps) CreateFromCronAgent(ctx context.Context, ca store.CronAgent) (store.Agent, error) {
+	f.created = append(f.created, ca.ID)
+	if err := f.createErr[ca.ID]; err != nil {
 		return store.Agent{}, err
 	}
-	return store.Agent{ID: "agt_for_" + tmpl.ID}, nil
+	return store.Agent{ID: "agt_for_" + ca.ID}, nil
 }
 func (f *fakeSchedulingDeps) CheckScheduledRunStatus(ctx context.Context, run store.ScheduleRun) (string, error) {
 	f.checked = append(f.checked, run.ID)
 	return f.statuses[run.ID], nil
 }
-func (f *fakeSchedulingDeps) ApplyOnComplete(ctx context.Context, tmpl store.Template, run store.ScheduleRun) error {
+func (f *fakeSchedulingDeps) ApplyOnComplete(ctx context.Context, ca store.CronAgent, run store.ScheduleRun) error {
 	f.completed = append(f.completed, run.ID)
 	return nil
-}
-func (f *fakeSchedulingDeps) GetTemplate(ctx context.Context, id string) (store.Template, error) {
-	for _, t := range f.templates {
-		if t.ID == id {
-			return t, nil
-		}
-	}
-	return store.Template{}, store.ErrTemplateNotFound
 }
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestRunSchedulingTickOnce_FiresDueTemplate(t *testing.T) {
+func TestRunSchedulingTickOnce_FiresDueCronAgent(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		templates: []store.Template{{
-			ID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
+		cronAgents: []store.CronAgent{{
+			ID: "ca_1", TemplateID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
 			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}},
+		templates: map[string]store.Template{"tpl_1": {ID: "tpl_1"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
-	if len(deps.created) != 1 || deps.created[0] != "tpl_1" {
-		t.Errorf("created = %v, want [tpl_1]", deps.created)
+	if len(deps.created) != 1 || deps.created[0] != "ca_1" {
+		t.Errorf("created = %v, want [ca_1]", deps.created)
 	}
 }
 
 func TestRunSchedulingTickOnce_SkipsNotDue(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		templates: []store.Template{{
-			ID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
-			CreatedAt: time.Now().Add(time.Hour), // created in the future: never due yet
+		cronAgents: []store.CronAgent{{
+			ID: "ca_1", TemplateID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
+			CreatedAt: time.Now().Add(time.Hour),
 		}},
+		templates: map[string]store.Template{"tpl_1": {ID: "tpl_1"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -118,28 +128,29 @@ func TestRunSchedulingTickOnce_SkipsNotDue(t *testing.T) {
 }
 
 // TestRunSchedulingTickOnce_FiresAllDueInOneTick pins the Review Focus
-// item: multiple due schedules in one tick must ALL fire, and one
-// template's failure must not block another's.
+// item: multiple due schedules in one tick must ALL fire, and one cron
+// agent's failure must not block another's.
 func TestRunSchedulingTickOnce_FiresAllDueInOneTick(t *testing.T) {
 	past := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	deps := &fakeSchedulingDeps{
-		templates: []store.Template{
-			{ID: "tpl_1", Enabled: true, Schedule: "0 9 * * *", CreatedAt: past},
-			{ID: "tpl_2", Enabled: true, Schedule: "0 10 * * *", CreatedAt: past},
+		cronAgents: []store.CronAgent{
+			{ID: "ca_1", TemplateID: "tpl_1", Enabled: true, Schedule: "0 9 * * *", CreatedAt: past},
+			{ID: "ca_2", TemplateID: "tpl_1", Enabled: true, Schedule: "0 10 * * *", CreatedAt: past},
 		},
+		templates: map[string]store.Template{"tpl_1": {ID: "tpl_1"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
 	if len(deps.created) != 2 {
-		t.Errorf("created = %v, want both tpl_1 and tpl_2", deps.created)
+		t.Errorf("created = %v, want both ca_1 and ca_2", deps.created)
 	}
 }
 
 func TestRunSchedulingTickOnce_ChecksCompletionAndApplies(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", CronAgentID: "ca_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "done"},
-		templates:   []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
+		cronAgents:  []store.CronAgent{{ID: "ca_1", OnComplete: "stop"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -153,9 +164,9 @@ func TestRunSchedulingTickOnce_ChecksCompletionAndApplies(t *testing.T) {
 
 func TestRunSchedulingTickOnce_LeavesIncompleteRunsAlone(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", CronAgentID: "ca_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "running"},
-		templates:   []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
+		cronAgents:  []store.CronAgent{{ID: "ca_1", OnComplete: "stop"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -172,9 +183,9 @@ func TestRunSchedulingTickOnce_LeavesIncompleteRunsAlone(t *testing.T) {
 // as an error, not left "running" forever and not retried.
 func TestRunSchedulingTickOnce_FinalizesGoneAgentAsError(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", CronAgentID: "ca_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "gone"},
-		templates:   []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
+		cronAgents:  []store.CronAgent{{ID: "ca_1", OnComplete: "stop"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -187,40 +198,97 @@ func TestRunSchedulingTickOnce_FinalizesGoneAgentAsError(t *testing.T) {
 }
 
 // TestRunSchedulingTickOnce_SkipsOpenCodeTemplate pins the Global
-// Constraint that scheduling a Template whose Harness is opencode never
-// runs, even if a record reached that state before internal/api's own
-// validation existed to reject it -- defensive insurance at the ticker
-// itself, not just at the API boundary.
+// Constraint that a CronAgent whose referenced Template's Harness is
+// opencode never runs, even if a record reached that state before
+// internal/api's own validation existed to reject it. It also pins
+// Important Finding 1 from the whole-branch review: this is no longer a
+// silent skip -- it must record and finalize a ScheduleRun as an error, the
+// same way a CreateFromCronAgent failure does, so the CronAgent shows up in
+// run history instead of logging a Warn forever, and so the next tick does
+// not retry it before its next real cron fire.
 func TestRunSchedulingTickOnce_SkipsOpenCodeTemplate(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		templates: []store.Template{{
-			ID: "tpl_1", Enabled: true, Schedule: "0 9 * * *", Harness: "opencode",
+		cronAgents: []store.CronAgent{{
+			ID: "ca_1", TemplateID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
 			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}},
+		templates: map[string]store.Template{"tpl_1": {ID: "tpl_1", Harness: "opencode"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
 	if len(deps.created) != 0 {
 		t.Errorf("created = %v, want none (opencode templates are rejected defensively)", deps.created)
 	}
+	if len(deps.recorded) != 1 {
+		t.Fatalf("recorded runs = %+v, want exactly one for the rejected cron agent", deps.recorded)
+	}
+	run := deps.recorded[0]
+	if run.CronAgentID != "ca_1" || run.AgentID != "" {
+		t.Errorf("recorded run = %+v, want CronAgentID ca_1 and an empty AgentID", run)
+	}
+	if deps.finished[run.ID] != store.ScheduleRunStatusError {
+		t.Errorf("finished[%s] = %q, want %q", run.ID, deps.finished[run.ID], store.ScheduleRunStatusError)
+	}
+
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+	if len(deps.recorded) != 1 {
+		t.Errorf("recorded after a second tick = %v, want still just one run (the anchor advanced, not due again today)", deps.recorded)
+	}
 }
 
-// TestRunSchedulingTickOnce_DeletedTemplateStillFinalizesRun pins the
-// Review Focus item: a run whose template was deleted while it was still
-// in flight must still be checked, still get ApplyOnComplete called (with
-// the zero-value Template, whose OnComplete "" is "leave"), and still be
-// finalized as success -- never stuck "running" just because its template
-// is gone.
-func TestRunSchedulingTickOnce_DeletedTemplateStillFinalizesRun(t *testing.T) {
+// TestRunSchedulingTickOnce_MissingTemplateRecordsErrorRun pins the other
+// half of Important Finding 1: GetTemplate failing outright (e.g. the
+// Template was deleted out-of-band) must also record and finalize a
+// ScheduleRun as an error, not just log a Warn and leave the CronAgent in a
+// silent limbo.
+func TestRunSchedulingTickOnce_MissingTemplateRecordsErrorRun(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_deleted", AgentID: "agt_1", StartedAt: time.Now()}},
+		cronAgents: []store.CronAgent{{
+			ID: "ca_1", TemplateID: "tpl_missing", Enabled: true, Schedule: "0 9 * * *",
+			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}},
+		// No templates at all: tpl_missing does not resolve.
+	}
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+
+	if len(deps.created) != 0 {
+		t.Errorf("created = %v, want none (the template does not resolve)", deps.created)
+	}
+	if len(deps.recorded) != 1 {
+		t.Fatalf("recorded runs = %+v, want exactly one for the unresolvable cron agent", deps.recorded)
+	}
+	run := deps.recorded[0]
+	if run.CronAgentID != "ca_1" || run.AgentID != "" {
+		t.Errorf("recorded run = %+v, want CronAgentID ca_1 and an empty AgentID", run)
+	}
+	if deps.finished[run.ID] != store.ScheduleRunStatusError {
+		t.Errorf("finished[%s] = %q, want %q", run.ID, deps.finished[run.ID], store.ScheduleRunStatusError)
+	}
+
+	runSchedulingTickOnce(context.Background(), deps, testLog())
+	if len(deps.recorded) != 1 {
+		t.Errorf("recorded after a second tick = %v, want still just one run (the anchor advanced, not due again today)", deps.recorded)
+	}
+}
+
+// TestRunSchedulingTickOnce_DeletedCronAgentStillFinalizesRun pins the
+// Review Focus item: a run whose CronAgent was deleted while it was still
+// in flight must still be checked, still get ApplyOnComplete called (with
+// the zero-value CronAgent, whose OnComplete "" is "leave"), and still be
+// finalized -- never stuck "running" just because its CronAgent is gone.
+// This is the real analog of #233's "deleted template still finalizes
+// run" fix: Task 1 blocks deleting a TEMPLATE while a CronAgent references
+// it, but nothing blocks deleting the CronAgent itself mid-flight.
+func TestRunSchedulingTickOnce_DeletedCronAgentStillFinalizesRun(t *testing.T) {
+	deps := &fakeSchedulingDeps{
+		runningRuns: []store.ScheduleRun{{ID: "run_1", CronAgentID: "ca_deleted", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "done"},
-		// No templates at all: tpl_deleted has been removed.
+		// No cron agents at all: ca_deleted has been removed.
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
 	if len(deps.completed) != 1 || deps.completed[0] != "run_1" {
-		t.Errorf("completed = %v, want [run_1] (ApplyOnComplete still called, with the zero-value template)", deps.completed)
+		t.Errorf("completed = %v, want [run_1] (ApplyOnComplete still called, with the zero-value cron agent)", deps.completed)
 	}
 	if deps.finished["run_1"] != store.ScheduleRunStatusSuccess {
 		t.Errorf("finished[run_1] = %q, want %q", deps.finished["run_1"], store.ScheduleRunStatusSuccess)
@@ -228,14 +296,13 @@ func TestRunSchedulingTickOnce_DeletedTemplateStillFinalizesRun(t *testing.T) {
 }
 
 // TestRunSchedulingTickOnce_FailedRunAppliesPolicyAndErrors pins Fix 1:
-// a one-shot task whose claude exited non-zero ("failed", via the
-// /workspace/.task-failed sentinel) still runs the template's cleanup
-// policy, but is finalized as an error, not success.
+// a one-shot task whose claude exited non-zero still runs the cron
+// agent's cleanup policy, but is finalized as an error, not success.
 func TestRunSchedulingTickOnce_FailedRunAppliesPolicyAndErrors(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		runningRuns: []store.ScheduleRun{{ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1", StartedAt: time.Now()}},
+		runningRuns: []store.ScheduleRun{{ID: "run_1", CronAgentID: "ca_1", AgentID: "agt_1", StartedAt: time.Now()}},
 		statuses:    map[string]string{"run_1": "failed"},
-		templates:   []store.Template{{ID: "tpl_1", OnComplete: "delete"}},
+		cronAgents:  []store.CronAgent{{ID: "ca_1", OnComplete: "delete"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -253,11 +320,11 @@ func TestRunSchedulingTickOnce_FailedRunAppliesPolicyAndErrors(t *testing.T) {
 func TestRunSchedulingTickOnce_TimesOutStuckRun(t *testing.T) {
 	deps := &fakeSchedulingDeps{
 		runningRuns: []store.ScheduleRun{{
-			ID: "run_1", TemplateID: "tpl_1", AgentID: "agt_1",
+			ID: "run_1", CronAgentID: "ca_1", AgentID: "agt_1",
 			StartedAt: time.Now().Add(-maxScheduledRunDuration - time.Minute),
 		}},
-		statuses:  map[string]string{"run_1": "running"},
-		templates: []store.Template{{ID: "tpl_1", OnComplete: "stop"}},
+		statuses:   map[string]string{"run_1": "running"},
+		cronAgents: []store.CronAgent{{ID: "ca_1", OnComplete: "stop"}},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -273,16 +340,17 @@ func TestRunSchedulingTickOnce_TimesOutStuckRun(t *testing.T) {
 }
 
 // TestRunSchedulingTickOnce_CreateFailureRecordsErrorRun pins Fix 3: a
-// CreateFromTemplate failure still produces a ScheduleRun finalized as an
+// CreateFromCronAgent failure still produces a ScheduleRun finalized as an
 // error (visible in run history), and because that run advances
-// TemplateDue's anchor, the very next tick does not retry it.
+// CronAgentDue's anchor, the very next tick does not retry it.
 func TestRunSchedulingTickOnce_CreateFailureRecordsErrorRun(t *testing.T) {
 	deps := &fakeSchedulingDeps{
-		templates: []store.Template{{
-			ID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
+		cronAgents: []store.CronAgent{{
+			ID: "ca_1", TemplateID: "tpl_1", Enabled: true, Schedule: "0 9 * * *",
 			CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		}},
-		createErr: map[string]error{"tpl_1": errors.New("image pull failed")},
+		templates: map[string]store.Template{"tpl_1": {ID: "tpl_1"}},
+		createErr: map[string]error{"ca_1": errors.New("image pull failed")},
 	}
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 
@@ -290,8 +358,8 @@ func TestRunSchedulingTickOnce_CreateFailureRecordsErrorRun(t *testing.T) {
 		t.Fatalf("recorded runs = %+v, want exactly one for the failed attempt", deps.recorded)
 	}
 	run := deps.recorded[0]
-	if run.TemplateID != "tpl_1" || run.AgentID != "" {
-		t.Errorf("recorded run = %+v, want TemplateID tpl_1 and an empty AgentID", run)
+	if run.CronAgentID != "ca_1" || run.AgentID != "" {
+		t.Errorf("recorded run = %+v, want CronAgentID ca_1 and an empty AgentID", run)
 	}
 	if deps.finished[run.ID] != store.ScheduleRunStatusError {
 		t.Errorf("finished[%s] = %q, want %q", run.ID, deps.finished[run.ID], store.ScheduleRunStatusError)
@@ -299,6 +367,6 @@ func TestRunSchedulingTickOnce_CreateFailureRecordsErrorRun(t *testing.T) {
 
 	runSchedulingTickOnce(context.Background(), deps, testLog())
 	if len(deps.created) != 1 {
-		t.Errorf("CreateFromTemplate called %d times across two ticks, want 1 (anchor advanced past the failure)", len(deps.created))
+		t.Errorf("created after a second tick = %v, want still just [ca_1] (the anchor advanced, not due again today)", deps.created)
 	}
 }

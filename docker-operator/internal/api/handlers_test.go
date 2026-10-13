@@ -96,12 +96,20 @@ type fakeManager struct {
 	updateTemplateErr error
 
 	deleteTemplateErr error
+
+	cronAgents         map[string]store.CronAgent
+	nextCronAgentID    int
+	listCronAgentsErr  error
+	createCronAgentErr error
+	updateCronAgentErr error
+	deleteCronAgentErr error
 }
 
 func newFakeManager(maxAgents int) *fakeManager {
 	return &fakeManager{
 		agents:           map[string]store.Agent{},
 		templates:        map[string]store.Template{},
+		cronAgents:       map[string]store.CronAgent{},
 		maxAgents:        maxAgents,
 		defaultBackend:   config.BackendOllama,
 		defaultModel:     "glm-5.3:cloud",
@@ -538,6 +546,22 @@ func (f *fakeManager) ListTemplates(_ context.Context) ([]store.Template, error)
 	return out, nil
 }
 
+// GetTemplate mirrors store.GetTemplate/agent.Manager.GetTemplate's error
+// shape: an unknown id reads back as an error satisfying
+// store.IsTemplateNotFound. Not listed among this task's brief fakes, but
+// required at compile time once cronagents.go's lookUpTemplateForCronAgent
+// calls h.mgr.GetTemplate -- the interface method the brief's own
+// cronagents.go sketch depends on but never added to AgentManager.
+func (f *fakeManager) GetTemplate(_ context.Context, id string) (store.Template, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.templates[id]
+	if !ok {
+		return store.Template{}, fmt.Errorf("getting template %q: %w", id, store.ErrTemplateNotFound)
+	}
+	return t, nil
+}
+
 func (f *fakeManager) CreateTemplate(_ context.Context, spec store.TemplateCreateSpec) (store.Template, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -561,6 +585,7 @@ func (f *fakeManager) CreateTemplate(_ context.Context, spec store.TemplateCreat
 		MaxContextTokens:     spec.MaxContextTokens,
 		ImageTag:             spec.ImageTag,
 		AutoMode:             spec.AutoMode,
+		Harness:              spec.Harness,
 	}
 	f.templates[t.ID] = t
 	return t, nil
@@ -590,6 +615,7 @@ func (f *fakeManager) UpdateTemplate(_ context.Context, id string, spec store.Te
 	t.MaxContextTokens = spec.MaxContextTokens
 	t.ImageTag = spec.ImageTag
 	t.AutoMode = spec.AutoMode
+	t.Harness = spec.Harness
 	f.templates[id] = t
 	return t, nil
 }
@@ -604,14 +630,66 @@ func (f *fakeManager) DeleteTemplate(_ context.Context, id string) error {
 	return nil
 }
 
-// ListScheduleRunsByTemplate mirrors ListTemplates's style: a nil map
-// entry (the common case -- a template with no scheduled runs yet)
-// reads as an empty, never-nil slice, matching the real Store's own
-// never-nil-list convention.
-func (f *fakeManager) ListScheduleRunsByTemplate(_ context.Context, templateID string) ([]store.ScheduleRun, error) {
+func (f *fakeManager) ListCronAgents(_ context.Context) ([]store.CronAgent, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	runs := f.scheduleRuns[templateID]
+	if f.listCronAgentsErr != nil {
+		return nil, f.listCronAgentsErr
+	}
+	out := make([]store.CronAgent, 0, len(f.cronAgents))
+	for _, ca := range f.cronAgents {
+		out = append(out, ca)
+	}
+	return out, nil
+}
+
+func (f *fakeManager) CreateCronAgent(_ context.Context, spec store.CronAgentCreateSpec) (store.CronAgent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createCronAgentErr != nil {
+		return store.CronAgent{}, f.createCronAgentErr
+	}
+	f.nextCronAgentID++
+	ca := store.CronAgent{
+		ID: fmt.Sprintf("ca_%08d", f.nextCronAgentID), Name: spec.Name, TemplateID: spec.TemplateID,
+		Schedule: spec.Schedule, Enabled: spec.Enabled, Task: spec.Task, OnComplete: spec.OnComplete,
+	}
+	f.cronAgents[ca.ID] = ca
+	return ca, nil
+}
+
+func (f *fakeManager) UpdateCronAgent(_ context.Context, id string, spec store.CronAgentCreateSpec) (store.CronAgent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.updateCronAgentErr != nil {
+		return store.CronAgent{}, f.updateCronAgentErr
+	}
+	ca, ok := f.cronAgents[id]
+	if !ok {
+		return store.CronAgent{}, fmt.Errorf("updating cron agent %q: %w", id, store.ErrCronAgentNotFound)
+	}
+	ca.Name, ca.TemplateID, ca.Schedule, ca.Enabled, ca.Task, ca.OnComplete =
+		spec.Name, spec.TemplateID, spec.Schedule, spec.Enabled, spec.Task, spec.OnComplete
+	f.cronAgents[id] = ca
+	return ca, nil
+}
+
+func (f *fakeManager) DeleteCronAgent(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteCronAgentErr != nil {
+		return f.deleteCronAgentErr
+	}
+	delete(f.cronAgents, id)
+	return nil
+}
+
+// ListScheduleRunsByCronAgent mirrors ListCronAgents's style: a nil map
+// entry reads as an empty, never-nil slice.
+func (f *fakeManager) ListScheduleRunsByCronAgent(_ context.Context, cronAgentID string) ([]store.ScheduleRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	runs := f.scheduleRuns[cronAgentID]
 	out := make([]store.ScheduleRun, len(runs))
 	copy(out, runs)
 	return out, nil

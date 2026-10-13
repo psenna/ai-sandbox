@@ -22,15 +22,16 @@ const maxScheduledRunDuration = 2 * time.Hour
 // startPeriodicReconcile -- so schedule_test.go can drive it with an
 // in-memory fake instead of a real Manager and BoltDB file.
 type schedulingDeps interface {
-	ListTemplates(ctx context.Context) ([]store.Template, error)
+	ListCronAgents(ctx context.Context) ([]store.CronAgent, error)
+	GetCronAgent(ctx context.Context, id string) (store.CronAgent, error)
 	GetTemplate(ctx context.Context, id string) (store.Template, error)
-	ListScheduleRunsByTemplate(ctx context.Context, templateID string) ([]store.ScheduleRun, error)
+	ListScheduleRunsByCronAgent(ctx context.Context, cronAgentID string) ([]store.ScheduleRun, error)
 	ListScheduleRunsByStatus(ctx context.Context, status string) ([]store.ScheduleRun, error)
-	CreateScheduleRun(ctx context.Context, templateID, agentID string) (store.ScheduleRun, error)
+	CreateScheduleRun(ctx context.Context, cronAgentID, agentID string) (store.ScheduleRun, error)
 	FinishScheduleRun(ctx context.Context, id, status string) (store.ScheduleRun, error)
-	CreateFromTemplate(ctx context.Context, tmpl store.Template) (store.Agent, error)
+	CreateFromCronAgent(ctx context.Context, ca store.CronAgent) (store.Agent, error)
 	CheckScheduledRunStatus(ctx context.Context, run store.ScheduleRun) (status string, err error)
-	ApplyOnComplete(ctx context.Context, tmpl store.Template, run store.ScheduleRun) error
+	ApplyOnComplete(ctx context.Context, ca store.CronAgent, run store.ScheduleRun) error
 }
 
 // startSchedulingTicker fires due schedules and checks in-flight runs for
@@ -65,73 +66,99 @@ func startSchedulingTicker(deps schedulingDeps, interval time.Duration, log *slo
 	}
 }
 
-// runSchedulingTickOnce is one tick's body: fire every due, enabled
-// template, then check every in-flight run for completion. Each half
+// runSchedulingTickOnce is one tick's body: fire every due, enabled cron
+// agent, then check every in-flight run for completion. Each half
 // processes every eligible item regardless of an earlier one's failure --
-// one template's CreateFromTemplate error, or one run's completion-check
+// one cron agent's CreateFromCronAgent error, or one run's completion-check
 // error, is logged and the loop continues, mirroring teardown's own
 // "collect every error, never stop at the first" stance.
 func runSchedulingTickOnce(ctx context.Context, deps schedulingDeps, log *slog.Logger) {
-	fireDueTemplates(ctx, deps, log)
+	fireDueCronAgents(ctx, deps, log)
 	checkRunningSchedules(ctx, deps, log)
 }
 
-func fireDueTemplates(ctx context.Context, deps schedulingDeps, log *slog.Logger) {
-	templates, err := deps.ListTemplates(ctx)
+func fireDueCronAgents(ctx context.Context, deps schedulingDeps, log *slog.Logger) {
+	cronAgents, err := deps.ListCronAgents(ctx)
 	if err != nil {
-		log.Warn("scheduling tick: listing templates", "error", err)
+		log.Warn("scheduling tick: listing cron agents", "error", err)
 		return
 	}
 	now := time.Now()
-	for _, tmpl := range templates {
-		if tmpl.Schedule == "" || !tmpl.Enabled {
+	for _, ca := range cronAgents {
+		if ca.Schedule == "" || !ca.Enabled {
 			continue
 		}
-		runs, err := deps.ListScheduleRunsByTemplate(ctx, tmpl.ID)
+		runs, err := deps.ListScheduleRunsByCronAgent(ctx, ca.ID)
 		if err != nil {
-			log.Warn("scheduling tick: listing runs for template", "template_id", tmpl.ID, "error", err)
+			log.Warn("scheduling tick: listing runs for cron agent", "cron_agent_id", ca.ID, "error", err)
 			continue
 		}
 		var lastRun *store.ScheduleRun
 		if len(runs) > 0 {
-			lastRun = &runs[0] // newest first, per ListScheduleRunsByTemplate's contract
+			lastRun = &runs[0] // newest first, per ListScheduleRunsByCronAgent's contract
 		}
-		if !agent.TemplateDue(tmpl, lastRun, now) {
+		if !agent.CronAgentDue(ca, lastRun, now) {
 			continue
 		}
 
-		// Defensive only: internal/api's create/update validation is the
-		// real enforcement of "scheduling is Claude Code only in v1,"
-		// rejecting this combination before a template can ever be saved.
-		// This check exists for a record saved before that validation
-		// existed, or reached this state some other inconsistent way.
+		// Resolve the referenced Template to run the same opencode-defensive
+		// check #233 had on Template.Harness directly -- CronAgent itself
+		// carries no Harness field, it inherits one transitively through
+		// the Template it references.
+		//
+		// Either failure here -- the Template is gone, or it was edited to
+		// the opencode harness after this CronAgent was created against it
+		// (Template validation no longer cross-checks that; it only runs at
+		// CronAgent create/update time) -- must NOT just `continue` silently:
+		// that would leave the CronAgent in a permanent limbo with no run
+		// history and a Warn logged on every tick forever. Instead it gets
+		// the same error-ScheduleRun treatment as a CreateFromCronAgent
+		// failure below, so it shows up in run history and advances
+		// CronAgentDue's anchor to the next real cron fire.
+		tmpl, err := deps.GetTemplate(ctx, ca.TemplateID)
+		if err != nil {
+			log.Warn("scheduling tick: loading template for cron agent", "cron_agent_id", ca.ID, "template_id", ca.TemplateID, "error", err)
+			recordFailedScheduleRun(ctx, deps, log, ca.ID)
+			continue
+		}
 		if tmpl.Harness == config.HarnessOpenCode {
-			log.Warn("scheduling tick: template has the opencode harness, which scheduling does not support; skipping", "template_id", tmpl.ID)
+			log.Warn("scheduling tick: cron agent's template has the opencode harness, which scheduling does not support; skipping", "cron_agent_id", ca.ID)
+			recordFailedScheduleRun(ctx, deps, log, ca.ID)
 			continue
 		}
 
-		a, err := deps.CreateFromTemplate(ctx, tmpl)
+		a, err := deps.CreateFromCronAgent(ctx, ca)
 		if err != nil {
 			// A failed attempt still gets a ScheduleRun (with an empty
 			// AgentID), finalized as an error right away: it shows up in
-			// the run history, and it advances TemplateDue's anchor so a
-			// persistently-failing template is retried at its next cron
-			// fire, not on every single tick. It is never "running", so
-			// checkRunningSchedules never sees its empty AgentID.
-			log.Warn("scheduling tick: creating agent from template", "template_id", tmpl.ID, "error", err)
-			run, rerr := deps.CreateScheduleRun(ctx, tmpl.ID, "")
-			if rerr != nil {
-				log.Warn("scheduling tick: recording a failed schedule run", "template_id", tmpl.ID, "error", rerr)
-				continue
-			}
-			if _, ferr := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusError); ferr != nil {
-				log.Warn("scheduling tick: finalizing a failed schedule run", "run_id", run.ID, "error", ferr)
-			}
+			// the run history, and it advances CronAgentDue's anchor so a
+			// persistently-failing cron agent is retried at its next cron
+			// fire, not on every single tick.
+			log.Warn("scheduling tick: creating agent from cron agent", "cron_agent_id", ca.ID, "error", err)
+			recordFailedScheduleRun(ctx, deps, log, ca.ID)
 			continue
 		}
-		if _, err := deps.CreateScheduleRun(ctx, tmpl.ID, a.ID); err != nil {
-			log.Warn("scheduling tick: recording schedule run", "template_id", tmpl.ID, "agent_id", a.ID, "error", err)
+		if _, err := deps.CreateScheduleRun(ctx, ca.ID, a.ID); err != nil {
+			log.Warn("scheduling tick: recording schedule run", "cron_agent_id", ca.ID, "agent_id", a.ID, "error", err)
 		}
+	}
+}
+
+// recordFailedScheduleRun records a ScheduleRun for cronAgentID with an
+// empty AgentID and immediately finalizes it as store.ScheduleRunStatusError.
+// Shared by every fireDueCronAgents failure branch (template lookup, the
+// opencode-harness guard, CreateFromCronAgent itself): each failure still
+// gets a run recorded, so it shows up in run history instead of leaving the
+// cron agent in a silent limbo, and so CronAgentDue's anchor advances to the
+// cron agent's next real fire instead of re-tripping on every tick.
+func recordFailedScheduleRun(ctx context.Context, deps schedulingDeps, log *slog.Logger, cronAgentID string) {
+	run, rerr := deps.CreateScheduleRun(ctx, cronAgentID, "")
+	if rerr != nil {
+		log.Warn("scheduling tick: recording a failed schedule run", "cron_agent_id", cronAgentID, "error", rerr)
+		return
+	}
+	if _, ferr := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusError); ferr != nil {
+		log.Warn("scheduling tick: finalizing a failed schedule run", "run_id", run.ID, "error", ferr)
 	}
 }
 
@@ -158,15 +185,9 @@ func checkRunningSchedules(ctx context.Context, deps schedulingDeps, log *slog.L
 		case "running":
 			continue
 		case "failed":
-			// The one-shot task exited non-zero. The template's cleanup
-			// policy still applies; only the run's outcome differs.
 			finishScheduledRun(ctx, deps, log, run, store.ScheduleRunStatusError)
 			continue
 		case "gone":
-			// The agent is gone (deleted out-of-band, or by an earlier,
-			// crashed OnComplete pass) -- finalize as an error rather than
-			// leaving this run "running" forever, re-checked every tick
-			// with nothing ever able to finish it.
 			if _, err := deps.FinishScheduleRun(ctx, run.ID, store.ScheduleRunStatusError); err != nil {
 				log.Warn("scheduling tick: finalizing a gone run as error", "run_id", run.ID, "error", err)
 			}
@@ -177,23 +198,23 @@ func checkRunningSchedules(ctx context.Context, deps schedulingDeps, log *slog.L
 	}
 }
 
-// finishScheduledRun applies run's template's OnComplete policy, then
+// finishScheduledRun applies run's cron agent's OnComplete policy, then
 // finalizes run with status. Shared by the done, failed and timed-out
 // paths, which differ only in that final status.
 func finishScheduledRun(ctx context.Context, deps schedulingDeps, log *slog.Logger, run store.ScheduleRun, status string) {
-	// A template deleted while this run was in flight -- allowed, since a
-	// template's own lifecycle is independent of both its runs and their
-	// agents -- leaves tmpl as the zero value here, whose OnComplete ("")
+	// A CronAgent deleted while this run was in flight -- allowed, since a
+	// CronAgent's own lifecycle is independent of both its runs and their
+	// agents -- leaves ca as the zero value here, whose OnComplete ("")
 	// ApplyOnComplete's switch treats as "leave" (its safest no-op
 	// default). The run still gets finalized below either way; only the
 	// cleanup policy silently becomes "leave" instead of whatever the
-	// deleted template specified.
-	tmpl, err := deps.GetTemplate(ctx, run.TemplateID)
-	if err != nil && !store.IsTemplateNotFound(err) {
-		log.Warn("scheduling tick: loading template for finished run", "run_id", run.ID, "template_id", run.TemplateID, "error", err)
+	// deleted cron agent specified.
+	ca, err := deps.GetCronAgent(ctx, run.CronAgentID)
+	if err != nil && !store.IsCronAgentNotFound(err) {
+		log.Warn("scheduling tick: loading cron agent for finished run", "run_id", run.ID, "cron_agent_id", run.CronAgentID, "error", err)
 		return
 	}
-	if err := deps.ApplyOnComplete(ctx, tmpl, run); err != nil {
+	if err := deps.ApplyOnComplete(ctx, ca, run); err != nil {
 		log.Warn("scheduling tick: applying on-complete policy", "run_id", run.ID, "error", err)
 	}
 	if _, err := deps.FinishScheduleRun(ctx, run.ID, status); err != nil {

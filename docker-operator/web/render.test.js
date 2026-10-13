@@ -1011,23 +1011,13 @@ test('renderTemplateBar is a pure picker now (no save/delete controls)', () => {
 
 // --- the Templates page -------------------------------------------------
 
-test('renderTemplatesPage lists templates with a schedule summary', () => {
+test('renderTemplatesPage lists templates by name', () => {
 	const html = Render.renderTemplatesPage([
-		{ id: 'tpl_1', name: 'Daily report', schedule: '0 9 * * *', enabled: true },
-		{ id: 'tpl_2', name: 'Plain template', schedule: '', enabled: false },
+		{ id: 'tpl_1', name: 'Daily report' },
+		{ id: 'tpl_2', name: 'Plain template' },
 	]);
 	assert.match(html, /Daily report/);
 	assert.match(html, /Plain template/);
-	assert.match(html, /0 9 \* \* \*/);
-});
-
-test('renderTemplateForm includes the five new scheduling fields', () => {
-	const html = Render.renderTemplateForm({ id: 'tpl_1', name: 'x' });
-	assert.match(html, /name="harness"/);
-	assert.match(html, /name="schedule"/);
-	assert.match(html, /name="enabled"/);
-	assert.match(html, /name="task"/);
-	assert.match(html, /name="on_complete"/);
 });
 
 test('renderTemplateForm: Backend and Auto mode are selects, not free-text inputs', () => {
@@ -1052,10 +1042,88 @@ test('renderTemplateForm: rarely-used fields are grouped under a collapsed Advan
 	}
 });
 
-test('renderTemplateForm: two labeled sections group config vs. scheduling fields', () => {
+test('renderTemplateForm: no longer renders a Scheduling section', () => {
 	const html = Render.renderTemplateForm({});
-	assert.match(html, /<h3 class="template-form__section-heading">Agent configuration<\/h3>/);
-	assert.match(html, /<h3 class="template-form__section-heading">Scheduling<\/h3>/);
+	assert.ok(!html.includes('Scheduling'));
+	assert.ok(!html.includes('name="schedule"'));
+	assert.ok(!html.includes('name="task"'));
+	assert.ok(!html.includes('name="on_complete"'));
+	assert.ok(!html.includes('name="enabled"'));
+});
+
+test('renderCronAgentsPage lists cron agents with a schedule summary and Template name', () => {
+	const html = Render.renderCronAgentsPage(
+		[
+			{ id: 'ca_1', name: 'nightly', template_id: 'tpl_1', schedule: '0 9 * * *', enabled: true },
+			{ id: 'ca_2', name: 'weekly', template_id: 'tpl_2', schedule: '', enabled: false },
+		],
+		{ tpl_1: 'base config', tpl_2: 'other' }
+	);
+	assert.ok(html.includes('nightly'));
+	assert.ok(html.includes('0 9 * * *'));
+	assert.ok(html.includes('(enabled)'));
+	assert.ok(html.includes('cron-agents-page__template'));
+	assert.ok(html.includes('base config'));
+	assert.ok(html.includes('other'));
+});
+
+test('renderCronAgentsPage: falls back to the raw template_id, or "(missing template)", when the lookup has no entry', () => {
+	const html = Render.renderCronAgentsPage(
+		[
+			{ id: 'ca_1', name: 'nightly', template_id: 'tpl_gone', schedule: '0 9 * * *', enabled: true },
+			{ id: 'ca_2', name: 'weekly', template_id: '', schedule: '', enabled: false },
+		],
+		{ tpl_1: 'base config' }
+	);
+	assert.ok(html.includes('tpl_gone'));
+	assert.ok(html.includes('(missing template)'));
+});
+
+test('renderCronAgentsPage: backward compatible with no templatesByID argument (or an empty one)', () => {
+	const cronAgents = [{ id: 'ca_1', name: 'nightly', template_id: 'tpl_1', schedule: '0 9 * * *', enabled: true }];
+	const noArg = Render.renderCronAgentsPage(cronAgents);
+	assert.ok(noArg.includes('cron-agents-page'));
+	assert.ok(noArg.includes('nightly'));
+	assert.ok(noArg.includes('tpl_1'));
+
+	const emptyArg = Render.renderCronAgentsPage(cronAgents, {});
+	assert.ok(emptyArg.includes('tpl_1'));
+});
+
+test('renderCronAgentsPage: empty/null list still renders the shell', () => {
+	assert.ok(Render.renderCronAgentsPage([]).includes('cron-agents-page'));
+	assert.ok(Render.renderCronAgentsPage(null).includes('cron-agents-page'));
+});
+
+test('renderCronAgentForm: renders Name, a Template select, Schedule, Enabled, Task, On complete', () => {
+	const html = Render.renderCronAgentForm(
+		{ id: 'ca_1', name: 'nightly', template_id: 'tpl_1', schedule: '0 9 * * *', enabled: true, task: 'do it', on_complete: 'stop' },
+		[{ id: 'tpl_1', name: 'base config' }, { id: 'tpl_2', name: 'other' }]
+	);
+	assert.ok(html.includes('name="name"'));
+	assert.ok(html.includes('name="template_id"'));
+	assert.ok(html.includes('<option value="tpl_1"') && html.includes('selected'));
+	assert.ok(html.includes('base config'));
+	assert.ok(html.includes('name="schedule"'));
+	assert.ok(html.includes('name="enabled"'));
+	assert.ok(html.includes('name="task"'));
+	assert.ok(html.includes('name="on_complete"'));
+});
+
+test('renderCronAgentForm: a null cron agent renders a blank form with no template pre-selected', () => {
+	const html = Render.renderCronAgentForm(null, [{ id: 'tpl_1', name: 'base config' }]);
+	assert.ok(html.includes('<option value="">'));
+	assert.ok(!html.includes('selected>base config'));
+});
+
+test('renderCronAgentForm: escapes every value', () => {
+	const html = Render.renderCronAgentForm(
+		{ name: '<img src=x>', template_id: 'tpl_1', schedule: '0 9 * * *', task: '<script>', on_complete: 'stop' },
+		[{ id: 'tpl_1', name: '<b>bold</b>' }]
+	);
+	assert.ok(!html.includes('<img src=x>'));
+	assert.ok(!html.includes('<script>'));
+	assert.ok(!html.includes('<b>bold</b>'));
 });
 
 test('renderScheduleRunList renders status and timestamps, newest first', () => {

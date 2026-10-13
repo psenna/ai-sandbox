@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/psenna/ai-sandbox/docker-operator/internal/agent"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/config"
 	"github.com/psenna/ai-sandbox/docker-operator/internal/store"
 )
@@ -40,11 +39,7 @@ type templateRequest struct {
 	ImageTag             string `json:"image_tag"`
 	AutoMode             string `json:"auto_mode"`
 
-	Harness    string `json:"harness"`
-	Schedule   string `json:"schedule"`
-	Enabled    bool   `json:"enabled"`
-	Task       string `json:"task"`
-	OnComplete string `json:"on_complete"`
+	Harness string `json:"harness"`
 }
 
 // toAgentFieldsRequest maps templateRequest's 9 shared fields onto
@@ -80,30 +75,14 @@ func (t templateRequest) toTemplateCreateSpec() store.TemplateCreateSpec {
 		MaxContextTokens:     t.MaxContextTokens,
 		ImageTag:             t.ImageTag,
 		AutoMode:             t.AutoMode,
-
-		Harness:    t.Harness,
-		Schedule:   t.Schedule,
-		Enabled:    t.Enabled,
-		Task:       t.Task,
-		OnComplete: t.OnComplete,
+		Harness:              t.Harness,
 	}
-}
-
-// validOnComplete reports whether s is one of the three values ApplyOnComplete
-// understands. Template-only: agents have no OnComplete concept, so this
-// lives here rather than in internal/config alongside the agent-level
-// validators.
-func validOnComplete(s string) bool {
-	return s == "stop" || s == "delete" || s == "leave"
 }
 
 // validateTemplateFields runs the template-specific check (a non-empty
 // name) plus every createAgentRequest field check, reused via
-// toAgentFieldsRequest. When Schedule is set, it also requires Harness, Task
-// and OnComplete together, rejects malformed cron strings (parsed with the
-// exact parser the ticker itself uses), and rejects the opencode harness (v1
-// scheduling is Claude Code only). A template with no Schedule validates
-// exactly as it did before this feature -- no new requirements for it.
+// toAgentFieldsRequest, plus a plain Harness enum check (decision 2 keeps
+// Harness on Template even though scheduling no longer is).
 func validateTemplateFields(req templateRequest) *apiErr {
 	if strings.TrimSpace(req.Name) == "" {
 		return &apiErr{http.StatusBadRequest, CodeMissingField, `"name" must not be empty`, "name"}
@@ -111,26 +90,8 @@ func validateTemplateFields(req templateRequest) *apiErr {
 	if ae := validateAgentFields(req.toAgentFieldsRequest()); ae != nil {
 		return ae
 	}
-	if req.Schedule == "" {
-		return nil
-	}
-	if req.Harness == "" {
-		return &apiErr{http.StatusBadRequest, CodeMissingField, `"harness" is required when "schedule" is set`, "harness"}
-	}
-	if !config.ValidHarness(req.Harness) {
+	if req.Harness != "" && !config.ValidHarness(req.Harness) {
 		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"harness" must be "claude-code" or "opencode"`, "harness"}
-	}
-	if req.Harness == config.HarnessOpenCode {
-		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `scheduling is not supported for the "opencode" harness yet`, "harness"}
-	}
-	if strings.TrimSpace(req.Task) == "" {
-		return &apiErr{http.StatusBadRequest, CodeMissingField, `"task" is required when "schedule" is set`, "task"}
-	}
-	if !validOnComplete(req.OnComplete) {
-		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"on_complete" must be "stop", "delete" or "leave"`, "on_complete"}
-	}
-	if _, err := agent.ParseSchedule(req.Schedule); err != nil {
-		return &apiErr{http.StatusBadRequest, CodeInvalidParam, `"schedule" must be a valid standard 5-field cron expression`, "schedule"}
 	}
 	return nil
 }
@@ -145,6 +106,8 @@ func (h *Handler) templateError(w http.ResponseWriter, action string, err error)
 		writeError(w, http.StatusNotFound, CodeNotFound, "no such template", "")
 	case store.IsTemplateNameExists(err):
 		writeError(w, http.StatusConflict, CodeDuplicateName, "a template with that name already exists", "name")
+	case store.IsTemplateInUse(err):
+		writeError(w, http.StatusConflict, CodeTemplateInUse, err.Error(), "")
 	default:
 		h.internalError(w, action, err)
 	}
@@ -203,29 +166,17 @@ func (h *Handler) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
-// handleDeleteTemplate always answers 200, whether or not the template
-// existed, matching handleDelete's idempotent stance for an agent.
+// handleDeleteTemplate always answers 200 for a template that did not exist
+// (matching handleDelete's idempotent stance for an agent), but a template
+// still referenced by a CronAgent comes back as store.ErrTemplateInUse, not
+// success, so that case is routed through templateError for the same 409 a
+// create/update collision gets -- not internalError, which would otherwise
+// mask an expected, user-actionable conflict as a 500.
 func (h *Handler) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.mgr.DeleteTemplate(r.Context(), id); err != nil {
-		h.internalError(w, "deleting template "+id, err)
+		h.templateError(w, "deleting template "+id, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "deleted"})
-}
-
-// scheduleRunListResponse is the GET /api/templates/{id}/runs body, same
-// wrapped-array convention as templateListResponse.
-type scheduleRunListResponse struct {
-	Runs []store.ScheduleRun `json:"runs"`
-}
-
-func (h *Handler) handleListScheduleRuns(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	runs, err := h.mgr.ListScheduleRunsByTemplate(r.Context(), id)
-	if err != nil {
-		h.internalError(w, "listing schedule runs for template "+id, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, scheduleRunListResponse{Runs: runs})
 }

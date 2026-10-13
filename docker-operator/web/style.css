@@ -149,6 +149,9 @@ html, body {
 .template-form__row input[type="text"],
 .template-form__row select,
 .template-form__row textarea,
+.cron-agent-form__row input[type="text"],
+.cron-agent-form__row select,
+.cron-agent-form__row textarea,
 .detail__name,
 .detail__description,
 .login__token,
@@ -169,6 +172,9 @@ html, body {
 .template-form__row input[type="text"]:focus,
 .template-form__row select:focus,
 .template-form__row textarea:focus,
+.cron-agent-form__row input[type="text"]:focus,
+.cron-agent-form__row select:focus,
+.cron-agent-form__row textarea:focus,
 .detail__name:focus,
 .detail__description:focus,
 .login__token:focus,
@@ -721,7 +727,8 @@ html, body {
 .create-form__title { margin: 0; font-size: var(--font-lg); font-weight: 600; }
 
 .create-form__row,
-.template-form__row {
+.template-form__row,
+.cron-agent-form__row {
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-1);
@@ -731,7 +738,8 @@ html, body {
 
 /* The Enabled checkbox reads better next to its label than stacked above it
    -- the only row in either form that needs the opposite direction. */
-.template-form__row--inline {
+.template-form__row--inline,
+.cron-agent-form__row--inline {
 	flex-direction: row;
 	align-items: center;
 	gap: var(--space-2);
@@ -765,7 +773,8 @@ html, body {
    placeholders (an exception: the Ollama-server placeholder carries the
    operator's default VALUE, which is data, so it stays). */
 .create-form__help,
-.template-form__help { font-size: var(--font-xs); color: var(--fg-dim); }
+.template-form__help,
+.cron-agent-form__help { font-size: var(--font-xs); color: var(--fg-dim); }
 
 .create-form__backend,
 .create-form__harness {
@@ -905,7 +914,8 @@ html, body {
 /* Pinned so Save/Cancel stay reachable once the Advanced section is open.
    An opaque background + top border so rows never scroll visibly under it. */
 .create-form__actions,
-.template-form__actions {
+.template-form__actions,
+.cron-agent-form__actions {
 	position: sticky;
 	bottom: 0;
 	z-index: 1;
@@ -917,7 +927,8 @@ html, body {
 }
 
 .create-form__error,
-.template-form__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
+.template-form__error,
+.cron-agent-form__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
 
 /* --- template bar (sits above the create form) --- */
 .template-bar {
@@ -972,12 +983,6 @@ html, body {
 
 .templates-page__name { font-weight: 600; flex: 1 1 auto; }
 
-.templates-page__schedule {
-	font-size: var(--font-xs);
-	color: var(--fg-dim);
-	font-family: var(--font-mono, monospace);
-}
-
 .templates-page__detail {
 	border: 1px solid var(--border);
 	border-radius: var(--radius-md);
@@ -985,6 +990,74 @@ html, body {
 }
 
 .templates-page__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
+
+/* --- cron agents page --------------------------------------------------
+   Mirrors the templates page's own shell/list/detail chrome -- a
+   CronAgent's own form rows share styling with the create/template forms
+   via the combined selectors above (.cron-agent-form__row etc.). */
+.cron-agents-page {
+	max-width: 720px;
+	margin: 24px auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-5);
+}
+
+.cron-agents-page__header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-4);
+}
+
+.cron-agents-page__header h2 { margin: 0; font-size: var(--font-lg); font-weight: 600; }
+
+.cron-agents-page__list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	overflow: hidden;
+}
+
+.cron-agents-page__row {
+	display: flex;
+	align-items: center;
+	gap: var(--space-4);
+	padding: var(--space-4) var(--space-5);
+	border-bottom: 1px solid var(--border);
+}
+.cron-agents-page__row:last-child { border-bottom: none; }
+.cron-agents-page__row:hover { background: var(--bg-item); }
+
+.cron-agents-page__name { font-weight: 600; flex: 1 1 auto; }
+
+.cron-agents-page__template {
+	font-size: var(--font-xs);
+	color: var(--fg-dim);
+	font-family: var(--font-mono, monospace);
+}
+
+.cron-agents-page__schedule {
+	font-size: var(--font-xs);
+	color: var(--fg-dim);
+	font-family: var(--font-mono, monospace);
+}
+
+.cron-agents-page__detail {
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	padding: var(--space-5);
+}
+
+.cron-agents-page__error { color: var(--status-error); font-size: var(--font-sm2); margin: 0; }
+
+.cron-agent-form {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-5);
+}
 
 .template-form {
 	display: flex;
@@ -1063,6 +1136,10 @@ html, body {
 }
 
 .templates-btn {
+	margin-bottom: var(--space-5);
+}
+
+.cron-agents-btn {
 	margin-bottom: var(--space-5);
 }
 
