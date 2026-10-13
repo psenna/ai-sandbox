@@ -237,6 +237,39 @@ func TestResumeAgent_RebuildsBothContainers(t *testing.T) {
 	if c.State != dockerclient.StateRunning {
 		t.Errorf("agent container state = %v, want running", c.State)
 	}
+	d, err := f.ContainerInspect(ctx, stored.DindContainerID)
+	if err != nil {
+		t.Fatalf("ContainerInspect(dind): %v", err)
+	}
+	if d.State != dockerclient.StateRunning {
+		t.Errorf("dind sidecar state = %v, want running", d.State)
+	}
+}
+
+func TestResumeAgent_ResyncsDependaproxyBeforeRebuild(t *testing.T) {
+	m, f, _ := newTestManager(t, 5)
+	ctx := context.Background()
+	a := createRunningAgent(t, m)
+	oldAddr := a.DependaproxyDinernetIP
+	if _, err := m.StopAgent(ctx, a.ID); err != nil {
+		t.Fatalf("StopAgent: %v", err)
+	}
+
+	// Simulate the shared dependaproxy container being recreated while the
+	// agent sat stopped: gone, then replaced by a new one with the same
+	// name, attached to nothing.
+	if err := f.ContainerRemove(ctx, m.cfg.DependaproxyContainer); err != nil {
+		t.Fatalf("removing the shared dependaproxy container: %v", err)
+	}
+	newDependaproxy(t, f, m.cfg.DependaproxyContainer)
+
+	resumed, err := m.ResumeAgent(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("ResumeAgent: %v", err)
+	}
+	if !resumed.DependaproxyDinernetIP.IsValid() || resumed.DependaproxyDinernetIP == oldAddr {
+		t.Errorf("DependaproxyDinernetIP = %v, want a freshly assigned address (old was %v)", resumed.DependaproxyDinernetIP, oldAddr)
+	}
 }
 
 func TestResumeAgent_RejectsNonStopped(t *testing.T) {

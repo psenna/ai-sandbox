@@ -477,7 +477,7 @@ func (m *Manager) resolveBackendFromAgent(ctx context.Context, a store.Agent) (r
 func (m *Manager) markRebuildError(ctx context.Context, id string, cause error) {
 	if _, err := m.store.Update(context.WithoutCancel(ctx), id, func(ag *store.Agent) error {
 		ag.Status = store.StatusError
-		ag.ErrorMessage = "could not bring this agent's container up (its workspace, Claude-config and DinD-cache volumes are intact -- fix the cause and retry): " + cause.Error()
+		ag.ErrorMessage = "could not bring this agent's container up (its workspace, Claude-config and DinD-cache volumes are intact -- fix the cause and retry via Update (or Delete)): " + cause.Error()
 		ag.ContainerID = ""
 		return nil
 	}); err != nil {

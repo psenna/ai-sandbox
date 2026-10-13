@@ -91,7 +91,7 @@ func (m *Manager) markStopped(ctx context.Context, a *store.Agent) error {
 func (m *Manager) markStopError(ctx context.Context, id string, cause error) {
 	if _, err := m.store.Update(context.WithoutCancel(ctx), id, func(ag *store.Agent) error {
 		ag.Status = store.StatusError
-		ag.ErrorMessage = "could not stop this agent (its containers, workspace, Claude-config and DinD-cache volumes are all intact -- fix the cause and retry): " + cause.Error()
+		ag.ErrorMessage = "could not stop this agent (its containers, workspace, Claude-config and DinD-cache volumes are all intact -- fix the cause and retry via Update (or Delete)): " + cause.Error()
 		return nil
 	}); err != nil {
 		m.log.ErrorContext(ctx, "could not record a failed stop attempt; the record may no longer reflect reality",
@@ -120,6 +120,15 @@ func (m *Manager) ResumeAgent(ctx context.Context, id string) (store.Agent, erro
 	if a.Status != store.StatusStopped {
 		return store.Agent{}, fmt.Errorf("resuming agent %q: %w (status %q)", id, ErrNotResumable, a.Status)
 	}
+
+	// Re-assert the dependaproxy dinernet attachment before recreating the
+	// agent container: if the shared dependaproxy container was recreated
+	// while this agent sat stopped, its dinernet lost the attachment and no
+	// other path here would notice. No refreshDependaproxyIPFile call is
+	// needed -- the agent container is about to be recreated below, and its
+	// fresh entrypoint.sh run will write the corrected address from the
+	// (now up to date) DEPENDAPROXY_DINERNET_IP env var baked in via agentEnv.
+	m.syncDependaproxyDinernetIP(ctx, &a)
 
 	if _, err := m.ensureDindRunning(ctx, a); err != nil {
 		err = fmt.Errorf("the dind sidecar: %w", err)
