@@ -100,6 +100,23 @@ func dialTerminal(t *testing.T, srv *httptest.Server, agentID string) *websocket
 	return conn
 }
 
+// attachedMarker is tmux's default status-left for the session the bridge
+// attaches to ("[main] 0:sh*" in the status line). tmux draws it only after
+// the attach client is fully up -- raw mode, client identified -- so seeing it
+// means typed input will reach the pane instead of racing tmux's startup
+// (#118: input sent immediately after Dial lost its first bytes on CI).
+const attachedMarker = "[" + tmuxSession + "]"
+
+// dialTerminalReady dials the terminal route like dialTerminal, but also
+// waits for tmux's attach to complete before returning -- so callers can type
+// immediately afterward without racing tmux's startup sequence (#118).
+func dialTerminalReady(t *testing.T, srv *httptest.Server, agentID string) *websocket.Conn {
+	t.Helper()
+	conn := dialTerminal(t, srv, agentID)
+	readUntil(t, conn, attachedMarker, 20*time.Second)
+	return conn
+}
+
 // readUntil reads binary frames off conn, accumulating them, until buf
 // contains want or the deadline passes.
 func readUntil(t *testing.T, conn *websocket.Conn, want string, timeout time.Duration) []byte {
@@ -132,10 +149,13 @@ func readUntil(t *testing.T, conn *websocket.Conn, want string, timeout time.Dur
 func TestIntegrationTerminalConnectTypeObserve(t *testing.T) {
 	c := realDockerClient(t)
 	srv, agentID, _ := newTerminalTestServer(t, c)
-	conn := dialTerminal(t, srv, agentID)
+	conn := dialTerminalReady(t, srv, agentID)
 
 	const marker = "connect-type-observe-8f3a"
-	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("echo "+marker+"\n")); err != nil {
+	// printf (not echo) with a dash where the typed command has a space: the
+	// echoed command text itself can never contain the marker, so this can
+	// only pass from real shell output (#118).
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("printf '%s-%s\\n' connect-type observe-8f3a\n")); err != nil {
 		t.Fatalf("WriteMessage: %v", err)
 	}
 
@@ -150,9 +170,12 @@ func TestIntegrationTerminalReconnectShowsScrollback(t *testing.T) {
 	c := realDockerClient(t)
 	srv, agentID, _ := newTerminalTestServer(t, c)
 
-	first := dialTerminal(t, srv, agentID)
+	first := dialTerminalReady(t, srv, agentID)
 	const marker = "reconnect-scrollback-2b91"
-	if err := first.WriteMessage(websocket.BinaryMessage, []byte("echo "+marker+"\n")); err != nil {
+	// printf (not echo) with a dash where the typed command has a space: the
+	// echoed command text itself can never contain the marker, so this can
+	// only pass from real shell output (#118).
+	if err := first.WriteMessage(websocket.BinaryMessage, []byte("printf '%s-%s\\n' reconnect scrollback-2b91\n")); err != nil {
 		t.Fatalf("WriteMessage: %v", err)
 	}
 	readUntil(t, first, marker, 20*time.Second)
@@ -184,10 +207,13 @@ func TestIntegrationTerminalReconnectShowsScrollback(t *testing.T) {
 func TestIntegrationTerminalCleanFailureOnStoppedContainer(t *testing.T) {
 	c := realDockerClient(t)
 	srv, agentID, containerID := newTerminalTestServer(t, c)
-	conn := dialTerminal(t, srv, agentID)
+	conn := dialTerminalReady(t, srv, agentID)
 
-	// Prove the session is live before pulling the rug out.
-	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("echo before-stop\n")); err != nil {
+	// Prove the session is live before pulling the rug out. printf (not
+	// echo) with a dash where the typed command has a space: the echoed
+	// command text itself can never contain the marker, so this can only
+	// pass from real shell output (#118).
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("printf '%s-%s\\n' before stop\n")); err != nil {
 		t.Fatalf("WriteMessage: %v", err)
 	}
 	readUntil(t, conn, "before-stop", 20*time.Second)
